@@ -16,7 +16,10 @@ const query = ref('')
 
 // 画廊状态
 const gallery = ref(null) // { list, index, author, dateDir }
-const livePlaying = ref(false) // Live 图当前是否处于播放态
+const livePlaying = ref(false) // Live 图当前是否悬停播放中
+
+// 卡片 Live 悬停状态：{ [卡片key]: true }
+const hoverLive = ref({})
 
 const currentItem = computed(
   () => gallery.value ? gallery.value.list[gallery.value.index] || {} : {},
@@ -26,6 +29,18 @@ watch(
   () => gallery.value && gallery.value.index,
   () => { livePlaying.value = false },
 )
+
+function cardKey(e) {
+  return e.author + '/' + e.date_dir
+}
+
+// 卡片封面悬停：进入加载 mov 循环静音播放，移出恢复封面
+function cardEnter(e) {
+  if (e.cover_type === 'live' && e.live_map?.[e.cover]) hoverLive.value[cardKey(e)] = true
+}
+function cardLeave(e) {
+  hoverLive.value[cardKey(e)] = false
+}
 
 onMounted(async () => {
   try {
@@ -250,14 +265,26 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       <div v-if="shownEntries.length" class="grid grid-4">
         <div
           v-for="(e, i) in shownEntries"
-          :key="e.author + '/' + e.date_dir"
+          :key="cardKey(e)"
           class="card hoverable entry-card stagger-item"
           :style="{ animationDelay: Math.min(i, 12) * 40 + 'ms' }"
           @click="openGallery(e.author, e)"
+          @mouseenter="cardEnter(e)"
+          @mouseleave="cardLeave(e)"
         >
           <div class="entry-cover">
+            <!-- Live 悬停播放（静音循环），默认显示封面 jpg -->
+            <video
+              v-if="hoverLive[cardKey(e)]"
+              class="cover-live-video"
+              :src="mediaUrl(e.author, e.date_dir, e.live_map[e.cover])"
+              muted
+              loop
+              autoplay
+              playsinline
+            ></video>
             <img
-              v-if="e.cover"
+              v-else-if="e.cover"
               :src="thumbUrl(e.author, e.date_dir, e.cover)"
               loading="lazy"
               alt=""
@@ -273,7 +300,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             <div v-if="e.cover_type === 'video'" class="play-overlay">
               <span class="play-btn">▶</span>
             </div>
-            <div v-else-if="e.cover_type === 'live'" class="live-overlay">
+            <div v-else-if="e.cover_type === 'live' && !hoverLive[cardKey(e)]" class="live-overlay">
               <span class="live-badge">LIVE</span>
             </div>
           </div>
@@ -313,15 +340,26 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             <button class="g-nav g-prev" :disabled="gallery.index === 0" @click="galleryPrev">‹</button>
 
             <div class="g-item" :key="gallery.index">
-              <!-- Live 图：先显示封面 + LIVE 角标，点击播放 mov -->
+              <!-- Live 图：默认封面 jpg，悬停自动加载播放 mov，移出恢复封面 -->
               <div
-                v-if="currentItem.live && currentItem.poster && !livePlaying"
+                v-if="currentItem.live && currentItem.poster"
                 class="g-live"
-                @click="livePlaying = true"
+                @mouseenter="livePlaying = true"
+                @mouseleave="livePlaying = false"
               >
-                <img :src="mediaUrl(gallery.author, gallery.dateDir, currentItem.poster)" />
-                <span class="live-badge">LIVE</span>
-                <span class="play-btn">▶</span>
+                <img
+                  v-if="!livePlaying"
+                  :src="mediaUrl(gallery.author, gallery.dateDir, currentItem.poster)"
+                />
+                <video
+                  v-else
+                  :src="mediaUrl(gallery.author, gallery.dateDir, currentItem.rel)"
+                  loop
+                  autoplay
+                  playsinline
+                  controls
+                ></video>
+                <span v-if="!livePlaying" class="live-badge">LIVE</span>
               </div>
               <img
                 v-else-if="currentItem.type === 'image'"
@@ -642,12 +680,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
 }
 
-/* Live 图：封面态（点击播放） */
-.g-live {
-  position: relative;
-  cursor: pointer;
-}
-.g-live img {
+/* Live 图：悬停播放（默认封面态） */
+.g-live { position: relative; }
+.g-live img,
+.g-live video {
   max-width: 100%;
   max-height: 66vh;
   border-radius: 14px;
@@ -659,17 +695,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   left: 14px;
   top: 14px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
 }
-.g-live .play-btn {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  transition: transform 200ms var(--ease), background 200ms;
-}
-.g-live:hover .play-btn {
-  transform: translate(-50%, -50%) scale(1.1);
-  background: rgba(0, 0, 0, 0.65);
+
+/* 卡片 Live 悬停播放 */
+.cover-live-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
 }
 .g-nav {
   position: absolute;

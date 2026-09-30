@@ -119,6 +119,8 @@ def _scan_entry(path: str) -> Optional[dict]:
         "cover": cover,
         "cover_type": cover_type,
         "gallery": gallery,
+        # live 封面 -> mov 的映射（前端悬停播放用）: {"live/xx.jpg": "live/xx.mov"}
+        "live_map": {v: k for k, v in live_poster.items()},
         "size": total_size,
     }
 
