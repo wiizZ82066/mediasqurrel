@@ -92,7 +92,18 @@ const platformName = { douyin: '抖音', weibo: '微博' }
       </div>
       <div class="field">
         <label>博主 ID <span style="color: var(--red)">*</span></label>
-        <input class="input" v-model="form.blogger_id" placeholder="数字 UID，如 1234567890" />
+        <input
+          class="input"
+          v-model="form.blogger_id"
+          :placeholder="form.platform === 'weibo'
+            ? '微博数字 UID，如 1234567890'
+            : '抖音 sec_uid（见存档 context.md 的 作者sec_uid）'"
+        />
+        <div class="hint" style="margin-top:6px">
+          {{ form.platform === 'weibo'
+            ? '可从微博主页链接 weibo.com/u/数字 中提取'
+            : '以 MS4wLjAB 开头的长串，新下载的抖音存档 context.md 已自动记录' }}
+        </div>
       </div>
       <div class="field">
         <label>昵称（备注）</label>

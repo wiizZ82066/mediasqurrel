@@ -193,6 +193,8 @@ def main() -> None:
     context = (
         "# 抖音内容\n\n"
         f"- **作者**: {nickname}\n"
+        f"- **作者UID**: {ad['author'].get('uid', '')}\n"
+        f"- **作者sec_uid**: {ad['author'].get('sec_uid', '')}\n"
         f"- **原文链接**: https://www.douyin.com/video/{aweme_id}\n"
         f"- **发布时间**: {pub_time}\n"
         f"- **视频标题**: {title_field}\n"
