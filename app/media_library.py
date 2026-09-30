@@ -74,6 +74,14 @@ def _scan_entry(path: str) -> Optional[dict]:
         return None
 
     # ---- 封面（最佳图策略） ----
+    # live 封面与 mov 同名配对（live01.jpg <-> live01.mov）
+    live_poster = {}
+    for mov in live_movs:
+        stem = mov.rsplit(".", 1)[0]
+        match = next((c for c in live_covers if c.rsplit(".", 1)[0] == stem), None)
+        if match:
+            live_poster[mov] = match
+
     cover = None
     cover_type = None
     if normal_photos:
@@ -81,19 +89,26 @@ def _scan_entry(path: str) -> Optional[dict]:
         cover_type = "image"
     elif live_covers:
         cover = live_covers[0]
-        cover_type = "image"
+        cover_type = "live"          # Live 图封面：前端显示 LIVE 角标
     elif videos:
         cover = videos[0]
         cover_type = "video"
     elif live_movs:
-        # 理论上 live_covers 为空才会到这里（mov 无 jpg）
-        cover = live_movs[0]
-        cover_type = "video"
+        cover = live_poster.get(live_movs[0]) or live_movs[0]
+        cover_type = "live"
 
-    # ---- 画廊：全部媒体（图片可点开、视频可播放） ----
+    # ---- 画廊：全部媒体（图片可点开、视频可播放；live 带封面 poster） ----
     gallery = (
         [{"type": "image", "rel": p} for p in normal_photos]
-        + [{"type": "video", "rel": m} for m in live_movs]
+        + [
+            {
+                "type": "video",
+                "rel": m,
+                "live": True,
+                **({"poster": live_poster[m]} if m in live_poster else {}),
+            }
+            for m in live_movs
+        ]
         + [{"type": "video", "rel": v} for v in videos]
     )
 

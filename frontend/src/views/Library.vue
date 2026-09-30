@@ -16,6 +16,16 @@ const query = ref('')
 
 // 画廊状态
 const gallery = ref(null) // { list, index, author, dateDir }
+const livePlaying = ref(false) // Live 图当前是否处于播放态
+
+const currentItem = computed(
+  () => gallery.value ? gallery.value.list[gallery.value.index] || {} : {},
+)
+
+watch(
+  () => gallery.value && gallery.value.index,
+  () => { livePlaying.value = false },
+)
 
 onMounted(async () => {
   try {
@@ -109,6 +119,16 @@ function fmtSize(n) {
   let i = 0
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++ }
   return n.toFixed(1) + ' ' + units[i]
+}
+
+// 条目标题：视频标题 / 正文摘要 / 目录名
+function entryTitle(e) {
+  return (e.text_preview || e.meta?.['视频标题'] || e.date_dir || '').trim()
+}
+
+// 唯一时间行：优先精确发布时间，其次日期目录（不重复显示两个时间）
+function entryTime(e) {
+  return e.meta?.['发布时间'] || e.date_dir
 }
 
 function openGallery(author, entry, startIdx = 0) {
@@ -253,15 +273,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             <div v-if="e.cover_type === 'video'" class="play-overlay">
               <span class="play-btn">▶</span>
             </div>
+            <div v-else-if="e.cover_type === 'live'" class="live-overlay">
+              <span class="live-badge">LIVE</span>
+            </div>
           </div>
           <div class="entry-info">
             <div class="entry-head">
-              <span class="entry-date">{{ e.date_dir }}</span>
+              <span class="entry-title">{{ entryTitle(e) }}</span>
               <span v-if="query || viewMode === 'timeline'" class="entry-author">{{ e.author }}</span>
             </div>
-            <div v-if="e.text_preview" class="entry-text">{{ e.text_preview }}</div>
             <div class="entry-meta">
-              {{ e.meta['发布时间'] || '' }} · {{ fmtSize(e.size) }}
+              {{ entryTime(e) }} · {{ fmtSize(e.size) }}
             </div>
           </div>
         </div>
@@ -291,13 +313,23 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             <button class="g-nav g-prev" :disabled="gallery.index === 0" @click="galleryPrev">‹</button>
 
             <div class="g-item" :key="gallery.index">
+              <!-- Live 图：先显示封面 + LIVE 角标，点击播放 mov -->
+              <div
+                v-if="currentItem.live && currentItem.poster && !livePlaying"
+                class="g-live"
+                @click="livePlaying = true"
+              >
+                <img :src="mediaUrl(gallery.author, gallery.dateDir, currentItem.poster)" />
+                <span class="live-badge">LIVE</span>
+                <span class="play-btn">▶</span>
+              </div>
               <img
-                v-if="gallery.list[gallery.index].type === 'image'"
-                :src="mediaUrl(gallery.author, gallery.dateDir, gallery.list[gallery.index].rel)"
+                v-else-if="currentItem.type === 'image'"
+                :src="mediaUrl(gallery.author, gallery.dateDir, currentItem.rel)"
               />
               <video
                 v-else
-                :src="mediaUrl(gallery.author, gallery.dateDir, gallery.list[gallery.index].rel)"
+                :src="mediaUrl(gallery.author, gallery.dateDir, currentItem.rel)"
                 controls
                 autoplay
               ></video>
@@ -318,8 +350,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
               :class="{ active: idx === gallery.index, video: item.type === 'video' }"
               @click="gallery.index = idx"
             >
-              <img :src="thumbUrl(gallery.author, gallery.dateDir, item.rel)" loading="lazy" alt="" />
-              <span v-if="item.type === 'video'" class="g-thumb-play">▶</span>
+              <img
+                :src="thumbUrl(gallery.author, gallery.dateDir, item.poster || item.rel)"
+                loading="lazy"
+                alt=""
+              />
+              <span v-if="item.type === 'video' && !item.live" class="g-thumb-play">▶</span>
+              <span v-else-if="item.live" class="g-thumb-live">LIVE</span>
             </div>
           </div>
         </div>
@@ -491,6 +528,31 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   justify-content: center;
   padding-left: 3px;
 }
+.live-overlay {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  pointer-events: none;
+}
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 7px;
+  background: rgba(255, 59, 48, 0.9);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+.live-badge::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #fff;
+}
 .entry-info { padding: 10px 6px 4px; }
 .entry-head {
   display: flex;
@@ -498,7 +560,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   justify-content: space-between;
   gap: 8px;
 }
-.entry-date { font-size: 13.5px; font-weight: 700; }
+.entry-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
 .entry-author {
   font-size: 11.5px;
   color: var(--blue);
@@ -510,17 +581,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 90px;
-}
-.entry-text {
-  font-size: 12px;
-  color: var(--text-2);
-  line-height: 1.5;
-  margin-top: 5px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  min-height: 0;
+  flex-shrink: 0;
 }
 .entry-meta { font-size: 11.5px; color: var(--text-2); margin-top: 4px; }
 
@@ -579,6 +640,36 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   max-height: 66vh;
   border-radius: 14px;
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+}
+
+/* Live 图：封面态（点击播放） */
+.g-live {
+  position: relative;
+  cursor: pointer;
+}
+.g-live img {
+  max-width: 100%;
+  max-height: 66vh;
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  display: block;
+}
+.g-live .live-badge {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+.g-live .play-btn {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  transition: transform 200ms var(--ease), background 200ms;
+}
+.g-live:hover .play-btn {
+  transform: translate(-50%, -50%) scale(1.1);
+  background: rgba(0, 0, 0, 0.65);
 }
 .g-nav {
   position: absolute;
@@ -641,6 +732,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   color: #fff;
   font-size: 15px;
   background: rgba(0, 0, 0, 0.3);
+}
+.g-thumb-live {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(255, 59, 48, 0.9);
+  color: #fff;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
 }
 
 .fade-enter-active { transition: opacity 250ms ease-out; }

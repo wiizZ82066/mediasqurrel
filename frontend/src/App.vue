@@ -28,13 +28,6 @@ onMounted(() => {
 </script>
 
 <template>
-  <!-- 渐变 blob 背景 -->
-  <div class="app-bg">
-    <div class="blob blob-1"></div>
-    <div class="blob blob-2"></div>
-    <div class="blob blob-3"></div>
-  </div>
-
   <div class="layout">
     <aside class="sidebar">
       <div class="brand">
