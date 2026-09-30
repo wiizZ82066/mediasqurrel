@@ -61,7 +61,8 @@ async function submit() {
 </script>
 
 <template>
-  <h1 class="page-title">下载内容</h1>
+  <div class="view-root">
+    <h1 class="page-title">下载内容</h1>
   <p class="page-sub">粘贴链接或分享文案，选择脚本开始下载</p>
 
   <!-- 脚本选择 -->
@@ -131,6 +132,7 @@ async function submit() {
         查看任务队列
       </router-link>
     </div>
+  </div>
   </div>
 </template>
 

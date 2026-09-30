@@ -77,7 +77,8 @@ const platformName = { douyin: '抖音', weibo: '微博' }
 </script>
 
 <template>
-  <h1 class="page-title">博主订阅</h1>
+  <div class="view-root">
+    <h1 class="page-title">博主订阅</h1>
   <p class="page-sub">订阅博主后，系统按间隔自动扫描新内容并下载（扫描引擎陆续接入中）</p>
 
   <!-- 新增订阅 -->
@@ -157,6 +158,7 @@ const platformName = { douyin: '抖音', weibo: '微博' }
         <button class="btn btn-danger-ghost btn-sm" @click="remove(s)">删除</button>
       </div>
     </div>
+  </div>
   </div>
 </template>
 

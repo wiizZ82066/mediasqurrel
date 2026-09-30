@@ -4,8 +4,13 @@
   <root>/<作者>/<日期目录>/
       context.md      元数据
       photo/img*.jpg  微博普通图片
-      live/live*.mov|.jpg  微博 Live 图
+      live/live*.mov|.jpg  微博 Live 图（jpg 为封面）
       <videoid>.mp4   抖音视频
+
+封面策略（"最佳图"）:
+  - 多图: 取中间位（9 宫格 -> 第 5 张，4 图 -> 第 2 张），比首张更有代表性
+  - 仅 Live: 取第一张 Live 封面
+  - 仅视频: 由前端经 /api/thumb 用视频首帧作封面
 """
 import os
 import re
@@ -17,8 +22,8 @@ from . import config
 _SKIP_DIRS = {
     ".git", ".ab-profile", "app", "frontend", "scripts_manifest",
     "app_data", "node_modules", "__pycache__", ".venv", ".idea", ".vscode",
+    ".npm-cache", ".agent-browser",
 }
-_SKIP_FILES = {"README.md", "DESIGN.md"}
 
 _DATE_RE = re.compile(r"^\d{2,4}-\d{1,2}-\d{1,2}")
 
@@ -29,7 +34,7 @@ def _is_date_dir(name: str) -> bool:
 
 def _scan_entry(path: str) -> Optional[dict]:
     """扫描一个日期目录，返回条目信息；空目录返回 None。"""
-    photos, lives, videos, others = [], [], [], []
+    normal_photos, live_movs, live_covers, videos = [], [], [], []
     total_size = 0
     try:
         entries = os.listdir(path)
@@ -40,46 +45,65 @@ def _scan_entry(path: str) -> Optional[dict]:
         full = os.path.join(path, name)
         if os.path.isdir(full):
             if name == "photo":
-                for f in os.listdir(full):
+                for f in sorted(os.listdir(full)):
                     if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
-                        photos.append(f"photo/{f}")
+                        normal_photos.append(f"photo/{f}")
                         total_size += os.path.getsize(os.path.join(full, f))
             elif name == "live":
-                for f in os.listdir(full):
-                    if f.lower().endswith(".mov"):
-                        lives.append(f"live/{f}")
-                        total_size += os.path.getsize(os.path.join(full, f))
+                for f in sorted(os.listdir(full)):
+                    low = f.lower()
+                    fp = os.path.join(full, f)
+                    if low.endswith(".mov"):
+                        live_movs.append(f"live/{f}")
+                        total_size += os.path.getsize(fp)
+                    elif low.endswith((".jpg", ".jpeg")):
+                        live_covers.append(f"live/{f}")
+                        total_size += os.path.getsize(fp)
             continue
         ext = os.path.splitext(name)[1].lower()
-        if ext == ".md" and name == "context.md":
+        if ext == ".md":
             continue
         if ext == ".mp4":
             videos.append(name)
             total_size += os.path.getsize(full)
         elif ext in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-            photos.append(name)
+            normal_photos.append(name)
             total_size += os.path.getsize(full)
 
-    if not (photos or lives or videos):
+    if not (normal_photos or live_movs or videos):
         return None
 
-    # 封面：优先 live jpg 封面 > 第一张 photo > 第一张根目录图
+    # ---- 封面（最佳图策略） ----
     cover = None
-    live_jpgs = sorted(
-        p for p in photos if p.startswith("live/") and p.endswith(".jpg")
-    )
-    if live_jpgs:
-        cover = live_jpgs[0]
-    elif photos:
-        cover = sorted(p for p in photos if not p.startswith("live/"))[0] or photos[0]
+    cover_type = None
+    if normal_photos:
+        cover = normal_photos[len(normal_photos) // 2]  # 中间位
+        cover_type = "image"
+    elif live_covers:
+        cover = live_covers[0]
+        cover_type = "image"
     elif videos:
-        cover = None  # 视频封面由前端用图标占位
+        cover = videos[0]
+        cover_type = "video"
+    elif live_movs:
+        # 理论上 live_covers 为空才会到这里（mov 无 jpg）
+        cover = live_movs[0]
+        cover_type = "video"
+
+    # ---- 画廊：全部媒体（图片可点开、视频可播放） ----
+    gallery = (
+        [{"type": "image", "rel": p} for p in normal_photos]
+        + [{"type": "video", "rel": m} for m in live_movs]
+        + [{"type": "video", "rel": v} for v in videos]
+    )
 
     return {
-        "photos": sorted(photos),
-        "lives": sorted(lives),
-        "videos": sorted(videos),
+        "photos": normal_photos,
+        "lives": live_movs,
+        "videos": videos,
         "cover": cover,
+        "cover_type": cover_type,
+        "gallery": gallery,
         "size": total_size,
     }
 

@@ -45,7 +45,8 @@ defineExpose({ ensureExpanded })
 </script>
 
 <template>
-  <h1 class="page-title">任务队列</h1>
+  <div class="view-root">
+    <h1 class="page-title">任务队列</h1>
   <p class="page-sub">所有下载任务的执行状态与实时日志</p>
 
   <div v-if="!tasks.length" class="card empty">
@@ -101,6 +102,7 @@ defineExpose({ ensureExpanded })
         </div>
       </transition>
     </div>
+  </div>
   </div>
 </template>
 

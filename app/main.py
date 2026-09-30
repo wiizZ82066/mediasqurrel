@@ -107,6 +107,30 @@ def api_library_authors():
     return media_library.authors_summary()
 
 
+@app.get("/api/thumb")
+def api_thumb(p: str, w: int = 480):
+    """缩略图：p = 相对 LIBRARY_ROOT 的路径（图片直接缩，视频抽首帧）。"""
+    from . import thumbs
+
+    rel = (p or "").replace("\\", "/").lstrip("/")
+    abs_path = os.path.abspath(os.path.join(config.LIBRARY_ROOT, rel))
+    # 防目录穿越
+    if not os.path.normcase(abs_path).startswith(
+        os.path.normcase(os.path.abspath(config.LIBRARY_ROOT) + os.sep)
+    ):
+        raise HTTPException(status_code=403, detail="非法路径")
+    if not os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    thumbs.THUMB_WIDTH = max(120, min(1280, w))
+    thumb = thumbs.get_thumb(abs_path, rel)
+    if not thumb:
+        raise HTTPException(status_code=500, detail="缩略图生成失败")
+    return FileResponse(thumb, media_type="image/jpeg", headers={
+        "Cache-Control": "public, max-age=86400",
+    })
+
+
 # ---------------------------------------------------------------- 订阅
 
 @app.get("/api/subs")
