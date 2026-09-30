@@ -168,6 +168,68 @@ def api_thumb(p: str, w: int = 480):
     })
 
 
+def _safe_join(rel: str) -> str:
+    """相对路径 -> 绝对路径，带穿越防护。"""
+    rel = (rel or "").replace("\\", "/").strip("/")
+    abs_path = os.path.abspath(os.path.join(config.LIBRARY_ROOT, rel))
+    if not os.path.normcase(abs_path).startswith(
+        os.path.normcase(os.path.abspath(config.LIBRARY_ROOT) + os.sep)
+    ):
+        raise HTTPException(status_code=403, detail="非法路径")
+    return abs_path
+
+
+IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+VID_EXT = {".mp4", ".mov", ".m4v", ".webm"}
+
+
+@app.get("/api/browse")
+def api_browse(path: str = ""):
+    """目录浏览器：列出指定相对目录下的子目录（供输出目录选择器）。"""
+    from . import media_library as ml
+
+    abs_path = _safe_join(path) if path else os.path.abspath(config.LIBRARY_ROOT)
+    if not os.path.isdir(abs_path):
+        raise HTTPException(status_code=404, detail="目录不存在")
+    dirs = []
+    try:
+        for name in sorted(os.listdir(abs_path)):
+            full = os.path.join(abs_path, name)
+            if not os.path.isdir(full):
+                continue
+            if name in ml._SKIP_DIRS or name.startswith("."):
+                continue
+            rel = os.path.relpath(full, config.LIBRARY_ROOT).replace("\\", "/")
+            count = sum(
+                1 for e in os.listdir(full)
+                if os.path.isdir(os.path.join(full, e)) and ml._is_date_dir(e)
+            )
+            dirs.append({"name": name, "rel": rel, "entries": count})
+    except OSError:
+        pass
+    return {"current": path or ".", "dirs": dirs}
+
+
+@app.get("/api/preview")
+def api_preview(dir: str):
+    """输出预览：返回目录内媒体文件（图片/视频分类，相对路径）。"""
+    abs_path = _safe_join(dir)
+    if not os.path.isdir(abs_path):
+        raise HTTPException(status_code=404, detail="目录不存在")
+
+    images, videos = [], []
+    for root, _dirs, files in os.walk(abs_path):
+        for f in sorted(files):
+            ext = os.path.splitext(f)[1].lower()
+            full = os.path.join(root, f)
+            rel = os.path.relpath(full, config.LIBRARY_ROOT).replace("\\", "/")
+            if ext in IMG_EXT:
+                images.append(rel)
+            elif ext in VID_EXT:
+                videos.append(rel)
+    return {"dir": dir, "images": images, "videos": videos}
+
+
 # ---------------------------------------------------------------- 订阅
 
 @app.get("/api/subs")

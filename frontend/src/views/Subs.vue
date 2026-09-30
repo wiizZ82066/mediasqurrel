@@ -108,7 +108,7 @@ const platformName = { douyin: '抖音', weibo: '微博' }
       </div>
       <div class="field">
         <label>昵称（备注）</label>
-        <input class="input" v-model="form.nickname" placeholder="显示名，如 某某" />
+        <input class="input" v-model="form.nickname" placeholder="博主昵称，如 某某" />
       </div>
       <div class="field">
         <label>扫描间隔（分钟）</label>

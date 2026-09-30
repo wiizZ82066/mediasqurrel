@@ -5,6 +5,7 @@
 """
 import asyncio
 import datetime as _dt
+import os
 import uuid
 from typing import Optional
 
@@ -83,6 +84,7 @@ async def create(script_id: str, params: dict) -> dict:
         "finished_at": None,
         "exit_code": None,
         "output_dir": None,
+        "output_rel": None,
         "logs": [],
         "proc": None,
     }
@@ -99,7 +101,10 @@ async def create(script_id: str, params: dict) -> dict:
 
 
 def _detect_output_dir(task: dict, text: str):
-    """从日志中提取输出目录（两个脚本都会打印保存/生成路径）。"""
+    """从日志中提取输出目录（两个脚本都会打印保存/生成路径）。
+
+    同时记录绝对路径(output_dir)与相对 LIBRARY_ROOT 的路径(output_rel)。
+    """
     if task["output_dir"]:
         return
     for kw in ("保存目录:", "下载完成:", "context.md 已生成:"):
@@ -110,6 +115,13 @@ def _detect_output_dir(task: dict, text: str):
                 seg = seg.split(stop)[0]
             if seg and (":\\" in seg or ":/" in seg or seg.startswith("\\\\")):
                 task["output_dir"] = seg
+                try:
+                    root = os.path.abspath(config.LIBRARY_ROOT)
+                    rel = os.path.relpath(seg, root)
+                    if not rel.startswith(".."):
+                        task["output_rel"] = rel.replace("\\", "/")
+                except ValueError:
+                    pass
                 return
 
 

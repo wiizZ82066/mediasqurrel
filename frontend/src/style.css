@@ -47,23 +47,22 @@ body {
 .blob {
   position: absolute;
   border-radius: 50%;
-  filter: blur(70px);
-  opacity: 0.55;
+  opacity: 0.5;
   will-change: transform;
 }
 .blob-1 {
   width: 46vw; height: 46vw; left: -8vw; top: -12vh;
-  background: radial-gradient(circle, rgba(140, 170, 255, 0.55), transparent 70%);
+  background: radial-gradient(circle at 40% 40%, rgba(140, 170, 255, 0.5), rgba(140, 170, 255, 0.18) 45%, transparent 72%);
   animation: drift1 46s ease-in-out infinite alternate;
 }
 .blob-2 {
   width: 40vw; height: 40vw; right: -6vw; top: 6vh;
-  background: radial-gradient(circle, rgba(255, 190, 214, 0.5), transparent 70%);
+  background: radial-gradient(circle at 55% 45%, rgba(255, 190, 214, 0.45), rgba(255, 190, 214, 0.15) 45%, transparent 72%);
   animation: drift2 54s ease-in-out infinite alternate;
 }
 .blob-3 {
   width: 52vw; height: 52vw; left: 28vw; bottom: -26vh;
-  background: radial-gradient(circle, rgba(168, 240, 200, 0.48), transparent 70%);
+  background: radial-gradient(circle at 50% 50%, rgba(168, 240, 200, 0.42), rgba(168, 240, 200, 0.14) 45%, transparent 72%);
   animation: drift3 62s ease-in-out infinite alternate;
 }
 @keyframes drift1 { to { transform: translate(9vw, 7vh) scale(1.12); } }
@@ -99,14 +98,7 @@ body {
   font-weight: 700;
   letter-spacing: -0.02em;
 }
-.brand .logo {
-  font-size: 26px;
-  animation: breathe 3.2s ease-in-out infinite;
-}
-@keyframes breathe {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.08); }
-}
+.brand .logo { font-size: 26px; }
 
 .nav-item {
   display: flex;
@@ -343,8 +335,7 @@ body {
   backdrop-filter: blur(10px);
 }
 .terminal .t-time { color: #5c6370; margin-right: 10px; }
-.terminal .t-line { animation: lineIn 150ms ease-out; white-space: pre-wrap; word-break: break-all; }
-@keyframes lineIn { from { opacity: 0; transform: translateY(3px); } }
+.terminal .t-line { white-space: pre-wrap; word-break: break-all; }
 
 /* ---------- 网格与列表 ---------- */
 .grid { display: grid; gap: 18px; }

@@ -177,6 +177,8 @@ def scan_root() -> list[dict]:
                 "total_size": sum(e["size"] for e in entries),
                 "entries": entries,
             })
+    # 作者默认按作品数量从大到小
+    authors.sort(key=lambda a: a["count"], reverse=True)
     return authors
 
 
