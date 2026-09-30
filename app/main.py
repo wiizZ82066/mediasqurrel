@@ -1,5 +1,6 @@
 """FastAPI 入口：REST API + WebSocket + 媒体静态资源 + 前端托管。"""
 import asyncio
+import datetime as _dt
 import os
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -21,16 +22,23 @@ app.add_middleware(
 )
 
 
+async def _dispatch_new_items(items):
+    """扫描发现新内容的统一处理：页面内通知 + 自动创建下载任务。"""
+    for it in items:
+        await task_manager.broadcast({
+            "type": "notification",
+            "level": "info",
+            "title": "发现新内容",
+            "text": f"{it.get('title', '')[:60]}，已自动开始下载",
+            "time": _dt.datetime.now().strftime("%H:%M:%S"),
+        })
+        await task_manager.create(it["script_id"], it["params"])
+
+
 @app.on_event("startup")
 async def on_startup():
     watcher.init_db()
-
-    async def on_new_items(items):
-        """扫描发现新内容 -> 自动创建下载任务。"""
-        for it in items:
-            await task_manager.create(it["script_id"], it["params"])
-
-    watcher.start_scheduler(on_new_items)
+    watcher.start_scheduler(_dispatch_new_items)
 
 
 # ---------------------------------------------------------------- 脚本清单
@@ -107,6 +115,35 @@ def api_library_authors():
     return media_library.authors_summary()
 
 
+@app.get("/api/search")
+def api_search(q: str, limit: int = 60):
+    """全局搜索：匹配 作者名 / 日期目录 / 视频标题 / 微博正文 / 链接。
+
+    全部基于相对路径的本地存档，无任何固定绝对路径。
+    """
+    kw = (q or "").strip().lower()
+    if not kw:
+        return {"q": q, "results": []}
+
+    results = []
+    for author in media_library.scan_root():
+        for e in author["entries"]:
+            haystacks = [
+                author["name"],
+                e["date_dir"],
+                e.get("text_preview") or "",
+                (e.get("meta") or {}).get("视频标题") or "",
+                (e.get("meta") or {}).get("原文链接") or "",
+            ]
+            if any(kw in h.lower() for h in haystacks):
+                results.append(e)
+                if len(results) >= limit:
+                    break
+        if len(results) >= limit:
+            break
+    return {"q": q, "results": results}
+
+
 @app.get("/api/thumb")
 def api_thumb(p: str, w: int = 480):
     """缩略图：p = 相对 LIBRARY_ROOT 的路径（图片直接缩，视频抽首帧）。"""
@@ -174,8 +211,7 @@ async def api_scan_sub(sub_id: int):
         raise HTTPException(status_code=404, detail="订阅不存在")
     result = await watcher.scan_sub(subs[0])
     if result["new_items"]:
-        for it in result["new_items"]:
-            await task_manager.create(it["script_id"], it["params"])
+        await _dispatch_new_items(result["new_items"])
     return result
 
 

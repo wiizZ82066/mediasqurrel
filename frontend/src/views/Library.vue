@@ -1,12 +1,18 @@
 <script setup>
-// 媒体库页：作者 -> 条目网格（缩略图封面）+ 全媒体画廊浏览
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+// 媒体库页：搜索 + 作者/时间线双视图 + 排序筛选 + 摘要卡片 + 画廊（预加载）
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
 import { toast } from '../store.js'
 
 const authors = ref([])
 const loading = ref(true)
 const currentAuthor = ref(null)
+
+// 视图与筛选状态
+const viewMode = ref('author')          // author | timeline
+const sortKey = ref('date')             // date | size
+const typeFilter = ref('all')           // all | photo | live | video
+const query = ref('')
 
 // 画廊状态
 const gallery = ref(null) // { list, index, author, dateDir }
@@ -22,9 +28,68 @@ onMounted(async () => {
   }
 })
 
-const entries = computed(() => {
-  const a = authors.value.find((x) => x.name === currentAuthor.value)
-  return a ? a.entries : []
+// 日期目录 -> 可比较键（'26-09-29' / '2026-09-23-16-17' 统一）
+function dateKey(dateDir) {
+  const parts = dateDir.split('-')
+  const y = parts[0].length === 2 ? '20' + parts[0] : parts[0]
+  return [y, ...parts.slice(1)].map((p) => String(p).padStart(2, '0')).join('')
+}
+
+// 条目是否通过类型筛选
+function passTypeFilter(e) {
+  if (typeFilter.value === 'all') return true
+  if (typeFilter.value === 'photo') return e.photos.length > 0
+  if (typeFilter.value === 'live') return e.lives.length > 0
+  if (typeFilter.value === 'video') return e.videos.length > 0
+  return true
+}
+
+// 搜索：匹配作者 / 日期 / 标题 / 正文摘要
+function passSearch(e) {
+  const kw = query.value.trim().toLowerCase()
+  if (!kw) return true
+  return [e.author, e.date_dir, e.text_preview || '', e.meta?.['视频标题'] || '']
+    .some((h) => (h || '').toLowerCase().includes(kw))
+}
+
+// 重复检测：同作者内视频文件名出现多次的条目
+const dupSet = computed(() => {
+  const seen = new Map()
+  const dup = new Set()
+  for (const a of authors.value) {
+    for (const e of a.entries) {
+      for (const v of e.videos) {
+        if (seen.has(v)) {
+          dup.add(`${e.author}/${e.date_dir}`)
+          dup.add(seen.get(v))
+        } else {
+          seen.set(v, `${e.author}/${e.date_dir}`)
+        }
+      }
+    }
+  }
+  return dup
+})
+
+// 当前展示的条目（两种视图共用筛选逻辑）
+const shownEntries = computed(() => {
+  let list
+  if (query.value.trim()) {
+    // 搜索模式：全作者混排
+    list = authors.value.flatMap((a) => a.entries)
+  } else if (viewMode.value === 'timeline') {
+    list = authors.value.flatMap((a) => a.entries)
+  } else {
+    const a = authors.value.find((x) => x.name === currentAuthor.value)
+    list = a ? a.entries : []
+  }
+  list = list.filter((e) => passTypeFilter(e) && passSearch(e))
+  list = [...list].sort((x, y) =>
+    sortKey.value === 'size'
+      ? y.size - x.size
+      : dateKey(y.date_dir).localeCompare(dateKey(x.date_dir)),
+  )
+  return list
 })
 
 function mediaUrl(author, dateDir, rel) {
@@ -67,6 +132,22 @@ function closeGallery() {
   gallery.value = null
 }
 
+// 画廊预加载：当前项 ±1 的原图
+watch(
+  () => gallery.value && gallery.value.index,
+  () => {
+    const g = gallery.value
+    if (!g) return
+    for (const idx of [g.index + 1, g.index - 1]) {
+      const item = g.list[idx]
+      if (item && item.type === 'image') {
+        const img = new Image()
+        img.src = mediaUrl(g.author, g.dateDir, item.rel)
+      }
+    }
+  },
+)
+
 function onKey(evt) {
   if (!gallery.value) return
   if (evt.key === 'ArrowRight') galleryNext()
@@ -94,8 +175,38 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     </div>
 
     <template v-else>
-      <!-- 作者选择 -->
-      <div class="author-bar">
+      <!-- 工具栏：搜索 + 视图切换 + 排序 + 筛选 -->
+      <div class="toolbar card">
+        <div class="tb-search">
+          <span class="tb-search-icon">🔍</span>
+          <input
+            v-model="query"
+            class="input tb-input"
+            placeholder="搜索作者 / 日期 / 标题 / 正文…"
+          />
+          <button v-if="query" class="tb-clear" @click="query = ''">✕</button>
+        </div>
+
+        <div class="tb-group" role="group" aria-label="视图">
+          <button class="tb-btn" :class="{ on: viewMode === 'author' && !query }" @click="viewMode = 'author'; query = ''">👤 按作者</button>
+          <button class="tb-btn" :class="{ on: viewMode === 'timeline' && !query }" @click="viewMode = 'timeline'; query = ''">📅 时间线</button>
+        </div>
+
+        <div class="tb-group" role="group" aria-label="排序">
+          <button class="tb-btn" :class="{ on: sortKey === 'date' }" @click="sortKey = 'date'">最新</button>
+          <button class="tb-btn" :class="{ on: sortKey === 'size' }" @click="sortKey = 'size'">最大</button>
+        </div>
+
+        <div class="tb-group" role="group" aria-label="类型">
+          <button class="tb-btn" :class="{ on: typeFilter === 'all' }" @click="typeFilter = 'all'">全部</button>
+          <button class="tb-btn" :class="{ on: typeFilter === 'photo' }" @click="typeFilter = 'photo'">🖼️</button>
+          <button class="tb-btn" :class="{ on: typeFilter === 'live' }" @click="typeFilter = 'live'">✨</button>
+          <button class="tb-btn" :class="{ on: typeFilter === 'video' }" @click="typeFilter = 'video'">🎬</button>
+        </div>
+      </div>
+
+      <!-- 作者条（仅按作者视图且非搜索时显示） -->
+      <div v-if="!query && viewMode === 'author'" class="author-bar">
         <button
           v-for="(a, i) in authors"
           :key="a.name"
@@ -109,25 +220,32 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         </button>
       </div>
 
+      <!-- 结果计数 -->
+      <div class="result-count">
+        {{ query ? `搜索 “${query}” 命中` : viewMode === 'timeline' ? '时间线' : currentAuthor }}
+        · {{ shownEntries.length }} 条
+      </div>
+
       <!-- 条目网格 -->
-      <div class="grid grid-4">
+      <div v-if="shownEntries.length" class="grid grid-4">
         <div
-          v-for="(e, i) in entries"
-          :key="e.date_dir"
+          v-for="(e, i) in shownEntries"
+          :key="e.author + '/' + e.date_dir"
           class="card hoverable entry-card stagger-item"
-          :style="{ animationDelay: i * 40 + 'ms' }"
-          @click="openGallery(currentAuthor, e)"
+          :style="{ animationDelay: Math.min(i, 12) * 40 + 'ms' }"
+          @click="openGallery(e.author, e)"
         >
           <div class="entry-cover">
             <img
               v-if="e.cover"
-              :src="thumbUrl(currentAuthor, e.date_dir, e.cover)"
+              :src="thumbUrl(e.author, e.date_dir, e.cover)"
               loading="lazy"
               alt=""
               @error="$event.target.style.display = 'none'"
             />
             <div v-else class="cover-fallback">🖼️</div>
             <div class="entry-badges">
+              <span v-if="dupSet.has(`${e.author}/${e.date_dir}`)" class="badge-s badge-dup">♻️ 重复</span>
               <span v-if="e.videos.length" class="badge-s">🎬 {{ e.videos.length }}</span>
               <span v-if="e.lives.length" class="badge-s">✨ {{ e.lives.length }}</span>
               <span v-if="e.photos.length" class="badge-s">🖼️ {{ e.photos.length }}</span>
@@ -137,12 +255,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             </div>
           </div>
           <div class="entry-info">
-            <div class="entry-date">{{ e.date_dir }}</div>
+            <div class="entry-head">
+              <span class="entry-date">{{ e.date_dir }}</span>
+              <span v-if="query || viewMode === 'timeline'" class="entry-author">{{ e.author }}</span>
+            </div>
+            <div v-if="e.text_preview" class="entry-text">{{ e.text_preview }}</div>
             <div class="entry-meta">
               {{ e.meta['发布时间'] || '' }} · {{ fmtSize(e.size) }}
             </div>
           </div>
         </div>
+      </div>
+
+      <div v-else class="card empty">
+        <div class="empty-icon">🔍</div>
+        <p>没有匹配的内容</p>
       </div>
     </template>
 
@@ -150,10 +277,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     <transition name="fade">
       <div v-if="gallery" class="g-mask" @click="closeGallery">
         <div class="g-stage" @click.stop>
-          <!-- 顶部信息栏 -->
           <div class="g-topbar">
             <span class="g-title">
-              {{ gallery.author }} · {{ gallery.date_dir }}
+              {{ gallery.author }} · {{ gallery.dateDir }}
             </span>
             <span class="g-counter">
               {{ gallery.index + 1 }} / {{ gallery.list.length }}
@@ -161,13 +287,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             <button class="btn btn-ghost btn-sm g-close" @click="closeGallery">关闭 ✕</button>
           </div>
 
-          <!-- 主舞台 -->
           <div class="g-main">
-            <button
-              class="g-nav g-prev"
-              :disabled="gallery.index === 0"
-              @click="galleryPrev"
-            >‹</button>
+            <button class="g-nav g-prev" :disabled="gallery.index === 0" @click="galleryPrev">‹</button>
 
             <div class="g-item" :key="gallery.index">
               <img
@@ -189,7 +310,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             >›</button>
           </div>
 
-          <!-- 缩略图导航条 -->
           <div class="g-strip">
             <div
               v-for="(item, idx) in gallery.list"
@@ -209,11 +329,78 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 </template>
 
 <style scoped>
+/* ---------- 工具栏 ---------- */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  margin-bottom: 18px;
+}
+.tb-search {
+  position: relative;
+  flex: 1;
+  min-width: 220px;
+}
+.tb-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  opacity: 0.5;
+}
+.tb-input { padding-left: 36px; padding-right: 34px; }
+.tb-clear {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text-2);
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+.tb-clear:hover { background: rgba(0, 0, 0, 0.16); }
+
+.tb-group {
+  display: flex;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 10px;
+  padding: 3px;
+  gap: 2px;
+}
+.tb-btn {
+  border: none;
+  background: transparent;
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 180ms var(--ease);
+  white-space: nowrap;
+}
+.tb-btn:hover { color: var(--text); }
+.tb-btn.on {
+  background: #fff;
+  color: var(--text);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
 .author-bar {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  margin-bottom: 22px;
+  margin-bottom: 16px;
 }
 .author-chip {
   padding: 8px 16px;
@@ -235,6 +422,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .chip-count { opacity: 0.6; font-size: 12px; margin-left: 3px; }
 
+.result-count {
+  font-size: 12.5px;
+  color: var(--text-2);
+  margin-bottom: 14px;
+}
+
+/* ---------- 条目卡片 ---------- */
 .entry-card { padding: 10px; overflow: hidden; cursor: zoom-in; }
 .entry-cover {
   position: relative;
@@ -264,6 +458,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   bottom: 8px;
   display: flex;
   gap: 5px;
+  flex-wrap: wrap;
 }
 .badge-s {
   padding: 2px 8px;
@@ -274,6 +469,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   font-size: 11px;
   font-weight: 600;
 }
+.badge-dup { background: rgba(255, 149, 0, 0.85); }
 .play-overlay {
   position: absolute;
   inset: 0;
@@ -296,8 +492,37 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   padding-left: 3px;
 }
 .entry-info { padding: 10px 6px 4px; }
+.entry-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
 .entry-date { font-size: 13.5px; font-weight: 700; }
-.entry-meta { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+.entry-author {
+  font-size: 11.5px;
+  color: var(--blue);
+  font-weight: 600;
+  background: rgba(0, 113, 227, 0.1);
+  padding: 1px 8px;
+  border-radius: 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 90px;
+}
+.entry-text {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.5;
+  margin-top: 5px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 0;
+}
+.entry-meta { font-size: 11.5px; color: var(--text-2); margin-top: 4px; }
 
 /* ---------- 画廊 ---------- */
 .g-mask {

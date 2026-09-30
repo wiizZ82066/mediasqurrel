@@ -108,23 +108,38 @@ def _scan_entry(path: str) -> Optional[dict]:
     }
 
 
-def _parse_context(path: str) -> dict:
-    """解析 context.md 里的元数据字段（宽松解析）。"""
+def _parse_context(path: str) -> tuple[dict, str]:
+    """解析 context.md：返回 (元数据字段, 正文摘要)。
+
+    正文在 "## 页面文本" 的代码块里（微博）或视频标题字段（抖音）。
+    """
     meta = {}
+    body = ""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read(8192)
+            content = f.read(16384)
     except OSError:
-        return meta
+        return meta, body
+    in_code = False
     for line in content.splitlines():
-        m = re.match(r"^- \*\*(.+?)\*\*: (.*)$", line.strip())
-        if m:
-            meta[m.group(1)] = m.group(2).strip()
-    return meta
+        s = line.strip()
+        if s.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            body += line + "\n"
+        else:
+            m = re.match(r"^- \*\*(.+?)\*\*: (.*)$", s)
+            if m:
+                meta[m.group(1)] = m.group(2).strip()
+    return meta, body.strip()
 
 
 def scan_root() -> list[dict]:
-    """返回全部作者：[{name, entries: [{date_dir, ..., meta}]}]"""
+    """返回全部作者：[{name, entries: [{date_dir, ..., meta}]}]
+
+    所有路径字段均为相对 LIBRARY_ROOT 的相对路径，不泄漏本机绝对路径。
+    """
     root = config.LIBRARY_ROOT
     authors = []
     try:
@@ -146,12 +161,13 @@ def scan_root() -> list[dict]:
             info = _scan_entry(sub_path)
             if not info:
                 continue
-            meta = _parse_context(os.path.join(sub_path, "context.md"))
+            meta, body = _parse_context(os.path.join(sub_path, "context.md"))
             info.update({
                 "author": name,
                 "date_dir": sub,
                 "meta": meta,
-                "path": sub_path,
+                "text_preview": (meta.get("视频标题") or body or "")[:120],
+                "rel_dir": f"{name}/{sub}",  # 相对路径（拼接媒体 URL 用）
             })
             entries.append(info)
         if entries:

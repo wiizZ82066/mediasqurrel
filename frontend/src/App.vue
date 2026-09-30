@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { store, connectWS, refreshTasks } from './store.js'
+import { store, connectWS, refreshTasks, markNotificationsRead } from './store.js'
 
 const route = useRoute()
 const navItems = [
@@ -14,6 +14,12 @@ const navItems = [
 const activeTasks = computed(
   () => store.tasks.filter((t) => ['queued', 'running'].includes(t.status)).length,
 )
+
+const notifOpen = ref(false)
+function toggleNotif() {
+  notifOpen.value = !notifOpen.value
+  if (notifOpen.value) markNotificationsRead()
+}
 
 onMounted(() => {
   connectWS()
@@ -50,6 +56,13 @@ onMounted(() => {
         </span>
       </router-link>
 
+      <!-- 通知中心入口 -->
+      <button class="nav-item notif-btn" @click="toggleNotif">
+        <span class="icon">📬</span>
+        <span>通知</span>
+        <span v-if="store.unread > 0" class="badge">{{ store.unread > 99 ? '99+' : store.unread }}</span>
+      </button>
+
       <div class="sidebar-footer">
         <div>
           <span class="dot" :style="{ color: store.wsConnected ? 'var(--green)' : 'var(--orange)' }"></span>
@@ -70,6 +83,35 @@ onMounted(() => {
     </main>
   </div>
 
+  <!-- 通知面板 -->
+  <transition name="notif">
+    <div v-if="notifOpen" class="notif-mask" @click="toggleNotif">
+      <div class="notif-panel" @click.stop>
+        <div class="notif-head">
+          <span class="notif-title">通知中心</span>
+          <button class="btn btn-ghost btn-sm" @click="toggleNotif">关闭</button>
+        </div>
+        <div class="notif-list">
+          <div v-if="!store.notifications.length" class="notif-empty">
+            🌙 暂无通知<br/><span>订阅扫描和下载动态会在这里提醒</span>
+          </div>
+          <div
+            v-for="(n, i) in store.notifications"
+            :key="i"
+            class="notif-item"
+            :class="'notif-' + (n.level || 'info')"
+          >
+            <div class="notif-item-head">
+              <span class="notif-item-title">{{ n.title }}</span>
+              <span class="notif-item-time">{{ n.time }}</span>
+            </div>
+            <div class="notif-item-text">{{ n.text }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </transition>
+
   <!-- Toast 通知 -->
   <transition-group name="toast" tag="div" class="toast-wrap">
     <div
@@ -84,6 +126,77 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.notif-btn { font-family: var(--font); }
+
+.notif-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 600;
+  background: rgba(10, 10, 12, 0.25);
+}
+.notif-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: min(380px, 92vw);
+  height: 100%;
+  background: rgba(250, 250, 252, 0.92);
+  backdrop-filter: blur(28px) saturate(180%);
+  border-left: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: -18px 0 60px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+}
+.notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+.notif-title { font-size: 17px; font-weight: 700; }
+.notif-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.notif-empty {
+  text-align: center;
+  color: var(--text-2);
+  padding: 60px 10px;
+  font-size: 15px;
+  line-height: 2;
+}
+.notif-empty span { font-size: 12.5px; }
+.notif-item {
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 14px;
+  padding: 12px 14px;
+  animation: fadeUp 300ms var(--ease) both;
+}
+.notif-item.notif-success { border-left: 3px solid var(--green); }
+.notif-item.notif-error { border-left: 3px solid var(--red); }
+.notif-item.notif-info { border-left: 3px solid var(--blue); }
+.notif-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+.notif-item-title { font-size: 13.5px; font-weight: 700; }
+.notif-item-time { font-size: 11.5px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.notif-item-text { font-size: 12.5px; color: var(--text-2); line-height: 1.55; word-break: break-all; }
+
+.notif-enter-active { transition: all 320ms cubic-bezier(0.4, 0, 0.2, 1); }
+.notif-leave-active { transition: all 200ms ease-in; }
+.notif-enter-from, .notif-leave-to { opacity: 0; }
+.notif-enter-from .notif-panel, .notif-leave-to .notif-panel { transform: translateX(80px); }
+.notif-panel { transition: transform 320ms cubic-bezier(0.4, 0, 0.2, 1); }
+
 .toast-wrap {
   position: fixed;
   top: 22px;
