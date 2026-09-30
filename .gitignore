@@ -1,0 +1,21 @@
+# 浏览器 profile / 缓存（scrapling real_chrome 等）
+.ab-profile/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 日志与临时文件
+*.log
+*.tmp
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store
