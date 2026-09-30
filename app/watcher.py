@@ -107,6 +107,16 @@ def has_seen(platform: str, blogger_id: str, item_id: str) -> bool:
     return row is not None
 
 
+def _has_any_seen(platform: str, blogger_id: str) -> bool:
+    """该订阅是否已有任何已见记录（用于区分首次扫描）。"""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM seen_items WHERE platform=? AND blogger_id=? LIMIT 1",
+            (platform, blogger_id),
+        ).fetchone()
+    return row is not None
+
+
 def mark_seen(platform: str, blogger_id: str, item_id: str):
     with _connect() as conn:
         conn.execute(
@@ -145,10 +155,16 @@ async def scan_sub(sub: dict) -> dict:
             items = scanner(sub)
             if asyncio.iscoroutine(items):
                 items = await items
+            first_scan = not _has_any_seen(platform, sub["blogger_id"])
             for it in items:
-                if not has_seen(platform, sub["blogger_id"], it["item_id"]):
-                    mark_seen(platform, sub["blogger_id"], it["item_id"])
-                    result["new_items"].append(it)
+                if has_seen(platform, sub["blogger_id"], it["item_id"]):
+                    continue
+                mark_seen(platform, sub["blogger_id"], it["item_id"])
+                if first_scan:
+                    continue  # 首次扫描仅对齐基线，不把历史内容全部入队
+                result["new_items"].append(it)
+            if first_scan:
+                result["baseline"] = len(items)
         except Exception as e:
             result["error"] = str(e)
 

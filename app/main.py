@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, media_library, script_registry, task_manager, watcher
+from . import scanners  # noqa: F401  (import 即注册各平台扫描器)
 
 app = FastAPI(title="Media Squirrel", docs_url=None, redoc_url=None)
 
