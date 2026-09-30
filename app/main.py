@@ -283,7 +283,7 @@ async def api_scan_sub(sub_id: int):
 app.mount("/media", StaticFiles(directory=config.LIBRARY_ROOT), name="media")
 
 # 前端构建产物（存在才挂载）
-_DIST = os.path.join(config.BASE_DIR, "frontend", "dist")
+_DIST = config.FRONTEND_DIST
 if os.path.isdir(_DIST):
     app.mount("/assets", StaticFiles(directory=os.path.join(_DIST, "assets")), name="assets")
 

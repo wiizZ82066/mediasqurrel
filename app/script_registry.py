@@ -13,6 +13,17 @@ from typing import Optional
 from . import config
 
 
+def _launcher_argv() -> list[str]:
+    """子进程启动命令前缀。
+
+    - 源码运行: [python, -u]
+    - PyInstaller frozen: [自身exe, --internal-run]（run.py 内用 runpy 执行脚本）
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--internal-run"]
+    return [sys.executable, "-u"]
+
+
 def _load_all() -> dict:
     manifests = {}
     if not os.path.isdir(config.MANIFEST_DIR):
@@ -27,7 +38,7 @@ def _load_all() -> dict:
             # 校验必备字段
             if not (m.get("id") and m.get("script")):
                 continue
-            m["_script_path"] = os.path.join(config.BASE_DIR, m["script"])
+            m["_script_path"] = os.path.join(config.RESOURCE_DIR, m["script"])
             m["_available"] = os.path.isfile(m["_script_path"])
             manifests[m["id"]] = m
         except Exception as e:
@@ -71,7 +82,7 @@ def build_command(script_id: str, params: dict) -> list[str]:
     if not m["_available"]:
         raise ValueError(f"脚本文件不存在: {m['script']}")
 
-    argv = [sys.executable, "-u", m["_script_path"]]
+    argv = _launcher_argv() + [m["_script_path"]]
     for p in m.get("params", []):
         name = p["name"]
         if name not in params:

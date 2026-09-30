@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+playwright>=1.44
+scrapling>=0.2
+opencv-python>=4.9
+requests>=2.31
+pystray>=0.19
+Pillow>=10.0
+websockets>=12.0

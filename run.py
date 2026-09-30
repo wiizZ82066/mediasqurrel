@@ -9,8 +9,32 @@
 import argparse
 import os
 import socket
+import sys
 import threading
 import webbrowser
+
+
+def _handle_internal_run() -> bool:
+    """PyInstaller frozen 模式的子进程路由。
+
+    打包后 sys.executable 指向自身 exe，无法 `python xxx.py`。
+    task_manager 会以 `<exe> --internal-run <script> [args...]` 启动下载脚本，
+    这里用 runpy 在同一 bundle 环境内执行脚本源文件。
+    """
+    if "--internal-run" not in sys.argv:
+        return False
+    idx = sys.argv.index("--internal-run")
+    if idx + 1 >= len(sys.argv):
+        print("用法: <exe> --internal-run <script.py> [args...]")
+        sys.exit(1)
+    script = os.path.abspath(sys.argv[idx + 1])
+    sys.argv = [script] + sys.argv[idx + 2:]
+    import runpy
+    runpy.run_path(script, run_name="__main__")
+    sys.exit(0)
+
+
+_handle_internal_run()
 
 import uvicorn
 

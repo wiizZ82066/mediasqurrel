@@ -12,17 +12,25 @@
 
 # ---------- 放行区 ----------
 !/.gitignore
+!/.gitattributes
 !/DESIGN.md
 !/README.md
+!/requirements.txt
 !/weibo_downloader.py
 !/douyin_downloader.py
 !/run.py
+!/build_backend.ps1
+!/make_icon.py
+!/package.json
+!/package-lock.json
 !/app/
 !/app/**
 !/scripts_manifest/
 !/scripts_manifest/**
 !/frontend/
 !/frontend/**
+!/src-tauri/
+!/src-tauri/**
 # ---------- 放行区结束 ----------
 
 # 放行目录内部的常规排除
@@ -35,3 +43,12 @@ __pycache__/
 .venv/
 *.log
 .agent-browser/
+
+# Tauri / PyInstaller 构建产物
+src-tauri/target/
+backend-dist/
+build/
+dist/
+portable/
+*.spec
+node_modules/
