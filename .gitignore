@@ -1,21 +1,37 @@
-# 浏览器 profile / 缓存（scrapling real_chrome 等）
-.ab-profile/
+# ============================================================
+# 白名单模式：默认忽略根目录所有内容，仅放行代码与文档。
+# 原因：本目录同时存放个人媒体存档（<作者>/<日期>/视频、图片），
+# 绝不能进入 git（将来公开到 GitHub）。
+#
+# 新增顶层脚本(.py)时：在下方【放行区】加一行 "!/脚本名.py"
+# 新增代码目录时：加 "!/目录名/" 和 "!/目录名/**"
+# ============================================================
 
-# Python
+# 忽略一切
+/*
+
+# ---------- 放行区 ----------
+!/.gitignore
+!/DESIGN.md
+!/README.md
+!/weibo_downloader.py
+!/douyin_downloader.py
+!/run.py
+!/app/
+!/app/**
+!/scripts_manifest/
+!/scripts_manifest/**
+!/frontend/
+!/frontend/**
+# ---------- 放行区结束 ----------
+
+# 放行目录内部的常规排除
+frontend/node_modules/
+frontend/dist/
+app_data/
+.npm-cache/
 __pycache__/
 *.py[cod]
-*.egg-info/
 .venv/
-venv/
-
-# 日志与临时文件
 *.log
-*.tmp
-
-# IDE
-.idea/
-.vscode/
-
-# OS
-Thumbs.db
-.DS_Store
+.agent-browser/

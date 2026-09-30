@@ -1,0 +1,37 @@
+{
+  "id": "weibo",
+  "name": "微博下载器",
+  "icon": "🌐",
+  "script": "weibo_downloader.py",
+  "description": "输入微博帖子链接，下载正文、原图与 Live 图",
+  "params": [
+    {
+      "name": "url",
+      "label": "微博帖子链接",
+      "kind": "text",
+      "required": true,
+      "flag": "-url",
+      "placeholder": "https://weibo.com/1234567890/AbCdEfGh",
+      "help": "单条微博帖子链接"
+    },
+    {
+      "name": "out",
+      "label": "输出目录",
+      "kind": "text",
+      "flag": "--out",
+      "required": false,
+      "placeholder": "不填则使用默认输出根目录",
+      "help": "内容保存位置：输出目录/作者名/发布日期/"
+    },
+    {
+      "name": "headed",
+      "label": "显示浏览器窗口（调试用）",
+      "kind": "switch",
+      "flag": "--headed",
+      "required": false,
+      "default": false,
+      "help": "勾选后播放浏览器窗口，便于观察反爬拦截"
+    }
+  ],
+  "link_hints": ["weibo.com", "weibo.cn"]
+}

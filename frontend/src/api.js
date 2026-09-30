@@ -1,0 +1,35 @@
+// API 封装：REST + WebSocket
+const base = ''
+
+async function req(path, options = {}) {
+  const res = await fetch(base + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  })
+  if (!res.ok) {
+    let detail = res.statusText
+    try {
+      const j = await res.json()
+      detail = j.detail || detail
+    } catch { /* ignore */ }
+    throw new Error(detail)
+  }
+  return res.json()
+}
+
+export const api = {
+  scripts: () => req('/api/scripts'),
+  createTask: (scriptId, params) =>
+    req('/api/tasks', {
+      method: 'POST',
+      body: JSON.stringify({ script_id: scriptId, params }),
+    }),
+  tasks: () => req('/api/tasks'),
+  cancelTask: (id) => req(`/api/tasks/${id}/cancel`, { method: 'POST' }),
+  library: () => req('/api/library'),
+  subs: () => req('/api/subs'),
+  addSub: (body) => req('/api/subs', { method: 'POST', body: JSON.stringify(body) }),
+  updateSub: (id, body) => req(`/api/subs/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  removeSub: (id) => req(`/api/subs/${id}`, { method: 'DELETE' }),
+  scanSub: (id) => req(`/api/subs/${id}/scan`, { method: 'POST' }),
+}
