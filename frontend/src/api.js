@@ -31,6 +31,9 @@ export const api = {
   preview: (dir) => req(`/api/preview?dir=${encodeURIComponent(dir)}`),
   search: (q) => req(`/api/search?q=${encodeURIComponent(q)}`),
   subs: () => req('/api/subs'),
+  localAuthors: () => req('/api/subs/local-authors'),
+  searchBlogger: (platform, q) =>
+    req(`/api/subs/search?platform=${platform}&q=${encodeURIComponent(q)}`),
   addSub: (body) => req('/api/subs', { method: 'POST', body: JSON.stringify(body) }),
   updateSub: (id, body) => req(`/api/subs/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   removeSub: (id) => req(`/api/subs/${id}`, { method: 'DELETE' }),

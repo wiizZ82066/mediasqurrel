@@ -237,6 +237,28 @@ def api_list_subs():
     return watcher.list_subs()
 
 
+@app.get("/api/subs/local-authors")
+def api_local_authors():
+    """本地存档作者（含可订阅的平台身份）。"""
+    from . import sub_search
+    return sub_search.local_authors()
+
+
+@app.get("/api/subs/search")
+async def api_search_blogger(platform: str, q: str):
+    """线上博主搜索：按粉丝数降序前 5。"""
+    from . import sub_search
+
+    kw = (q or "").strip()
+    if not kw or platform not in ("weibo", "douyin"):
+        return {"results": []}
+    try:
+        results = await sub_search.search_online_async(platform, kw)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"搜索失败: {e}")
+    return {"results": results}
+
+
 @app.post("/api/subs")
 def api_add_sub(body: dict):
     platform = (body.get("platform") or "").strip()

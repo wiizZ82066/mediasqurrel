@@ -107,6 +107,27 @@ async function submit() {
   }
 }
 
+// 跟踪任务：下载成功后自动清空主输入框
+watch(
+  () => store.tasks.find((t) => t.id === trackedTaskId.value)?.status,
+  (status) => {
+    if (status === 'success' && trackedTaskId.value) {
+      const mainParam = selected.value?.params.find(
+        (p) => p.name === 'input' || p.name === 'url',
+      )
+      if (mainParam && form.value[mainParam.name]) {
+        form.value[mainParam.name] = ''
+        toast('🧹 下载完成，已清空输入框', 'info')
+      }
+    }
+  },
+)
+
+// 清空指定输入框
+function clearField(name) {
+  form.value[name] = ''
+}
+
 // 跟踪任务输出目录 + 轮询内容
 async function pollPreview() {
   // 优先：用户手动选择/输入的输出目录，立即预览其内容
@@ -221,29 +242,51 @@ function carouselPrev() {
 
           <!-- 目录参数：输入框 + 浏览按钮 -->
           <div v-if="p.label.includes('目录')" class="dir-row">
+            <div class="input-wrap">
+              <input
+                class="input"
+                v-model="form[p.name]"
+                :placeholder="p.placeholder"
+                @paste="onPasteInput($event, p.name)"
+              />
+              <button
+                v-if="form[p.name]"
+                class="clear-btn"
+                title="清空"
+                @click="clearField(p.name)"
+              >✕</button>
+            </div>
+            <button class="btn btn-ghost dir-btn" @click="openBrowser(p.name)">📂 浏览</button>
+          </div>
+
+          <div v-else-if="p.kind === 'textarea'" class="input-wrap textarea-wrap">
+            <textarea
+              class="textarea"
+              v-model="form[p.name]"
+              :placeholder="p.placeholder"
+              @paste="onPasteInput($event, p.name)"
+            ></textarea>
+            <button
+              v-if="form[p.name]"
+              class="clear-btn ta-clear"
+              title="清空"
+              @click="clearField(p.name)"
+            >✕ 清空</button>
+          </div>
+          <div v-else class="input-wrap">
             <input
               class="input"
               v-model="form[p.name]"
               :placeholder="p.placeholder"
               @paste="onPasteInput($event, p.name)"
             />
-            <button class="btn btn-ghost dir-btn" @click="openBrowser(p.name)">📂 浏览</button>
+            <button
+              v-if="form[p.name]"
+              class="clear-btn"
+              title="清空"
+              @click="clearField(p.name)"
+            >✕</button>
           </div>
-
-          <textarea
-            v-else-if="p.kind === 'textarea'"
-            class="textarea"
-            v-model="form[p.name]"
-            :placeholder="p.placeholder"
-            @paste="onPasteInput($event, p.name)"
-          ></textarea>
-          <input
-            v-else
-            class="input"
-            v-model="form[p.name]"
-            :placeholder="p.placeholder"
-            @paste="onPasteInput($event, p.name)"
-          />
           <div v-if="p.help" class="hint">{{ p.help }}</div>
         </div>
       </template>
@@ -346,8 +389,40 @@ function carouselPrev() {
 
 /* ---------- 目录选择 ---------- */
 .dir-row { display: flex; gap: 10px; }
-.dir-row .input { flex: 1; }
+.dir-row .input-wrap { flex: 1; }
 .dir-btn { flex-shrink: 0; }
+
+/* 输入框清空按钮 */
+.input-wrap { position: relative; }
+.clear-btn {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text-2);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 150ms, color 150ms;
+}
+.clear-btn:hover { background: rgba(0, 0, 0, 0.18); color: var(--text); }
+.ta-clear {
+  width: auto;
+  padding: 0 10px;
+  border-radius: 11px;
+  font-size: 12px;
+  top: 12px;
+  transform: none;
+}
+.textarea-wrap .textarea { padding-right: 84px; }
 
 .browse-mask {
   position: fixed;
