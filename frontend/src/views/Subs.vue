@@ -266,28 +266,32 @@ const platformName = { douyin: '抖音', weibo: '微博' }
                 </div>
                 <!-- 抖音登录/验证引导 -->
                 <div v-if="needCaptcha" class="captcha-box">
-                  <div class="captcha-title">
-                    {{ dyAuth.logged_in ? '🔐 抖音需要人机验证' : '🔐 抖音需要验证并登录' }}
-                    <span v-if="dyAuth.logged_in" class="auth-ok">（已登录）</span>
-                  </div>
-                  <div class="captcha-desc">
-                    点击按钮会打开浏览器窗口：
-                    <template v-if="!dyAuth.logged_in">
+                  <!-- 已登录：搜索仍受限属平台防护，给说明不再引导验证 -->
+                  <template v-if="dyAuth.logged_in">
+                    <div class="captcha-title">🛡️ 抖音搜索暂不可用</div>
+                    <div class="captcha-desc">
+                      已检测到登录态（扫描/下载正常增强中），但抖音对「搜索」有独立的
+                      设备级防护，登录也无法绕过。请从上方「本地已有博主」选择，
+                      或粘贴博主主页链接中的 sec_uid。
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="captcha-title">🔐 抖音需要验证并登录</div>
+                    <div class="captcha-desc">
+                      点击按钮会打开浏览器窗口：
                       ① 如出现滑块请拖动完成；② 点击页面右上角「登录」扫码登录。
-                      登录后搜索/订阅/下载将获得完整体验，
-                    </template>
-                    <template v-else>完成滑块验证即可，</template>
-                    登录状态仅保存在本机（app_data/），不会上传。
-                  </div>
-                  <button
-                    class="btn btn-primary btn-sm captcha-btn"
-                    :disabled="verifying"
-                    @mousedown.prevent
-                    @click="verifyDouyin"
-                  >
-                    {{ verifying ? '已打开窗口，等待完成…（最长3分钟）'
-                       : (dyAuth.logged_in ? '🔓 打开验证窗口' : '🔑 打开并登录抖音') }}
-                  </button>
+                      登录可增强订阅扫描与下载的稳定性，登录状态仅保存在本机。
+                      <b>注：线上搜索受平台设备级防护，登录后可能仍不可用。</b>
+                    </div>
+                    <button
+                      class="btn btn-primary btn-sm captcha-btn"
+                      :disabled="verifying"
+                      @mousedown.prevent
+                      @click="verifyDouyin"
+                    >
+                      {{ verifying ? '已打开窗口，等待完成…（最长3分钟）' : '🔑 打开并登录抖音' }}
+                    </button>
+                  </template>
                 </div>
                 <button
                   v-for="u in onlineResults"
