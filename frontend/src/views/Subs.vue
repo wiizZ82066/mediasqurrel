@@ -29,16 +29,61 @@ let searchSeq = 0                 // 过期响应丢弃
 const keyword = computed(() => form.nickname.trim())
 const kwLower = computed(() => keyword.value.toLowerCase())
 
-// 本地匹配（即时，按当前平台过滤：抖音只显示有抖音身份的，微博只显示微博的）
+// 相关度评分: 精确匹配 > 前缀匹配 > 包含；同级粉丝数降序
+function relevance(nickname) {
+  const n = (nickname || '').toLowerCase()
+  if (n === kwLower.value) return 3
+  if (n.startsWith(kwLower.value)) return 2
+  if (n.includes(kwLower.value)) return 1
+  return 0
+}
+
+// 本地匹配（即时，按当前平台过滤，相关度+条目数排序）
 const localMatches = computed(() => {
   const filtered = localAuthors.value.filter(
     (a) => (a.platforms || {})[form.platform],
   )
-  if (!kwLower.value) return filtered.slice(0, 6)
-  return filtered
-    .filter((a) => a.name.toLowerCase().includes(kwLower.value))
-    .slice(0, 6)
+  const scored = filtered
+    .map((a) => ({ a, rel: relevance(a.name) }))
+    .filter((x) => !kwLower.value || x.rel > 0)
+    .sort((x, y) => y.rel - x.rel || y.a.entries - x.a.entries)
+  return scored.slice(0, 6).map((x) => ({ ...x.a, _rel: x.rel }))
 })
+
+// 线上结果相关度重排（服务端已按粉丝数，这里精确匹配优先置顶）
+const rankedOnline = computed(() => {
+  const list = [...onlineResults.value]
+  list.sort((a, b) => relevance(b.nickname) - relevance(a.nickname) || (b.followers || 0) - (a.followers || 0))
+  return list
+})
+
+// 扁平化选项列表（本地 + 线上），用于键盘导航
+const flatOptions = computed(() => [
+  ...localMatches.value.map((a) => ({ kind: 'local', data: a })),
+  ...rankedOnline.value.map((u) => ({ kind: 'online', data: u })),
+])
+const activeIdx = ref(-1)
+
+function pickOption(opt) {
+  if (opt.kind === 'local') pickLocal(opt.data)
+  else pickOnline(opt.data)
+  activeIdx.value = -1
+}
+
+function onSearchKeydown(evt) {
+  if (!searchOpen.value || !flatOptions.value.length) return
+  if (evt.key === 'ArrowDown' || evt.key === 'ArrowUp') {
+    evt.preventDefault()
+    const dir = evt.key === 'ArrowDown' ? 1 : -1
+    activeIdx.value = (activeIdx.value + dir + flatOptions.value.length) % flatOptions.value.length
+  } else if (evt.key === 'Enter') {
+    evt.preventDefault()
+    const opt = flatOptions.value[activeIdx.value] || flatOptions.value[0]
+    if (opt) pickOption(opt)
+  } else if (evt.key === 'Escape') {
+    searchOpen.value = false
+  }
+}
 
 async function refresh() {
   try {
@@ -58,17 +103,18 @@ onMounted(async () => {
   } catch { /* 静默 */ }
 })
 
-// 昵称输入 -> 防抖 800ms 触发线上搜索
+// 昵称输入 -> 防抖 400ms 触发线上搜索（本地匹配即时不受影响）
 watch(keyword, (kw) => {
   onlineResults.value = []
   needCaptcha.value = false
+  activeIdx.value = -1
   clearTimeout(debounceTimer)
   if (!kw) {
     searchOpen.value = false
     return
   }
   searchOpen.value = true
-  debounceTimer = setTimeout(runOnlineSearch, 800)
+  debounceTimer = setTimeout(runOnlineSearch, 400)
 })
 
 async function runOnlineSearch() {
@@ -241,9 +287,10 @@ const platformName = { douyin: '抖音', weibo: '微博' }
             <input
               class="input"
               v-model="form.nickname"
-              placeholder="输入博主昵称…"
+              placeholder="输入博主昵称，↑↓选择，回车订阅…"
               @focus="searchOpen = true"
               @blur="closeDropdown"
+              @keydown="onSearchKeydown"
             />
             <span v-if="searching" class="search-spin loading-breathe">⏳</span>
             <transition name="fade">
@@ -252,13 +299,18 @@ const platformName = { douyin: '抖音', weibo: '微博' }
                 <template v-if="localMatches.length">
                   <div class="drop-sec">📁 本地已有博主</div>
                   <button
-                    v-for="a in localMatches"
+                    v-for="(a, ai) in localMatches"
                     :key="a.name"
                     class="drop-item"
+                    :class="{ active: activeIdx === ai }"
+                    @mouseenter="activeIdx = ai"
                     @mousedown.prevent="pickLocal(a)"
                   >
                     <span class="drop-avatar">{{ a.name.slice(0, 1) }}</span>
-                    <span class="drop-name">{{ a.name }}</span>
+                    <span class="drop-name">
+                      {{ a.name }}
+                      <span v-if="a._rel >= 3" class="best-badge">最佳匹配</span>
+                    </span>
                     <span class="drop-meta">
                       <span v-if="a.platforms.weibo" class="mini-tag">微博</span>
                       <span v-if="a.platforms.douyin" class="mini-tag">抖音</span>
@@ -269,7 +321,7 @@ const platformName = { douyin: '抖音', weibo: '微博' }
 
                 <!-- 线上搜索 -->
                 <div class="drop-sec">
-                  🌐 线上搜索{{ searching ? '中…' : `（${platformName[form.platform]}，按粉丝数）` }}
+                  🌐 线上搜索{{ searching ? '中…' : `（${platformName[form.platform]}，最匹配优先）` }}
                 </div>
                 <div v-if="searching && !onlineResults.length && !needCaptcha" class="drop-loading loading-breathe">
                   正在搜索{{ form.platform === 'douyin' && dyAuth.logged_in ? '（若弹出浏览器窗口，请拖动滑块完成验证）' : '，约需数秒…' }}
@@ -293,9 +345,11 @@ const platformName = { douyin: '抖音', weibo: '微博' }
                   </button>
                 </div>
                 <button
-                  v-for="u in onlineResults"
+                  v-for="(u, ui) in rankedOnline"
                   :key="u.blogger_id"
                   class="drop-item"
+                  :class="{ active: activeIdx === localMatches.length + ui }"
+                  @mouseenter="activeIdx = localMatches.length + ui"
                   @mousedown.prevent="pickOnline(u)"
                 >
                   <img v-if="u.avatar" class="drop-avatar img" :src="u.avatar" referrerpolicy="no-referrer" alt="" />
@@ -303,6 +357,7 @@ const platformName = { douyin: '抖音', weibo: '微博' }
                   <span class="drop-name">
                     {{ u.nickname }}
                     <span v-if="u.verified" class="v-badge" title="认证">✓</span>
+                    <span v-if="relevance(u.nickname) >= 3" class="best-badge">最佳匹配</span>
                   </span>
                   <span class="drop-meta">{{ u.followers_text || '粉丝数未知' }}</span>
                 </button>
@@ -452,6 +507,16 @@ const platformName = { douyin: '抖音', weibo: '微博' }
   transition: background 120ms;
 }
 .drop-item:hover { background: rgba(0, 0, 0, 0.05); }
+.drop-item.active { background: rgba(0, 113, 227, 0.09); }
+.best-badge {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: rgba(52, 199, 89, 0.15);
+  color: #248a3d;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
 .drop-avatar {
   width: 30px;
   height: 30px;

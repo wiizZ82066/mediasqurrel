@@ -225,6 +225,17 @@ def main() -> None:
         print("全部直链失败:", last_err)
         sys.exit(1)
 
+    # 下载官方封面（origin_cover 优先，比抽帧质量高；供媒体库卡片使用）
+    cover_urls = ((video.get("origin_cover") or video.get("cover") or {})
+                  .get("url_list") or [])
+    if cover_urls:
+        cover_path = os.path.join(out_dir, aweme_id + "_cover.jpg")
+        try:
+            download(cover_urls[0], cover_path)
+            print("官方封面已保存:", cover_path)
+        except Exception as e:  # noqa: BLE001
+            print("封面下载失败(不影响视频):", e)
+
     context = (
         "# 抖音内容\n\n"
         f"- **作者**: {nickname}\n"
@@ -234,6 +245,7 @@ def main() -> None:
         f"- **发布时间**: {pub_time}\n"
         f"- **视频标题**: {title_field}\n"
         f"- **视频文件**: {aweme_id}.mp4\n"
+        + (f"- **封面文件**: {aweme_id}_cover.jpg\n" if cover_urls else "")
     )
     ctx_path = os.path.join(out_dir, "context.md")
     with open(ctx_path, "w", encoding="utf-8") as f:

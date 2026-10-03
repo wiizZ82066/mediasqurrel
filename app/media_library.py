@@ -35,6 +35,7 @@ def _is_date_dir(name: str) -> bool:
 def _scan_entry(path: str) -> Optional[dict]:
     """扫描一个日期目录，返回条目信息；空目录返回 None。"""
     normal_photos, live_movs, live_covers, videos = [], [], [], []
+    official_covers = []  # 抖音官方封面（{aweme_id}_cover.jpg）
     total_size = 0
     try:
         entries = os.listdir(path)
@@ -67,7 +68,11 @@ def _scan_entry(path: str) -> Optional[dict]:
             videos.append(name)
             total_size += os.path.getsize(full)
         elif ext in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-            normal_photos.append(name)
+            if name.endswith("_cover.jpg"):
+                # 抖音官方封面（{aweme_id}_cover.jpg）：作为对应视频的封面
+                official_covers.append(name)
+            else:
+                normal_photos.append(name)
             total_size += os.path.getsize(full)
 
     if not (normal_photos or live_movs or videos):
@@ -82,6 +87,14 @@ def _scan_entry(path: str) -> Optional[dict]:
         if match:
             live_poster[mov] = match
 
+    # 官方封面与视频配对（{aweme_id}_cover.jpg <-> {aweme_id}.mp4）
+    video_cover = {}
+    for v in videos:
+        stem = v.rsplit(".", 1)[0]
+        match = next((c for c in official_covers if c.rsplit(".", 1)[0] == stem + "_cover"), None)
+        if match:
+            video_cover[v] = match
+
     cover = None
     cover_type = None
     if normal_photos:
@@ -91,7 +104,8 @@ def _scan_entry(path: str) -> Optional[dict]:
         cover = live_covers[0]
         cover_type = "live"          # Live 图封面：前端显示 LIVE 角标
     elif videos:
-        cover = videos[0]
+        # 官方封面优先（抖音 origin_cover），否则视频首帧（前端 /api/thumb 抽帧）
+        cover = video_cover.get(videos[0]) or videos[0]
         cover_type = "video"
     elif live_movs:
         cover = live_poster.get(live_movs[0]) or live_movs[0]
@@ -109,7 +123,14 @@ def _scan_entry(path: str) -> Optional[dict]:
             }
             for m in live_movs
         ]
-        + [{"type": "video", "rel": v} for v in videos]
+        + [
+            {
+                "type": "video",
+                "rel": v,
+                **({"poster": video_cover[v]} if v in video_cover else {}),
+            }
+            for v in videos
+        ]
     )
 
     return {

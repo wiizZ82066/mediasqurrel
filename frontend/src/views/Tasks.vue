@@ -1,11 +1,17 @@
 <script setup>
-// 任务页：队列状态 + 实时日志
+// 任务页：队列状态 + 实时日志 + 完成后预览/跳媒体库
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '../api.js'
 import { store, refreshTasks, toast } from '../store.js'
 
+const router = useRouter()
 const expanded = ref({})
 const termRefs = ref({})
+
+// 预览弹层
+const preview = ref(null) // { dir, images, videos }
+const previewLoading = ref(false)
 
 const tasks = computed(() => store.tasks)
 const statusText = {
@@ -39,6 +45,39 @@ async function cancel(task) {
   } catch (e) {
     toast(e.message, 'error')
   }
+}
+
+// 预览任务输出内容
+async function openPreview(task) {
+  previewLoading.value = true
+  try {
+    const r = await api.preview(task.output_rel)
+    preview.value = { dir: task.output_rel, ...r }
+  } catch (e) {
+    toast('预览失败: ' + e.message, 'error')
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+// 跳转媒体库对应位置（作者/日期来自输出目录相对路径）
+function gotoLibrary(task) {
+  const parts = (task.output_rel || '').split('/').filter(Boolean)
+  if (parts.length < 2) {
+    toast('无法解析输出目录', 'error')
+    return
+  }
+  router.push({
+    path: '/library',
+    query: { author: decodeURIComponent(parts[0]), entry: parts[1] },
+  })
+}
+
+const mediaUrl = (rel) => '/media/' + rel.split('/').map(encodeURIComponent).join('/')
+const thumbUrl = (rel) => '/api/thumb?p=' + encodeURIComponent(rel)
+
+function openImg(rel) {
+  window.open(mediaUrl(rel), '_blank')
 }
 
 defineExpose({ ensureExpanded })
@@ -89,6 +128,17 @@ defineExpose({ ensureExpanded })
       <div class="task-actions" v-if="['queued', 'running'].includes(t.status)">
         <button class="btn btn-danger-ghost btn-sm" @click.stop="cancel(t)">取消任务</button>
       </div>
+      <div class="task-actions" v-else-if="t.status === 'success' && t.output_rel">
+        <span class="task-outdir" :title="t.output_dir">📁 {{ t.output_rel }}</span>
+        <button class="btn btn-ghost btn-sm" @click.stop="openPreview(t)" :disabled="previewLoading">
+          {{ previewLoading ? '加载中…' : '👀 预览' }}
+        </button>
+        <router-link
+          class="btn btn-ghost btn-sm"
+          :to="{ path: '/library', query: { author: t.output_rel.split('/')[0], entry: t.output_rel.split('/')[1] } }"
+          @click.stop
+        >🖼️ 媒体库</router-link>
+      </div>
       <div class="task-actions" v-else-if="t.status === 'success' && t.output_dir">
         <span class="task-outdir" :title="t.output_dir">📁 {{ t.output_dir }}</span>
       </div>
@@ -103,6 +153,46 @@ defineExpose({ ensureExpanded })
       </transition>
     </div>
   </div>
+
+  <!-- 输出预览弹层 -->
+  <transition name="fade">
+    <div v-if="preview" class="pv-mask" @click="preview = null">
+      <div class="pv-panel" @click.stop>
+        <div class="pv-head">
+          <span class="pv-title">👀 任务输出预览</span>
+          <span class="pv-dir">{{ preview.dir }}</span>
+          <button class="btn btn-ghost btn-sm" @click="preview = null">关闭 ✕</button>
+        </div>
+        <div v-if="!preview.images.length && !preview.videos.length" class="pv-empty">
+          该目录暂无媒体文件
+        </div>
+        <div v-if="preview.images.length" class="pv-grid">
+          <img
+            v-for="img in preview.images.slice(0, 24)"
+            :key="img"
+            :src="thumbUrl(img)"
+            loading="lazy"
+            @click="openImg(img)"
+          />
+          <div v-if="preview.images.length > 24" class="pv-more">
+            +{{ preview.images.length - 24 }} 张
+          </div>
+        </div>
+        <div v-if="preview.videos.length" class="pv-videos">
+          <video
+            v-for="v in preview.videos.slice(0, 4)"
+            :key="v"
+            :src="mediaUrl(v)"
+            controls
+            preload="metadata"
+          ></video>
+          <div v-if="preview.videos.length > 4" class="pv-more">
+            +{{ preview.videos.length - 4 }} 个视频
+          </div>
+        </div>
+      </div>
+    </div>
+  </transition>
   </div>
 </template>
 
@@ -136,12 +226,73 @@ defineExpose({ ensureExpanded })
   line-height: 1;
 }
 .chevron.open { transform: rotate(90deg); }
-.task-actions { margin-top: 12px; padding-left: 38px; }
+.task-actions { margin-top: 12px; padding-left: 38px; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.task-actions .btn { text-decoration: none; }
 .task-outdir {
   font-size: 12.5px;
   color: var(--text-2);
   font-family: Consolas, monospace;
   word-break: break-all;
+}
+
+/* 预览弹层 */
+.pv-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: rgba(10, 10, 12, 0.55);
+  backdrop-filter: blur(14px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pv-panel {
+  width: min(92vw, 980px);
+  max-height: 86vh;
+  overflow-y: auto;
+  background: rgba(252, 252, 253, 0.97);
+  border-radius: 20px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.3);
+  padding: 20px 22px;
+}
+.pv-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.pv-title { font-size: 16px; font-weight: 700; }
+.pv-dir {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-2);
+  font-family: Consolas, monospace;
+  word-break: break-all;
+}
+.pv-empty { text-align: center; color: var(--text-2); padding: 40px; }
+.pv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.pv-grid img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 10px;
+  cursor: zoom-in;
+  transition: transform 200ms var(--ease);
+}
+.pv-grid img:hover { transform: scale(1.03); }
+.pv-videos { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.pv-videos video { width: 100%; border-radius: 12px; background: #000; }
+.pv-more {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-2);
+  padding: 8px;
 }
 .terminal { margin-top: 14px; }
 
