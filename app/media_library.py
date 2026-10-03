@@ -71,7 +71,7 @@ def _get_face_detector():
                 model = os.path.join(base, "app_data", "models", "face_detection_yunet.onnx")
                 if os.path.isfile(model):
                     _FACE_DETECTOR = cv2.FaceDetectorYN.create(
-                        model, "", (320, 320), score_threshold=0.55,
+                        model, "", (320, 320), score_threshold=0.45,
                     )
                     break
             else:
@@ -159,10 +159,12 @@ def _pick_best_cover(base_path: str, candidates: list[tuple[str, str]]) -> tuple
             if detector is not None:
                 face_ratio, face_center = _detect_face(small, detector)
 
+            # 人物优先：含脸图 0.3 基础分 + 占比/清晰度加成（≥0.3）；
+            # 无脸图上限 0.6（0.6 系数），任何像样的含脸图都能胜出
             if face_ratio > 0:
-                score = min(face_ratio * 4, 1.0) * 0.4 + sharp_s * 0.4 + mp_s * 0.2
+                score = 0.3 + min(face_ratio * 4, 1.0) * 0.35 + sharp_s * 0.25 + mp_s * 0.1
             else:
-                score = (sharp_s * 0.6 + mp_s * 0.4) * 0.85
+                score = (sharp_s * 0.6 + mp_s * 0.4) * 0.6
 
             if score > best_score:
                 best_score, best, best_face, best_kind = score, rel, face_center, kind
