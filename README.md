@@ -109,6 +109,57 @@ cd frontend && npm run dev      # 前端 Vite (5173)
 
 UI 自动出现新表单，无需改任何后端代码。
 
+## 🤖 AI 一键部署
+
+不想手动操作？把下面的指令区块**整段复制**给任何 AI 编程助手（Claude Code / Cursor / Copilot / ChatGPT 等），把本项目代码放在它的可访问目录，它就能自动完成部署：
+
+````markdown
+请帮我部署 Media Squirrel（本地媒体下载管理平台），按以下步骤执行：
+
+## 环境要求
+- Windows / macOS / Linux（下载功能依赖 Chrome 浏览器）
+- Python 3.10+
+- Node.js 18+
+
+## 部署步骤（按顺序执行，每步失败需停下排查）
+
+1. 进入项目根目录，安装 Python 依赖：
+   pip install -r requirements.txt
+
+2. 安装 Playwright 浏览器内核：
+   python -m playwright install chromium
+   （需要系统已安装 Chrome；下载脚本会以 channel='chrome' 调用系统 Chrome）
+
+3. 下载人脸检测模型（媒体库"人物优先封面"功能，232KB，可选但推荐）：
+   创建目录 app_data/models/，下载以下文件并保存为
+   app_data/models/face_detection_yunet.onnx：
+   https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx
+   （下载失败可跳过，功能自动退化为清晰度算法）
+
+4. 构建前端：
+   cd frontend && npm install && npm run build && cd ..
+   （必须先构建，后端会托管 frontend/dist）
+
+5. 启动服务：
+   python run.py
+   预期：自动打开浏览器访问 http://127.0.0.1:8642，
+   系统托盘出现松鼠图标。
+
+## 验证清单（全部通过才算部署成功）
+- [ ] 首页加载并显示"下载内容"页面，能看到抖音/微博两个下载器卡片
+- [ ] 任务页 / 媒体库页 / 订阅页可点击切换且正常渲染
+- [ ] 粘贴一条抖音分享文案到下载页能创建任务并出现在任务队列
+- [ ] 媒体库能扫描到已有存档目录（<作者>/<日期>/ 结构）
+
+## 常见问题
+- 端口占用：python run.py --port 9000 换端口
+- 下载脚本被风控：任务日志会显示接口 403，稍后重试即可
+- 抖音线上搜索需登录：订阅页点击"登录抖音"，在弹出的浏览器窗口完成
+  滑块验证+扫码，登录态只保存在本地 app_data/douyin_cookies.json
+````
+
+> 💡 提示：AI 助手执行时如遇网络问题（pip/npm/HuggingFace），提醒它配置镜像源或代理。
+
 ## ⚠️ 免责声明
 
 本项目仅供**个人学习与内容备份**用途。使用者需遵守目标平台的服务条款及当地法律法规，对使用本工具产生的任何后果自行负责。请勿用于商业用途或侵犯他人权益。
