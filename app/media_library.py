@@ -5,13 +5,20 @@
       context.md      元数据
       photo/img*.jpg  微博普通图片
       live/live*.mov|.jpg  微博 Live 图（jpg 为封面）
-      <videoid>.mp4   抖音视频
+      <videoid>.mp4   抖音视频（可含 {id}_cover.jpg 官方封面）
 
-封面策略（"最佳图"）:
-  - 多图: 取中间位（9 宫格 -> 第 5 张，4 图 -> 第 2 张），比首张更有代表性
-  - 仅 Live: 取第一张 Live 封面
-  - 仅视频: 由前端经 /api/thumb 用视频首帧作封面
+封面策略（"最佳图"算法 _pick_best_cover）:
+  - 多图候选逐张评分: 清晰度(拉普拉斯方差, 缩图计算) 70% + 分辨率 30%
+    —— 自动跳过糊图/纯色图，选出最清晰最有代表性的一张
+  - 评分结果按目录缓存（内容变化才重算）
+  - 视频优先使用官方封面 {id}_cover.jpg（无则前端抽帧）
 """
+import hashlib
+import json
+import os
+import re
+import hashlib
+import json
 import os
 import re
 from typing import Optional
@@ -26,6 +33,79 @@ _SKIP_DIRS = {
 }
 
 _DATE_RE = re.compile(r"^\d{2,4}-\d{1,2}-\d{1,2}")
+
+_COVER_CACHE_PATH = os.path.join(config.BASE_DIR, "app_data", "cover_cache.json")
+
+
+def _load_cover_cache() -> dict:
+    try:
+        with open(_COVER_CACHE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_cover_cache(cache: dict):
+    try:
+        os.makedirs(os.path.dirname(_COVER_CACHE_PATH), exist_ok=True)
+        with open(_COVER_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _pick_best_cover(base_path: str, rel_paths: list[str]) -> str:
+    """从候选图选出最佳封面：清晰度(70%) + 分辨率(30%) 综合评分。
+
+    - 清晰度: 拉普拉斯方差（缩到宽 240 计算，单张几毫秒）——
+      糊图/纯色图/截图得分低，自动被跳过
+    - 分辨率: 百万像素数归一化——高清原图优先
+    - 缓存: 目录内容签名（文件名+mtime）不变则直接用上次结果
+    """
+    if len(rel_paths) == 1:
+        return rel_paths[0]
+
+    sig_source = "|".join(
+        f"{p}:{int(os.path.getmtime(os.path.join(base_path, p)) * 1000)}"
+        for p in rel_paths
+    )
+    sig = hashlib.md5(sig_source.encode("utf-8", errors="replace")).hexdigest()
+
+    cache = _load_cover_cache()
+    hit = cache.get(base_path)
+    if hit and hit.get("sig") == sig and hit.get("best") in rel_paths:
+        return hit["best"]
+
+    import cv2
+    import numpy as np
+
+    best, best_score = rel_paths[0], -1.0
+    for rel in rel_paths:
+        full = os.path.join(base_path, rel.replace("/", os.sep))
+        try:
+            data = np.fromfile(full, dtype=np.uint8)  # 中文路径兼容
+            img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            if img is None:
+                continue
+            h, w = img.shape[:2]
+            # 缩图算清晰度（快）
+            if w > 240:
+                small = cv2.resize(img, (240, max(1, int(h * 240 / w))),
+                                   interpolation=cv2.INTER_AREA)
+            else:
+                small = img
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+            # 归一化评分: 清晰度(封顶1500) 70% + 百万像素(封顶4MP) 30%
+            score = min(sharpness, 1500) / 1500 * 0.7 + min(w * h / 1e6, 4) / 4 * 0.3
+            if score > best_score:
+                best_score, best = score, rel
+        except Exception:
+            continue
+
+    cache[base_path] = {"sig": sig, "best": best}
+    _save_cover_cache(cache)
+    return best
 
 
 def _is_date_dir(name: str) -> bool:
@@ -98,10 +178,10 @@ def _scan_entry(path: str) -> Optional[dict]:
     cover = None
     cover_type = None
     if normal_photos:
-        cover = normal_photos[len(normal_photos) // 2]  # 中间位
+        cover = _pick_best_cover(path, normal_photos)  # 最佳图算法
         cover_type = "image"
     elif live_covers:
-        cover = live_covers[0]
+        cover = _pick_best_cover(path, live_covers)    # 多 Live 时同样选最佳
         cover_type = "live"          # Live 图封面：前端显示 LIVE 角标
     elif videos:
         # 官方封面优先（抖音 origin_cover），否则视频首帧（前端 /api/thumb 抽帧）

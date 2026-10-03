@@ -297,26 +297,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
               autoplay
               playsinline
             ></video>
-            <!-- 模糊填充封面：背景模糊铺满 + 前景完整显示（不裁剪内容） -->
-            <template v-else-if="e.cover && e.cover_type !== 'video'">
-              <img
-                class="cover-bg"
-                :src="thumbUrl(e.author, e.date_dir, e.cover)"
-                loading="lazy"
-                alt=""
-              />
-              <img
-                class="cover-fg"
-                :src="thumbUrl(e.author, e.date_dir, e.cover)"
-                loading="lazy"
-                alt=""
-                @error="$event.target.style.display = 'none'"
-              />
-            </template>
-            <!-- 视频封面（官方封面/抽帧）保持铺满 -->
             <img
               v-else-if="e.cover"
-              class="cover-video-img"
               :src="thumbUrl(e.author, e.date_dir, e.cover)"
               loading="lazy"
               alt=""
@@ -544,33 +526,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   overflow: hidden;
   background: rgba(0, 0, 0, 0.04);
 }
-.entry-cover .cover-video-img {
+.entry-cover img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   transition: transform 400ms var(--ease);
 }
-.entry-card:hover .entry-cover .cover-video-img { transform: scale(1.045); }
-
-/* 模糊填充封面：背景模糊放大 + 前景完整显示（图片/Live 不裁剪） */
-.cover-bg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  filter: blur(22px) saturate(1.25) brightness(0.92);
-  transform: scale(1.18);
-}
-.cover-fg {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  transition: transform 400ms var(--ease);
-}
-.entry-card:hover .cover-fg { transform: scale(1.045); }
-.entry-card:hover .cover-bg { transform: scale(1.22); }
+.entry-card:hover .entry-cover img { transform: scale(1.045); }
 .cover-fallback {
   width: 100%;
   height: 100%;
