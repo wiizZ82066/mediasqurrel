@@ -35,6 +35,8 @@ export const api = {
   searchBlogger: (platform, q) =>
     req(`/api/subs/search?platform=${platform}&q=${encodeURIComponent(q)}`),
   verifyDouyin: () => req('/api/subs/verify-douyin', { method: 'POST' }),
+  loginDouyin: () => req('/api/subs/login-douyin', { method: 'POST' }),
+  douyinAuth: () => req('/api/subs/douyin-auth'),
   addSub: (body) => req('/api/subs', { method: 'POST', body: JSON.stringify(body) }),
   updateSub: (id, body) => req(`/api/subs/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   removeSub: (id) => req(`/api/subs/${id}`, { method: 'DELETE' }),

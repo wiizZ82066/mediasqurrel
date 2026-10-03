@@ -100,12 +100,30 @@ def resolve_to_video_url(raw: str) -> str:
     )
 
 
+def _attach_dy_cookies(ctx):
+    """注入本地保存的抖音登录态（app_data/douyin_cookies.json，若存在）。"""
+    try:
+        try:
+            from app.douyin_auth import attach_cookies
+        except ImportError:
+            import importlib.util as ilu
+            p = os.path.join(BASE, "app", "douyin_auth.py")
+            s = ilu.spec_from_file_location("_dy_auth", p)
+            m = ilu.module_from_spec(s)
+            s.loader.exec_module(m)
+            attach_cookies = m.attach_cookies
+        attach_cookies(ctx)
+    except Exception:
+        pass  # 无登录态时静默跳过
+
+
 def fetch_aweme_detail(url: str) -> dict:
     """系统 Chrome 打开视频页，拦截 aweme/v1/web/aweme/detail 响应。"""
     with sync_playwright() as p:
         browser = launch_chrome(p, headless=True)
         try:
             ctx = stealth_context(browser)
+            _attach_dy_cookies(ctx)
             page = ctx.new_page()
             hunter = XHRHunter(r"aweme/v1/web/aweme/detail").attach(page)
             page.goto(url, wait_until="domcontentloaded", timeout=60000,

@@ -52,6 +52,7 @@ async function refresh() {
 
 onMounted(async () => {
   refresh()
+  loadDyAuth()
   try {
     localAuthors.value = await api.localAuthors()
   } catch { /* 静默 */ }
@@ -89,13 +90,20 @@ async function runOnlineSearch() {
   }
 }
 
-// 抖音人机验证：打开可见浏览器窗口，用户完成滑块后自动重搜
+// 抖音人机验证/登录：打开可见浏览器，用户完成验证+扫码后自动重搜
+const dyAuth = ref({ logged_in: false })
+
+async function loadDyAuth() {
+  try { dyAuth.value = await api.douyinAuth() } catch { /* 静默 */ }
+}
+
 async function verifyDouyin() {
   verifying.value = true
   try {
-    const r = await api.verifyDouyin()
+    const r = await api.loginDouyin()
     if (r.ok) {
-      toast('✅ 验证成功，正在重新搜索', 'success')
+      toast(r.logged_in ? '✅ 登录成功，登录态已保存到本地，正在重新搜索' : '✅ 验证完成（未检测到登录，扫码可获完整体验）', 'success')
+      loadDyAuth()
       runOnlineSearch()
     } else {
       toast(r.detail || '验证超时，请重试', 'error')
@@ -191,6 +199,22 @@ const platformName = { douyin: '抖音', weibo: '微博' }
 
     <!-- 新增订阅（z-index 高于下方订阅卡片，保证搜索下拉不被遮挡） -->
     <div class="card add-card" style="margin-bottom: 22px">
+      <!-- 抖音登录状态 / 主动登录入口 -->
+      <div class="dy-auth-row">
+        <template v-if="dyAuth.logged_in">
+          <span class="dy-auth ok">✅ 抖音已登录</span>
+          <span class="dy-auth-time">{{ dyAuth.updated_at?.replace('T', ' ') }}</span>
+        </template>
+        <template v-else>
+          <span class="dy-auth">💤 抖音未登录（可选）</span>
+        </template>
+        <button
+          class="btn btn-ghost btn-sm"
+          :disabled="verifying"
+          @mousedown.prevent
+          @click="verifyDouyin"
+        >{{ verifying ? '等待完成…' : (dyAuth.logged_in ? '重新验证' : '登录抖音') }}</button>
+      </div>
       <div class="add-grid">
         <div class="field">
           <label>平台</label>
@@ -240,12 +264,20 @@ const platformName = { douyin: '抖音', weibo: '微博' }
                 <div v-if="searching && !onlineResults.length && !needCaptcha" class="drop-loading loading-breathe">
                   正在搜索，约需数秒…
                 </div>
-                <!-- 抖音人机验证引导 -->
+                <!-- 抖音登录/验证引导 -->
                 <div v-if="needCaptcha" class="captcha-box">
-                  <div class="captcha-title">🔐 抖音需要人机验证</div>
+                  <div class="captcha-title">
+                    {{ dyAuth.logged_in ? '🔐 抖音需要人机验证' : '🔐 抖音需要验证并登录' }}
+                    <span v-if="dyAuth.logged_in" class="auth-ok">（已登录）</span>
+                  </div>
                   <div class="captcha-desc">
-                    抖音搜索需要完成一次滑块验证。点击下方按钮会打开浏览器窗口，
-                    拖动滑块完成后回到这里，验证状态将长期保留。
+                    点击按钮会打开浏览器窗口：
+                    <template v-if="!dyAuth.logged_in">
+                      ① 如出现滑块请拖动完成；② 点击页面右上角「登录」扫码登录。
+                      登录后搜索/订阅/下载将获得完整体验，
+                    </template>
+                    <template v-else>完成滑块验证即可，</template>
+                    登录状态仅保存在本机（app_data/），不会上传。
                   </div>
                   <button
                     class="btn btn-primary btn-sm captcha-btn"
@@ -253,7 +285,8 @@ const platformName = { douyin: '抖音', weibo: '微博' }
                     @mousedown.prevent
                     @click="verifyDouyin"
                   >
-                    {{ verifying ? '已打开验证窗口，等待完成…（最长2分钟）' : '🔓 打开验证窗口' }}
+                    {{ verifying ? '已打开窗口，等待完成…（最长3分钟）'
+                       : (dyAuth.logged_in ? '🔓 打开验证窗口' : '🔑 打开并登录抖音') }}
                   </button>
                 </div>
                 <button
@@ -359,6 +392,17 @@ const platformName = { douyin: '抖音', weibo: '微博' }
 
 /* ---------- 搜索下拉 ---------- */
 .add-card { position: relative; z-index: 20; }
+.dy-auth-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.dy-auth.ok { color: var(--green); font-weight: 600; }
+.dy-auth-time { font-size: 11.5px; }
 .search-field { position: relative; }
 .search-box { position: relative; }
 .search-spin {
@@ -476,6 +520,7 @@ const platformName = { douyin: '抖音', weibo: '微博' }
   text-align: center;
 }
 .captcha-title { font-size: 13.5px; font-weight: 700; margin-bottom: 6px; }
+.auth-ok { color: var(--green); font-weight: 600; }
 .captcha-desc {
   font-size: 12px;
   color: var(--text-2);

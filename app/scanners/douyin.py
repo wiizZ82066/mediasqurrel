@@ -26,6 +26,12 @@ def _scan_sync(sub: dict) -> list[dict]:
         browser = launch_chrome(p, headless=True)
         try:
             ctx = stealth_context(browser)
+            # 注入本地保存的抖音登录态（若用户已登录过）
+            try:
+                from ..douyin_auth import attach_cookies
+                attach_cookies(ctx)
+            except Exception:
+                pass
             page = ctx.new_page()
             hunter.attach(page)
             page.goto(

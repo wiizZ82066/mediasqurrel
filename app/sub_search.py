@@ -196,10 +196,14 @@ _CAPTCHA_SEL = (
 )
 
 
-def _dy_open(p, kw: str, headless: bool):
-    """打开抖音搜索页（persistent profile），返回 (context, page, hunter)。"""
+def _dy_open(p, kw: str, headless: bool, use_cookies: bool = False):
+    """打开抖音搜索页（persistent profile），返回 (context, page, hunter)。
+
+    use_cookies=True 时注入本地保存的登录 cookies（搜索等无头消费方）。
+    """
     from urllib.parse import quote
 
+    from . import douyin_auth
     from .browser import XHRHunter, get_ua
 
     ctx = p.chromium.launch_persistent_context(
@@ -210,6 +214,8 @@ def _dy_open(p, kw: str, headless: bool):
         locale="zh-CN",
         viewport={"width": 1380, "height": 900},
     )
+    if use_cookies:
+        douyin_auth.attach_cookies(ctx)
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
     hunter = XHRHunter(r"aweme/v1/web/(search|discover)").attach(page)
     page.goto(
@@ -259,9 +265,9 @@ def _parse_dy_users(hunter) -> list[dict]:
 
 
 def _douyin_search_sync(kw: str) -> list[dict]:
-    """无头搜索。检测到人机验证时抛出 CaptchaRequiredError（由 API 层转标记）。"""
+    """无头搜索（注入已保存的登录 cookies）。被拦时抛 CaptchaRequiredError。"""
     with sync_playwright() as p:
-        ctx, page, hunter = _dy_open(p, kw, headless=True)
+        ctx, page, hunter = _dy_open(p, kw, headless=True, use_cookies=True)
         try:
             page.wait_for_timeout(9000)
             has_captcha = page.evaluate(
@@ -279,27 +285,45 @@ class CaptchaRequiredError(RuntimeError):
     """抖音要求人机验证（需用户在可见浏览器中完成一次滑块）。"""
 
 
-def douyin_verify_sync(timeout_s: int = 120) -> dict:
-    """有头模式打开搜索页，等待用户完成滑块验证并出现搜索接口。
+def douyin_login_sync(timeout_s: int = 180) -> dict:
+    """可见浏览器窗口：用户完成滑块验证 + 扫码登录，导出登录 cookies。
 
-    验证通过的信任态写入持久化 Profile，之后无头搜索不再触发验证。
+    流程（全程用户可见）:
+      1. 打开抖音搜索页（persistent profile）
+      2. 如有验证码 -> 用户拖一下滑块
+      3. 用户点头像/登录按钮扫码登录
+      4. 程序轮询: 验证消失 + 登录 cookie(sessionid) 出现 -> 导出 cookies
+    登录态保存于 app_data/douyin_cookies.json（仅本地）。
     """
+    import time as _t
+
+    from . import douyin_auth
+
     with sync_playwright() as p:
         ctx, page, hunter = _dy_open(p, "抖音", headless=False)
         try:
-            import time as _t
             deadline = _t.time() + timeout_s
+            stage = "等待人机验证与登录"
             while _t.time() < deadline:
-                page.wait_for_timeout(1500)
-                if hunter.results:
-                    return {"ok": True, "detail": "验证成功，已解锁无头搜索"}
-            # 超时：若验证码已消失也算部分成功（信任态可能已写入）
-            has_captcha = page.evaluate(
-                f"() => !!document.querySelector('{_CAPTCHA_SEL}')"
-            )
-            if not has_captcha:
-                return {"ok": True, "detail": "验证码已消失，可重试搜索"}
-            return {"ok": False, "detail": f"等待验证超时（{timeout_s}s），请重试"}
+                page.wait_for_timeout(2000)
+                cookies = ctx.cookies()
+                if douyin_auth.has_login_cookie(cookies):
+                    logged = douyin_auth.save_cookies(cookies)
+                    return {
+                        "ok": True,
+                        "logged_in": logged,
+                        "detail": "登录成功，登录态已保存到本地",
+                    }
+            # 超时：导出当前 cookies（即使未登录，验证信任态也有价值）
+            cookies = ctx.cookies()
+            logged = douyin_auth.save_cookies(cookies)
+            if logged:
+                return {"ok": True, "logged_in": True, "detail": "登录成功"}
+            return {
+                "ok": False,
+                "logged_in": False,
+                "detail": f"等待超时（{timeout_s}s）。若已完成滑块，可稍后重试搜索；扫码登录可获得完整体验",
+            }
         finally:
             ctx.close()
 

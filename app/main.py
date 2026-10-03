@@ -265,15 +265,28 @@ async def api_search_blogger(platform: str, q: str):
     return {"results": results}
 
 
-@app.post("/api/subs/verify-douyin")
-async def api_verify_douyin():
-    """打开可见浏览器窗口，等待用户完成抖音滑块验证（最长 120 秒）。
+@app.get("/api/subs/douyin-auth")
+def api_douyin_auth_status():
+    """抖音登录状态查询（供 UI 展示）。"""
+    from . import douyin_auth
+    return douyin_auth.auth_status()
 
-    验证信任态写入持久化 Profile，之后无头搜索不再触发验证。
+
+@app.post("/api/subs/login-douyin")
+async def api_login_douyin():
+    """打开可见浏览器窗口：用户完成滑块验证 + 扫码登录（最长 180 秒）。
+
+    登录 cookies 导出到 app_data/douyin_cookies.json（仅本地），
+    之后的抖音搜索/扫描/下载自动注入登录态。
     """
     from . import sub_search
+    return await asyncio.to_thread(sub_search.douyin_login_sync)
 
-    return await asyncio.to_thread(sub_search.douyin_verify_sync)
+
+@app.post("/api/subs/verify-douyin")
+async def api_verify_douyin():
+    """兼容旧路径：等价 login-douyin。"""
+    return await api_login_douyin()
 
 
 @app.post("/api/subs")
