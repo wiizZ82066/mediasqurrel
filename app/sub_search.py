@@ -217,13 +217,85 @@ def _dy_open(p, kw: str, headless: bool, use_cookies: bool = False):
     if use_cookies:
         douyin_auth.attach_cookies(ctx)
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
-    hunter = XHRHunter(r"aweme/v1/web/(search|discover)").attach(page)
+    hunter = XHRHunter(r"aweme/v1/web/.*(search|discover)").attach(page)
     page.goto(
-        f"https://www.douyin.com/search/{quote(kw)}",
+        f"https://www.douyin.com/search/{quote(kw)}?type=general",
         wait_until="domcontentloaded",
         timeout=60000,
     )
     return ctx, page, hunter
+
+
+def _extract_dom_users(page) -> list[dict]:
+    """从页面 DOM 提取用户卡片（昵称/粉丝数/sec_uid）。
+
+    无头被拦时数据接口发不出，但真人拖完滑块后页面会渲染结果，
+    此时 DOM 里有 a[href*="/user/{sec_uid}"] 链接与卡片文本。
+    """
+    import time as _t
+
+    deadline = _t.time() + 75  # 等用户拖滑块，最长 75 秒
+    while _t.time() < deadline:
+        try:
+            rows = page.evaluate(
+                """() => {
+                    const out = [];
+                    const seen = new Set();
+                    for (const a of document.querySelectorAll('a[href*="/user/"]')) {
+                        const href = a.getAttribute('href') || '';
+                        const sec = href.split('/user/')[1]?.split('?')[0] || '';
+                        if (!sec || sec === 'self' || seen.has(sec)) continue;
+                        seen.add(sec);
+                        const card = a.closest('li, [class*=card], [class*=user]');
+                        out.push({
+                            sec_uid: sec,
+                            text: (card?.innerText || a.innerText || '').trim(),
+                        });
+                    }
+                    return out;
+                }"""
+            )
+        except Exception:
+            rows = []
+        if len(rows) >= 2:
+            break
+        page.wait_for_timeout(2000)
+
+    users, seen_uid = [], set()
+    bad_nick = {"认证徽章", "登录", "注册", "首页", "粉丝", "关注", "作品", "点赞"}
+    for row in rows:
+        sec = row["sec_uid"]
+        if sec in seen_uid:
+            continue
+        seen_uid.add(sec)
+        lines = [ln.strip() for ln in row["text"].split("\n") if ln.strip()]
+        # 昵称 = 第一个非徽章/非数字的行
+        nickname = next(
+            (ln for ln in lines
+             if ln not in bad_nick and not re.match(r"^[\d.,\s万亿]+$", ln)),
+            "",
+        )
+        m = re.search(r"([\d.]+\s*[万亿]?)\s*粉丝", row["text"])
+        followers_text = m.group(1).replace(" ", "") if m else ""
+        if not nickname:
+            continue
+        # 简介 = 昵称之后的第一条有效行
+        desc = ""
+        for i, ln in enumerate(lines):
+            if ln == nickname and i + 1 < len(lines) and lines[i + 1] != nickname:
+                desc = lines[i + 1]
+                break
+        users.append({
+            "nickname": nickname,
+            "blogger_id": sec,
+            "platform": "douyin",
+            "followers": _parse_followers(followers_text),
+            "followers_text": followers_text,
+            "verified": "认证" in row["text"],
+            "avatar": "",
+            "desc": desc[:30],
+        })
+    return users
 
 
 def _parse_dy_users(hunter) -> list[dict]:
@@ -247,7 +319,32 @@ def _parse_dy_users(hunter) -> list[dict]:
             "avatar": ((u.get("avatar_thumb") or {}).get("url_list") or [""])[0],
         })
 
-    for data in hunter.json_results():
+    def _stream_json_objects(text: str) -> list[dict]:
+        """chunked 流响应（多个 JSON 拼接）提取全部完整 JSON 对象。"""
+        dec = json.JSONDecoder()
+        objs, idx = [], 0
+        while idx < len(text):
+            c = text.find("{", idx)
+            if c < 0:
+                break
+            try:
+                obj, end = dec.raw_decode(text, c)
+                objs.append(obj)
+                idx = end
+            except ValueError:
+                idx = c + 1
+        return objs
+
+    api_datas: list[dict] = []
+    for hit in hunter.results:
+        try:
+            api_datas.append(json.loads(hit["body"]))
+        except ValueError:
+            api_datas.extend(_stream_json_objects(hit["body"]))
+
+    for data in api_datas:
+        if not isinstance(data, dict):
+            continue
         # 用户搜索响应: data[].user_list[].user_info
         for item in data.get("data") or []:
             if isinstance(item, dict):
@@ -265,20 +362,56 @@ def _parse_dy_users(hunter) -> list[dict]:
 
 
 def _douyin_search_sync(kw: str) -> list[dict]:
-    """无头搜索（注入已保存的登录 cookies）。被拦时抛 CaptchaRequiredError。"""
+    """抖音搜索：无头优先，被拦时自动升级可见窗口（用户拖滑块）后 DOM 提取。
+
+    - 未登录 + 被拦 -> 抛 CaptchaRequiredError（前端引导登录）
+    - 已登录 + 被拦 -> 弹可见窗口，注入提示条，等待用户拖滑块（最长75s），
+      结果渲染后自动抓取并关窗
+    """
+    from . import douyin_auth
+
     with sync_playwright() as p:
+        # ---- 无头尝试 ----
         ctx, page, hunter = _dy_open(p, kw, headless=True, use_cookies=True)
         try:
             page.wait_for_timeout(9000)
             has_captcha = page.evaluate(
                 f"() => !!document.querySelector('{_CAPTCHA_SEL}')"
             )
-            if has_captcha:
-                raise CaptchaRequiredError()
-            page.wait_for_timeout(3000)
+            if not has_captcha:
+                page.wait_for_timeout(3000)
+                users = _parse_dy_users(hunter)
+                if users:
+                    return users
         finally:
             ctx.close()
-    return _parse_dy_users(hunter)
+
+        # ---- 未登录：交给前端引导登录 ----
+        if not douyin_auth.is_logged_in():
+            raise CaptchaRequiredError()
+
+        # ---- 已登录：可见窗口半自动（用户拖滑块）----
+        ctx, page, hunter = _dy_open(p, kw, headless=False, use_cookies=True)
+        try:
+            page.evaluate(
+                """() => {
+                    const tip = document.createElement('div');
+                    tip.textContent = '🐿️ Media Squirrel：如出现滑块请拖动完成，结果出现后本窗口自动关闭';
+                    tip.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;'
+                        + 'background:#0071e3;color:#fff;padding:10px 16px;font-size:14px;'
+                        + 'font-weight:600;text-align:center;font-family:sans-serif;';
+                    document.body.appendChild(tip);
+                }"""
+            )
+            users = _extract_dom_users(page)
+            # 接口数据（若已发出）优先补充
+            api_users = _parse_dy_users(hunter)
+            merged = {u["blogger_id"]: u for u in users}
+            for u in api_users:
+                merged.setdefault(u["blogger_id"], u)
+            return list(merged.values())
+        finally:
+            ctx.close()
 
 
 class CaptchaRequiredError(RuntimeError):

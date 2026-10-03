@@ -128,12 +128,16 @@ function pickLocal(a) {
     form.nickname = a.name
   }
   searchOpen.value = false
+  // 一步到位：选中即添加订阅
+  add()
 }
 
 function pickOnline(u) {
   form.blogger_id = u.blogger_id
   form.nickname = u.nickname
   searchOpen.value = false
+  // 一步到位：选中即添加订阅
+  add()
 }
 
 function closeDropdown() {
@@ -144,14 +148,20 @@ onBeforeUnmount(() => clearTimeout(debounceTimer))
 
 // ---------- CRUD ----------
 async function add() {
-  if (!form.blogger_id.trim()) {
+  const bid = form.blogger_id.trim()
+  if (!bid) {
     toast('博主 ID 不能为空（可从搜索结果选择）', 'error')
+    return
+  }
+  // 重复订阅检测（同一平台同一 ID）
+  if (subs.value.some((s) => s.platform === form.platform && s.blogger_id === bid)) {
+    toast('该博主已在订阅列表中（可调整扫描间隔或删除）', 'info')
     return
   }
   adding.value = true
   try {
     await api.addSub({ ...form })
-    toast('订阅已添加', 'success')
+    toast(`✅ 已订阅「${form.nickname || bid}」，将按 ${form.interval_minutes} 分钟间隔自动扫描`, 'success')
     form.blogger_id = ''
     form.nickname = ''
     form.homepage = ''
@@ -226,7 +236,7 @@ const platformName = { douyin: '抖音', weibo: '微博' }
 
         <!-- 博主搜索输入 -->
         <div class="field search-field">
-          <label>搜索博主 <span style="font-weight:400;color:var(--text-2)">（输入昵称，选择结果自动填充）</span></label>
+          <label>搜索博主 <span style="font-weight:400;color:var(--text-2)">（输入昵称，点击结果即订阅）</span></label>
           <div class="search-box">
             <input
               class="input"
@@ -262,36 +272,25 @@ const platformName = { douyin: '抖音', weibo: '微博' }
                   🌐 线上搜索{{ searching ? '中…' : `（${platformName[form.platform]}，按粉丝数）` }}
                 </div>
                 <div v-if="searching && !onlineResults.length && !needCaptcha" class="drop-loading loading-breathe">
-                  正在搜索，约需数秒…
+                  正在搜索{{ form.platform === 'douyin' && dyAuth.logged_in ? '（若弹出浏览器窗口，请拖动滑块完成验证）' : '，约需数秒…' }}
                 </div>
-                <!-- 抖音登录/验证引导 -->
+                <!-- 抖音登录引导（未登录且被拦时） -->
                 <div v-if="needCaptcha" class="captcha-box">
-                  <!-- 已登录：搜索仍受限属平台防护，给说明不再引导验证 -->
-                  <template v-if="dyAuth.logged_in">
-                    <div class="captcha-title">🛡️ 抖音搜索暂不可用</div>
-                    <div class="captcha-desc">
-                      已检测到登录态（扫描/下载正常增强中），但抖音对「搜索」有独立的
-                      设备级防护，登录也无法绕过。请从上方「本地已有博主」选择，
-                      或粘贴博主主页链接中的 sec_uid。
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div class="captcha-title">🔐 抖音需要验证并登录</div>
-                    <div class="captcha-desc">
-                      点击按钮会打开浏览器窗口：
-                      ① 如出现滑块请拖动完成；② 点击页面右上角「登录」扫码登录。
-                      登录可增强订阅扫描与下载的稳定性，登录状态仅保存在本机。
-                      <b>注：线上搜索受平台设备级防护，登录后可能仍不可用。</b>
-                    </div>
-                    <button
-                      class="btn btn-primary btn-sm captcha-btn"
-                      :disabled="verifying"
-                      @mousedown.prevent
-                      @click="verifyDouyin"
-                    >
-                      {{ verifying ? '已打开窗口，等待完成…（最长3分钟）' : '🔑 打开并登录抖音' }}
-                    </button>
-                  </template>
+                  <div class="captcha-title">🔐 抖音需要验证并登录</div>
+                  <div class="captcha-desc">
+                    点击按钮会打开浏览器窗口：
+                    ① 如出现滑块请拖动完成；② 点击页面右上角「登录」扫码登录。
+                    登录后搜索遇阻时将自动弹出验证窗口（拖一下滑块即可），
+                    扫描与下载也会更稳定。登录状态仅保存在本机。
+                  </div>
+                  <button
+                    class="btn btn-primary btn-sm captcha-btn"
+                    :disabled="verifying"
+                    @mousedown.prevent
+                    @click="verifyDouyin"
+                  >
+                    {{ verifying ? '已打开窗口，等待完成…（最长3分钟）' : '🔑 打开并登录抖音' }}
+                  </button>
                 </div>
                 <button
                   v-for="u in onlineResults"
