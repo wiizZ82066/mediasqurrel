@@ -155,6 +155,16 @@ function entryTitle(e) {
   return (e.text_preview || e.meta?.['视频标题'] || e.date_dir || '').trim()
 }
 
+// 封面裁剪定位：检测到人脸时对准人脸（避免裁剪切脸），否则居中
+function coverPos(e) {
+  if (e.cover_face) {
+    return {
+      objectPosition: `${(e.cover_face.x * 100).toFixed(1)}% ${(e.cover_face.y * 100).toFixed(1)}%`,
+    }
+  }
+  return {}
+}
+
 // 唯一时间行：优先精确发布时间，其次日期目录（不重复显示两个时间）
 function entryTime(e) {
   return e.meta?.['发布时间'] || e.date_dir
@@ -300,6 +310,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             <img
               v-else-if="e.cover"
               :src="thumbUrl(e.author, e.date_dir, e.cover)"
+              :style="coverPos(e)"
               loading="lazy"
               alt=""
               @error="$event.target.style.display = 'none'"

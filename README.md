@@ -42,7 +42,12 @@
 pip install -r requirements.txt
 python -m playwright install chromium
 
-# 2. 构建前端
+# 2. 人脸检测模型（媒体库"人物优先封面"用，232KB，可选）
+#    下载后放到 app_data/models/face_detection_yunet.onnx
+#    https://huggingface.co/opencv/face_detection_yunet
+#    未放模型时自动退化为清晰度算法
+
+# 3. 构建前端
 cd frontend
 npm install
 npm run build
