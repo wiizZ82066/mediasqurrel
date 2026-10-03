@@ -97,43 +97,47 @@ def _detect_face(img_bgr, detector) -> tuple[float, Optional[dict]]:
     }
 
 
-def _pick_best_cover(base_path: str, rel_paths: list[str]) -> tuple[str, Optional[dict]]:
-    """从候选图选出最佳封面（人物优先），返回 (最佳图, 人脸中心或None)。
+def _pick_best_cover(base_path: str, candidates: list[tuple[str, str]]) -> tuple[str, Optional[dict], str]:
+    """统一封面评选（人物优先），全部来源同台竞技。
 
+    candidates: [(rel, kind)]，kind ∈ image / live / video_file(官方封面jpg)
+                                      / video_frame(视频, 经 thumbs 抽帧评分)
     评分:
       含人脸: 人脸占比 40% + 清晰度 40% + 分辨率 20%
-              （特写 > 远景，清晰特写最优——人像封面最佳实践）
-      无人脸: 清晰度 60% + 分辨率 40%，总分 × 0.85（让位于含人图）
-
-    显示定位: 最佳图含人脸时返回归一化人脸中心 {x, y}，
-    前端用于 object-position 对准人脸（避免裁剪切脸）。
-    缓存: 目录内容签名不变则直接复用。
+      无人脸: 清晰度 60% + 分辨率 40%，总分 × 0.85
+    返回 (最佳rel, 人脸中心或None, kind)。
+    缓存: 目录候选签名（rel+kind+mtime）不变则复用。
     """
-    if len(rel_paths) == 1:
-        face = _face_center_of(os.path.join(base_path, rel_paths[0].replace("/", os.sep)))
-        return rel_paths[0], face
+    if len(candidates) == 1:
+        rel, kind = candidates[0]
+        material = _cover_material(base_path, rel, kind)
+        face = _face_center_of(material) if material else None
+        return rel, face, kind
 
     sig_source = "|".join(
-        f"{p}:{int(os.path.getmtime(os.path.join(base_path, p)) * 1000)}"
-        for p in rel_paths
+        f"{rel}:{kind}:{int(os.path.getmtime(os.path.join(base_path, rel.replace('/', os.sep))) * 1000)}"
+        for rel, kind in candidates
     )
     sig = hashlib.md5(sig_source.encode("utf-8", errors="replace")).hexdigest()
 
     cache = _load_cover_cache()
     hit = cache.get(base_path)
     if (
-        hit and hit.get("sig") == sig and hit.get("best") in rel_paths
-        and ("face" in hit)
+        hit and hit.get("sig") == sig and "face" in hit and "kind" in hit
+        and any(hit.get("best") == rel and hit.get("kind") == kind
+                for rel, kind in candidates)
     ):
-        return hit["best"], hit.get("face")
+        return hit["best"], hit.get("face"), hit.get("kind")
 
     import cv2
     import numpy as np
 
     detector = _get_face_detector()
-    best, best_score, best_face = rel_paths[0], -1.0, None
-    for rel in rel_paths:
-        full = os.path.join(base_path, rel.replace("/", os.sep))
+    best, best_score, best_face, best_kind = candidates[0][0], -1.0, None, candidates[0][1]
+    for rel, kind in candidates:
+        full = _cover_material(base_path, rel, kind)
+        if not full:
+            continue
         try:
             data = np.fromfile(full, dtype=np.uint8)  # 中文路径兼容
             img = cv2.imdecode(data, cv2.IMREAD_COLOR)
@@ -161,13 +165,24 @@ def _pick_best_cover(base_path: str, rel_paths: list[str]) -> tuple[str, Optiona
                 score = (sharp_s * 0.6 + mp_s * 0.4) * 0.85
 
             if score > best_score:
-                best_score, best, best_face = score, rel, face_center
+                best_score, best, best_face, best_kind = score, rel, face_center, kind
         except Exception:
             continue
 
-    cache[base_path] = {"sig": sig, "best": best, "face": best_face}
+    cache[base_path] = {"sig": sig, "best": best, "face": best_face, "kind": best_kind}
     _save_cover_cache(cache)
-    return best, best_face
+    return best, best_face, best_kind
+
+
+def _cover_material(base_path: str, rel: str, kind: str) -> Optional[str]:
+    """评分素材路径：图片直接读；视频经 thumbs 抽帧（结果为缓存 jpg）。"""
+    full = os.path.join(base_path, rel.replace("/", os.sep))
+    if kind == "video_frame":
+        if not os.path.isfile(full):
+            return None
+        from . import thumbs
+        return thumbs.get_thumb(full, rel)
+    return full if os.path.isfile(full) else None
 
 
 def _face_center_of(full_path: str) -> Optional[dict]:
@@ -258,20 +273,28 @@ def _scan_entry(path: str) -> Optional[dict]:
         if match:
             video_cover[v] = match
 
+    # ---- 封面：统一评选（人物优先），全部来源同台竞技 ----
     cover = None
     cover_type = None
     cover_face = None  # 最佳封面的人脸中心（前端 object-position 对准人脸）
-    if normal_photos:
-        cover, cover_face = _pick_best_cover(path, normal_photos)  # 人物优先算法
-        cover_type = "image"
-    elif live_covers:
-        cover, cover_face = _pick_best_cover(path, live_covers)    # 多 Live 同样算法
-        cover_type = "live"          # Live 图封面：前端显示 LIVE 角标
-    elif videos:
-        # 官方封面优先（抖音 origin_cover），否则视频首帧（前端 /api/thumb 抽帧）
-        cover = video_cover.get(videos[0]) or videos[0]
-        cover_type = "video"
+
+    candidates: list[tuple[str, str]] = []
+    candidates += [(p, "image") for p in normal_photos]
+    candidates += [(c, "live") for c in live_covers]
+    candidates += [(c, "video_file") for c in official_covers]
+    # 无官方封面的视频：抽帧参赛（有官方封面的已由封面代表，不重复）
+    official_stems = {c.rsplit(".", 1)[0][: -len("_cover")] for c in official_covers}
+    candidates += [
+        (v, "video_frame") for v in videos
+        if v.rsplit(".", 1)[0] not in official_stems
+    ]
+
+    if candidates:
+        cover, cover_face, kind = _pick_best_cover(path, candidates)
+        # video_file/video_frame 对外统一为 video（前端播放按钮 + thumb 抽帧逻辑一致）
+        cover_type = "video" if kind.startswith("video") else kind
     elif live_movs:
+        # 只有 mov 没有 jpg 封面的兜底
         cover = live_poster.get(live_movs[0]) or live_movs[0]
         cover_type = "live"
 
