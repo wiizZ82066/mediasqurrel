@@ -188,30 +188,35 @@ def _weibo_search_sync(kw: str) -> list[dict]:
 # ---------------------------------------------------------------- 抖音线上搜索
 
 def _douyin_search_sync(kw: str) -> list[dict]:
-    """打开抖音用户搜索页，拦截搜索接口响应。"""
-    from scrapling import DynamicFetcher
+    """打开抖音用户搜索页，拦截搜索接口响应。
+
+    注意: 抖音搜索页风控强，无头环境大概率拦截不到结果接口（已知限制），
+    结构保留待未来登录态/patchright 启用。
+    """
     from urllib.parse import quote
 
-    page = DynamicFetcher.fetch(
-        f"https://www.douyin.com/search/{quote(kw)}?type=user",
-        real_chrome=True,
-        headless=True,
-        capture_xhr=r"search",
-        wait=6000,
-        load_dom=True,
-        timeout=60000,
-    )
+    from .browser import XHRHunter, launch_chrome, sync_playwright
+
+    hunter = XHRHunter(r"search")
+    with sync_playwright() as p:
+        browser = launch_chrome(p, headless=True)
+        try:
+            ctx = browser.new_context(locale="zh-CN")
+            page = ctx.new_page()
+            hunter.attach(page)
+            page.goto(
+                f"https://www.douyin.com/search/{quote(kw)}?type=user",
+                wait_until="domcontentloaded",
+                timeout=60000,
+                referer="https://www.google.com/",
+            )
+            page.wait_for_timeout(8000)
+        finally:
+            browser.close()
 
     users = []
     seen = set()
-    for xr in page.captured_xhr:
-        body = xr.body
-        if isinstance(body, bytes):
-            body = body.decode("utf-8", errors="replace")
-        try:
-            data = json.loads(body)
-        except Exception:
-            continue
+    for data in hunter.json_results():
         # 两种响应结构都兼容: data[].user_list[].user_info 或 user_list
         user_lists = []
         for item in data.get("data") or []:

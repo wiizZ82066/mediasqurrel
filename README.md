@@ -33,7 +33,7 @@
 
 - Python 3.10+
 - Node.js 18+（构建前端）
-- Chrome / Chromium（下载脚本使用）
+- Chrome / Chromium（下载脚本使用，playwright 以 `channel='chrome'` 调用系统 Chrome）
 
 ### 安装
 

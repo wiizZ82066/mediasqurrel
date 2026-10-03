@@ -1,13 +1,13 @@
-"""抖音视频下载器（仅依赖 scrapling）。
+"""抖音视频下载器（playwright + 系统 Chrome，零 scrapling 依赖）。
 
 用法:
     python douyin_downloader.py <视频URL|v.douyin.com短链|分享文案> [-o 输出根目录]
 
 流程:
-    1. 用 scrapling 的 real_chrome 无头打开视频页，拦截详情接口 aweme/v1/web/aweme/detail
+    1. 用系统 Chrome 打开视频页，拦截详情接口 aweme/v1/web/aweme/detail
     2. 从返回里取作者昵称、视频 id、无水印 h264 直链
     3. 下载 mp4 到 <输出根目录>/作者昵称/YYYY-MM-DD-HH-MM/视频id.mp4
-    4. 在同目录生成 context.md（作者/链接/发布时间/标题/文件名）
+    4. 在同目录生成 context.md（作者/链接/发布时间/标题/文件名/UID/sec_uid）
 
 -o/--out 不传时沿用旧行为：输出根目录 = 本脚本所在目录。
 """
@@ -20,7 +20,19 @@ import urllib.request
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from scrapling import DynamicFetcher, Fetcher
+import requests
+
+# 统一浏览器引擎（app/browser.py；脚本独立运行时按相对路径加载）
+try:
+    from app.browser import XHRHunter, launch_chrome, sync_playwright
+except ImportError:
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location(
+        "_ms_browser", os.path.join(os.path.dirname(os.path.abspath(__file__)), "app", "browser.py")
+    )
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    XHRHunter, launch_chrome, sync_playwright = _mod.XHRHunter, _mod.launch_chrome, _mod.sync_playwright
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -69,7 +81,7 @@ def resolve_to_video_url(raw: str) -> str:
     if vid:
         return f"https://www.douyin.com/video/{vid}"
     # 短链：跟随重定向拿到真实地址
-    r = Fetcher.get(url)
+    r = requests.get(url, headers={"User-Agent": UA}, allow_redirects=True, timeout=30)
     vid = extract_video_id(r.url)
     if vid:
         return f"https://www.douyin.com/video/{vid}"
@@ -81,23 +93,20 @@ def resolve_to_video_url(raw: str) -> str:
 
 
 def fetch_aweme_detail(url: str) -> dict:
-    page = DynamicFetcher.fetch(
-        url,
-        real_chrome=True,
-        headless=True,
-        capture_xhr=r"aweme/v1/web/aweme/detail",
-        wait=6000,
-        load_dom=True,
-        timeout=60000,
-    )
-    for xr in page.captured_xhr:
-        body = xr.body
-        if isinstance(body, bytes):
-            body = body.decode("utf-8", errors="replace")
+    """系统 Chrome 打开视频页，拦截 aweme/v1/web/aweme/detail 响应。"""
+    with sync_playwright() as p:
+        browser = launch_chrome(p, headless=True)
         try:
-            data = json.loads(body)
-        except Exception:
-            continue
+            ctx = browser.new_context(user_agent=UA, locale="zh-CN")
+            page = ctx.new_page()
+            hunter = XHRHunter(r"aweme/v1/web/aweme/detail").attach(page)
+            page.goto(url, wait_until="domcontentloaded", timeout=60000,
+                      referer="https://www.google.com/")
+            page.wait_for_timeout(6000)
+        finally:
+            browser.close()
+
+    for data in hunter.json_results():
         if isinstance(data, dict) and "aweme_detail" in data:
             return data["aweme_detail"]
     raise RuntimeError("未捕获到 aweme_detail 接口响应")

@@ -1,9 +1,10 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
 playwright>=1.44
-scrapling>=0.2
 opencv-python>=4.9
 requests>=2.31
 pystray>=0.19
 Pillow>=10.0
 websockets>=12.0
+# 可选：抖音风控升级导致拦截失效时安装并开启 app/browser.py 的 USE_PATCHRIGHT
+# patchright>=0.5
