@@ -85,7 +85,6 @@ cd frontend && npm run dev      # 前端 Vite (5173)
 ├── frontend/               # Vue 3 前端
 ├── weibo_downloader.py     # 微博下载脚本
 ├── douyin_downloader.py    # 抖音下载脚本
-├── src-tauri/              # Tauri 桌面壳（实验性）
 └── DESIGN.md               # 设计规范
 ```
 
