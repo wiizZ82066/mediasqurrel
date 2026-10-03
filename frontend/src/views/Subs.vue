@@ -250,6 +250,7 @@ const platformName = { douyin: '抖音', weibo: '微博' }
                   <button
                     class="btn btn-primary btn-sm captcha-btn"
                     :disabled="verifying"
+                    @mousedown.prevent
                     @click="verifyDouyin"
                   >
                     {{ verifying ? '已打开验证窗口，等待完成…（最长2分钟）' : '🔓 打开验证窗口' }}
