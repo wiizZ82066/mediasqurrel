@@ -2,6 +2,10 @@
 
 - launch_chrome(): 系统 Chrome (channel='chrome')，无 Chrome 时退回自带 chromium
   —— 等价于 scrapling 的 real_chrome=True
+- stealth_context(): 创建已处理 UA 的 context
+  · 首选: 读取当前浏览器真实 navigator.userAgent 并清除 Headless 标记
+    （与本机 Chrome 版本 100% 一致，避免 UA 与浏览器特征不匹配）
+  · 兜底: browserforge 生成真实世界分布的 Chrome UA（scrapling 同款引擎）
 - XHRHunter: 复刻 capture_xhr（正则匹配响应 URL 并缓存响应体）
 - USE_PATCHRIGHT 开关: 抖音风控升级导致失效时改为 True
   （patchright 是 playwright 的反检测 fork，API 完全兼容，pip install patchright 即可）
@@ -11,7 +15,11 @@ import re
 # 风控升级应急开关：True 时使用 patchright（playwright 反检测 fork）
 USE_PATCHRIGHT = False
 
-_LAZY = {}
+# browserforge 不可用时的最终兜底（尽量保持与 Chrome 版本无关的写法）
+_FALLBACK_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/{ver} Safari/537.36"
+).format(ver="130.0.0.0")
 
 
 def sync_playwright():
@@ -32,6 +40,49 @@ def launch_chrome(p, headless: bool = True):
         return p.chromium.launch(channel="chrome", headless=headless)
     except Exception:
         return p.chromium.launch(headless=headless)
+
+
+def generate_headers() -> dict:
+    """browserforge 生成真实 Chrome 桌面 header 集（UA/accept-language 等一致）。
+
+    scrapling 的 UA 生成即此引擎（browserforge），独立于 scrapling 可单独使用。
+    未安装 browserforge 时返回空 dict。
+    """
+    try:
+        from browserforge.headers import HeaderGenerator
+        hg = HeaderGenerator(browser=("chrome",), device="desktop")
+        headers = dict(hg.generate())
+        # 统一小写键，UA 键兼容 user-agent/User-Agent
+        if "User-Agent" in headers and "user-agent" not in headers:
+            headers["user-agent"] = headers.pop("User-Agent")
+        return headers
+    except Exception:
+        return {}
+
+
+def get_ua() -> str:
+    """获取一个随机真实 Chrome UA（browserforge），无依赖时用内置兜底。"""
+    return generate_headers().get("user-agent") or _FALLBACK_UA
+
+
+def _probe_real_ua(browser) -> str | None:
+    """读取浏览器真实 UA 并清除 headless 标记（与实际浏览器特征完全一致）。"""
+    try:
+        probe = browser.new_context()
+        page = probe.new_page()
+        ua = page.evaluate("navigator.userAgent")
+        probe.close()
+        if ua:
+            return ua.replace("HeadlessChrome", "Chrome")
+    except Exception:
+        pass
+    return None
+
+
+def stealth_context(browser, locale: str = "zh-CN"):
+    """创建已处理 UA 的浏览器 context（stealth 第一步：UA 与浏览器一致）。"""
+    ua = _probe_real_ua(browser) or get_ua()
+    return browser.new_context(user_agent=ua, locale=locale)
 
 
 class XHRHunter:

@@ -24,7 +24,7 @@ import requests
 
 # 统一浏览器引擎（app/browser.py；脚本独立运行时按相对路径加载）
 try:
-    from app.browser import XHRHunter, launch_chrome, sync_playwright
+    from app.browser import XHRHunter, get_ua, launch_chrome, stealth_context, sync_playwright
 except ImportError:
     import importlib.util
     _spec = importlib.util.spec_from_file_location(
@@ -32,14 +32,22 @@ except ImportError:
     )
     _mod = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_mod)
-    XHRHunter, launch_chrome, sync_playwright = _mod.XHRHunter, _mod.launch_chrome, _mod.sync_playwright
+    XHRHunter, launch_chrome, stealth_context, sync_playwright = (
+        _mod.XHRHunter, _mod.launch_chrome, _mod.stealth_context, _mod.sync_playwright
+    )
+    get_ua = _mod.get_ua
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
-)
+# UA 按需惰性生成（browserforge 随机真实 Chrome UA），不再写死
+_UA_CACHE = None
+
+
+def _ua() -> str:
+    global _UA_CACHE
+    if not _UA_CACHE:
+        _UA_CACHE = get_ua()
+    return _UA_CACHE
 
 
 def sanitize(s: str) -> str:
@@ -81,7 +89,7 @@ def resolve_to_video_url(raw: str) -> str:
     if vid:
         return f"https://www.douyin.com/video/{vid}"
     # 短链：跟随重定向拿到真实地址
-    r = requests.get(url, headers={"User-Agent": UA}, allow_redirects=True, timeout=30)
+    r = requests.get(url, headers={"User-Agent": _ua()}, allow_redirects=True, timeout=30)
     vid = extract_video_id(r.url)
     if vid:
         return f"https://www.douyin.com/video/{vid}"
@@ -97,7 +105,7 @@ def fetch_aweme_detail(url: str) -> dict:
     with sync_playwright() as p:
         browser = launch_chrome(p, headless=True)
         try:
-            ctx = browser.new_context(user_agent=UA, locale="zh-CN")
+            ctx = stealth_context(browser)
             page = ctx.new_page()
             hunter = XHRHunter(r"aweme/v1/web/aweme/detail").attach(page)
             page.goto(url, wait_until="domcontentloaded", timeout=60000,
@@ -115,7 +123,7 @@ def fetch_aweme_detail(url: str) -> dict:
 def download(url: str, dest: str) -> int:
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": UA, "Referer": "https://www.douyin.com/"},
+        headers={"User-Agent": _ua(), "Referer": "https://www.douyin.com/"},
     )
     with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as f:
         while True:

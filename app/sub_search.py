@@ -195,13 +195,13 @@ def _douyin_search_sync(kw: str) -> list[dict]:
     """
     from urllib.parse import quote
 
-    from .browser import XHRHunter, launch_chrome, sync_playwright
+    from .browser import XHRHunter, launch_chrome, stealth_context, sync_playwright
 
     hunter = XHRHunter(r"search")
     with sync_playwright() as p:
         browser = launch_chrome(p, headless=True)
         try:
-            ctx = browser.new_context(locale="zh-CN")
+            ctx = stealth_context(browser)
             page = ctx.new_page()
             hunter.attach(page)
             page.goto(

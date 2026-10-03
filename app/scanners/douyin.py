@@ -14,13 +14,8 @@
 """
 import re
 
-from ..browser import XHRHunter, launch_chrome, sync_playwright
+from ..browser import XHRHunter, launch_chrome, stealth_context, sync_playwright
 from .. import watcher
-
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
-)
 
 
 def _scan_sync(sub: dict) -> list[dict]:
@@ -30,7 +25,7 @@ def _scan_sync(sub: dict) -> list[dict]:
     with sync_playwright() as p:
         browser = launch_chrome(p, headless=True)
         try:
-            ctx = browser.new_context(user_agent=UA, locale="zh-CN")
+            ctx = stealth_context(browser)
             page = ctx.new_page()
             hunter.attach(page)
             page.goto(
