@@ -48,17 +48,37 @@ function select(id) {
   form.value = defaults
 }
 
-// 智能识别：粘贴内容自动匹配脚本
-function smartPick(text) {
-  const hit = scripts.value.find((s) =>
-    (s.link_hints || []).some((h) => text.includes(h)),
+// 内容有效性校验：检测主输入是否匹配当前脚本（不匹配提示，不切换）
+const linkWarning = ref('')
+
+function validateMainInput() {
+  linkWarning.value = ''
+  const mainParam = selected.value?.params.find(
+    (p) => p.name === 'input' || p.name === 'url',
   )
-  if (hit && hit.id !== selectedId.value) select(hit.id)
+  if (!mainParam) return true
+  const val = String(form.value[mainParam.name] || '').trim()
+  if (!val) return true  // 空值交给必填校验
+
+  const hints = selected.value.link_hints || []
+  if (hints.length && !hints.some((h) => val.includes(h))) {
+    // 内容不属于当前平台：找出它像哪个平台，给出针对性提示
+    const hit = scripts.value.find((s) =>
+      (s.link_hints || []).some((h) => val.includes(h)),
+    )
+    linkWarning.value = hit
+      ? `检测到的是${hit.name}的内容，请先切换到「${hit.name}」`
+      : `未检测到${selected.value.name}支持的链接，请检查内容`
+    return false
+  }
+  return true
 }
 
 function onPasteInput(evt, paramName) {
-  const text = (evt.clipboardData || window.clipboardData).getData('text') || ''
-  if (paramName === 'input' || paramName === 'url') smartPick(text)
+  // 粘贴后校验（仅提示，不自动切换）
+  if (paramName === 'input' || paramName === 'url') {
+    setTimeout(validateMainInput, 50)
+  }
 }
 
 // ---------- 目录选择器 ----------
@@ -94,6 +114,11 @@ function browseUp() {
 // ---------- 输出预览 ----------
 async function submit() {
   if (!selected.value) return
+  // 内容有效性校验：不匹配当前平台则阻止并提示（不切换脚本）
+  if (!validateMainInput()) {
+    toast(linkWarning.value, 'error')
+    return
+  }
   submitting.value = true
   try {
     const task = await api.createTask(selectedId.value, { ...form.value })
@@ -106,6 +131,17 @@ async function submit() {
     submitting.value = false
   }
 }
+
+// 主输入变化时实时校验
+watch(
+  () => {
+    const mainParam = selected.value?.params.find(
+      (p) => p.name === 'input' || p.name === 'url',
+    )
+    return mainParam ? form.value[mainParam.name] : ''
+  },
+  () => validateMainInput(),
+)
 
 // 跟踪任务：下载成功后自动清空主输入框
 watch(
@@ -288,6 +324,10 @@ function carouselPrev() {
             >✕</button>
           </div>
           <div v-if="p.help" class="hint">{{ p.help }}</div>
+          <div
+            v-if="(p.name === 'input' || p.name === 'url') && linkWarning"
+            class="link-warning"
+          >⚠️ {{ linkWarning }}</div>
         </div>
       </template>
 
@@ -394,6 +434,17 @@ function carouselPrev() {
 
 /* 输入框清空按钮 */
 .input-wrap { position: relative; }
+.link-warning {
+  margin-top: 7px;
+  font-size: 12.5px;
+  color: var(--red);
+  background: rgba(255, 59, 48, 0.08);
+  border: 1px solid rgba(255, 59, 48, 0.18);
+  border-radius: 9px;
+  padding: 7px 12px;
+  line-height: 1.5;
+  animation: fadeUp 250ms var(--ease);
+}
 .clear-btn {
   position: absolute;
   right: 10px;

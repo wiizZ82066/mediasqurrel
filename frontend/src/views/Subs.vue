@@ -27,10 +27,13 @@ let searchSeq = 0                 // 过期响应丢弃
 const keyword = computed(() => form.nickname.trim())
 const kwLower = computed(() => keyword.value.toLowerCase())
 
-// 本地匹配（即时）
+// 本地匹配（即时，按当前平台过滤：抖音只显示有抖音身份的，微博只显示微博的）
 const localMatches = computed(() => {
-  if (!kwLower.value) return localAuthors.value.slice(0, 6)
-  return localAuthors.value
+  const filtered = localAuthors.value.filter(
+    (a) => (a.platforms || {})[form.platform],
+  )
+  if (!kwLower.value) return filtered.slice(0, 6)
+  return filtered
     .filter((a) => a.name.toLowerCase().includes(kwLower.value))
     .slice(0, 6)
 })
@@ -85,22 +88,11 @@ watch(() => form.platform, () => {
 })
 
 function pickLocal(a) {
-  // 本地作者可能有多平台身份：优先当前选中平台
-  const platforms = a.platforms || {}
-  const pid = platforms[form.platform]
+  // localMatches 已按当前平台过滤，必有对应身份
+  const pid = (a.platforms || {})[form.platform]
   if (pid) {
     form.blogger_id = pid
     form.nickname = a.name
-  } else {
-    const [plat, id] = Object.entries(platforms)[0] || []
-    if (plat && id) {
-      form.platform = plat
-      form.blogger_id = id
-      form.nickname = a.name
-    } else {
-      form.nickname = a.name
-      toast('该作者暂无可订阅的平台 ID（旧存档未记录）', 'info')
-    }
   }
   searchOpen.value = false
 }
@@ -172,8 +164,8 @@ const platformName = { douyin: '抖音', weibo: '微博' }
     <h1 class="page-title">博主订阅</h1>
     <p class="page-sub">搜索博主（本地存档 / 线上），订阅后自动扫描新内容并下载</p>
 
-    <!-- 新增订阅 -->
-    <div class="card" style="margin-bottom: 22px">
+    <!-- 新增订阅（z-index 高于下方订阅卡片，保证搜索下拉不被遮挡） -->
+    <div class="card add-card" style="margin-bottom: 22px">
       <div class="add-grid">
         <div class="field">
           <label>平台</label>
@@ -326,7 +318,8 @@ const platformName = { douyin: '抖音', weibo: '微博' }
 @media (max-width: 900px) { .add-grid { grid-template-columns: 1fr 1fr; } }
 
 /* ---------- 搜索下拉 ---------- */
-.search-field { position: relative; z-index: 30; }
+.add-card { position: relative; z-index: 20; }
+.search-field { position: relative; }
 .search-box { position: relative; }
 .search-spin {
   position: absolute;
