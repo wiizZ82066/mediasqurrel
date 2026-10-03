@@ -246,7 +246,11 @@ def api_local_authors():
 
 @app.get("/api/subs/search")
 async def api_search_blogger(platform: str, q: str):
-    """线上博主搜索：按粉丝数降序前 5。"""
+    """线上博主搜索：按粉丝数降序前 5。
+
+    抖音触发人机验证时返回 captcha_required=True，前端引导用户完成一次
+    有头验证（POST /api/subs/verify-douyin）后自动重搜。
+    """
     from . import sub_search
 
     kw = (q or "").strip()
@@ -254,9 +258,22 @@ async def api_search_blogger(platform: str, q: str):
         return {"results": []}
     try:
         results = await sub_search.search_online_async(platform, kw)
+    except sub_search.CaptchaRequiredError:
+        return {"results": [], "captcha_required": True}
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"搜索失败: {e}")
     return {"results": results}
+
+
+@app.post("/api/subs/verify-douyin")
+async def api_verify_douyin():
+    """打开可见浏览器窗口，等待用户完成抖音滑块验证（最长 120 秒）。
+
+    验证信任态写入持久化 Profile，之后无头搜索不再触发验证。
+    """
+    from . import sub_search
+
+    return await asyncio.to_thread(sub_search.douyin_verify_sync)
 
 
 @app.post("/api/subs")

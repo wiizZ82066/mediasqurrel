@@ -187,65 +187,128 @@ def _weibo_search_sync(kw: str) -> list[dict]:
 
 # ---------------------------------------------------------------- 抖音线上搜索
 
-def _douyin_search_sync(kw: str) -> list[dict]:
-    """打开抖音用户搜索页，拦截搜索接口响应。
+# 抖音搜索的持久化浏览器 Profile：完成一次人机验证后，信任态留存，
+# 后续无头搜索不再触发验证码。
+_DY_PROFILE = os.path.join(config.BASE_DIR, "app_data", "douyin_profile")
 
-    注意: 抖音搜索页风控强，无头环境大概率拦截不到结果接口（已知限制），
-    结构保留待未来登录态/patchright 启用。
-    """
+_CAPTCHA_SEL = (
+    '[class*=captcha], [id*=captcha], [class*=verify], iframe[src*=captcha]'
+)
+
+
+def _dy_open(p, kw: str, headless: bool):
+    """打开抖音搜索页（persistent profile），返回 (context, page, hunter)。"""
     from urllib.parse import quote
 
-    from .browser import XHRHunter, launch_chrome, stealth_context, sync_playwright
+    from .browser import XHRHunter, get_ua
 
-    hunter = XHRHunter(r"search")
-    with sync_playwright() as p:
-        browser = launch_chrome(p, headless=True)
-        try:
-            ctx = stealth_context(browser)
-            page = ctx.new_page()
-            hunter.attach(page)
-            page.goto(
-                f"https://www.douyin.com/search/{quote(kw)}?type=user",
-                wait_until="domcontentloaded",
-                timeout=60000,
-                referer="https://www.google.com/",
-            )
-            page.wait_for_timeout(8000)
-        finally:
-            browser.close()
+    ctx = p.chromium.launch_persistent_context(
+        _DY_PROFILE,
+        channel="chrome",
+        headless=headless,
+        user_agent=get_ua(),
+        locale="zh-CN",
+        viewport={"width": 1380, "height": 900},
+    )
+    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+    hunter = XHRHunter(r"aweme/v1/web/(search|discover)").attach(page)
+    page.goto(
+        f"https://www.douyin.com/search/{quote(kw)}",
+        wait_until="domcontentloaded",
+        timeout=60000,
+    )
+    return ctx, page, hunter
 
-    users = []
-    seen = set()
+
+def _parse_dy_users(hunter) -> list[dict]:
+    """从搜索响应解析用户：user_list 优先，视频作者聚合补充。"""
+    from .browser import XHRHunter  # noqa: F401
+
+    users, seen = [], set()
+
+    def add(u: dict):
+        sec = u.get("sec_uid")
+        if not sec or sec in seen:
+            return
+        seen.add(sec)
+        users.append({
+            "nickname": u.get("nickname") or "",
+            "blogger_id": sec,
+            "platform": "douyin",
+            "followers": u.get("follower_count") or 0,
+            "followers_text": _fmt_followers(u.get("follower_count")),
+            "verified": bool(u.get("is_verified") or u.get("verified")),
+            "avatar": ((u.get("avatar_thumb") or {}).get("url_list") or [""])[0],
+        })
+
     for data in hunter.json_results():
-        # 两种响应结构都兼容: data[].user_list[].user_info 或 user_list
-        user_lists = []
+        # 用户搜索响应: data[].user_list[].user_info
         for item in data.get("data") or []:
-            if isinstance(item, dict) and item.get("user_list"):
-                user_lists.append(item["user_list"])
+            if isinstance(item, dict):
+                for entry in item.get("user_list") or []:
+                    add(entry.get("user_info") or entry.get("user") or {})
         if data.get("user_list"):
-            user_lists.append(data["user_list"])
-
-        for ul in user_lists:
-            for entry in ul:
-                u = entry.get("user_info") or entry.get("user") or {}
-                sec = u.get("sec_uid")
-                if not sec or sec in seen:
-                    continue
-                seen.add(sec)
-                users.append({
-                    "nickname": u.get("nickname") or "",
-                    "blogger_id": sec,
-                    "platform": "douyin",
-                    "followers": u.get("follower_count") or 0,
-                    "followers_text": _fmt_followers(u.get("follower_count")),
-                    "verified": bool(u.get("is_verified") or u.get("verified")),
-                    "avatar": ((u.get("avatar_thumb") or {}).get("url_list") or [""])[0],
-                })
+            for entry in data["user_list"]:
+                add(entry.get("user_info") or entry.get("user") or {})
+        # 综合搜索响应: data[].aweme_list[].author（视频作者聚合）
+        for item in data.get("data") or []:
+            if isinstance(item, dict):
+                for aw in item.get("aweme_list") or []:
+                    add(aw.get("aweme", {}).get("author") or {})
     return users
 
 
+def _douyin_search_sync(kw: str) -> list[dict]:
+    """无头搜索。检测到人机验证时抛出 CaptchaRequiredError（由 API 层转标记）。"""
+    with sync_playwright() as p:
+        ctx, page, hunter = _dy_open(p, kw, headless=True)
+        try:
+            page.wait_for_timeout(9000)
+            has_captcha = page.evaluate(
+                f"() => !!document.querySelector('{_CAPTCHA_SEL}')"
+            )
+            if has_captcha:
+                raise CaptchaRequiredError()
+            page.wait_for_timeout(3000)
+        finally:
+            ctx.close()
+    return _parse_dy_users(hunter)
+
+
+class CaptchaRequiredError(RuntimeError):
+    """抖音要求人机验证（需用户在可见浏览器中完成一次滑块）。"""
+
+
+def douyin_verify_sync(timeout_s: int = 120) -> dict:
+    """有头模式打开搜索页，等待用户完成滑块验证并出现搜索接口。
+
+    验证通过的信任态写入持久化 Profile，之后无头搜索不再触发验证。
+    """
+    with sync_playwright() as p:
+        ctx, page, hunter = _dy_open(p, "抖音", headless=False)
+        try:
+            import time as _t
+            deadline = _t.time() + timeout_s
+            while _t.time() < deadline:
+                page.wait_for_timeout(1500)
+                if hunter.results:
+                    return {"ok": True, "detail": "验证成功，已解锁无头搜索"}
+            # 超时：若验证码已消失也算部分成功（信任态可能已写入）
+            has_captcha = page.evaluate(
+                f"() => !!document.querySelector('{_CAPTCHA_SEL}')"
+            )
+            if not has_captcha:
+                return {"ok": True, "detail": "验证码已消失，可重试搜索"}
+            return {"ok": False, "detail": f"等待验证超时（{timeout_s}s），请重试"}
+        finally:
+            ctx.close()
+
+
 def search_online(platform: str, kw: str) -> list[dict]:
-    """线上搜索入口（同步阻塞）。返回按粉丝数降序的前 5。"""
+    """线上搜索入口（同步阻塞）。返回按粉丝数降序的前 5。
+
+    抖音遇人机验证时抛 CaptchaRequiredError（调用方转 captcha_required 标记）。
+    """
     if platform == "weibo":
         users = _weibo_search_sync(kw)
     elif platform == "douyin":

@@ -21,6 +21,8 @@ const localAuthors = ref([])      // 本地存档作者
 const onlineResults = ref([])     // 线上搜索结果
 const searching = ref(false)      // 线上搜索 loading
 const searchOpen = ref(false)     // 下拉开合
+const needCaptcha = ref(false)    // 抖音需要人机验证
+const verifying = ref(false)      // 验证窗口进行中
 let debounceTimer = null
 let searchSeq = 0                 // 过期响应丢弃
 
@@ -58,6 +60,7 @@ onMounted(async () => {
 // 昵称输入 -> 防抖 800ms 触发线上搜索
 watch(keyword, (kw) => {
   onlineResults.value = []
+  needCaptcha.value = false
   clearTimeout(debounceTimer)
   if (!kw) {
     searchOpen.value = false
@@ -72,13 +75,35 @@ async function runOnlineSearch() {
   if (!kw) return
   const seq = ++searchSeq
   searching.value = true
+  needCaptcha.value = false
   try {
     const r = await api.searchBlogger(form.platform, kw)
-    if (seq === searchSeq) onlineResults.value = r.results || []
+    if (seq === searchSeq) {
+      onlineResults.value = r.results || []
+      needCaptcha.value = !!r.captcha_required
+    }
   } catch {
     if (seq === searchSeq) onlineResults.value = []
   } finally {
     if (seq === searchSeq) searching.value = false
+  }
+}
+
+// 抖音人机验证：打开可见浏览器窗口，用户完成滑块后自动重搜
+async function verifyDouyin() {
+  verifying.value = true
+  try {
+    const r = await api.verifyDouyin()
+    if (r.ok) {
+      toast('✅ 验证成功，正在重新搜索', 'success')
+      runOnlineSearch()
+    } else {
+      toast(r.detail || '验证超时，请重试', 'error')
+    }
+  } catch (e) {
+    toast(e.message, 'error')
+  } finally {
+    verifying.value = false
   }
 }
 
@@ -188,7 +213,7 @@ const platformName = { douyin: '抖音', weibo: '微博' }
             />
             <span v-if="searching" class="search-spin loading-breathe">⏳</span>
             <transition name="fade">
-              <div v-if="searchOpen && (localMatches.length || onlineResults.length || searching)" class="search-drop">
+              <div v-if="searchOpen && (localMatches.length || onlineResults.length || searching || needCaptcha)" class="search-drop">
                 <!-- 本地存档作者 -->
                 <template v-if="localMatches.length">
                   <div class="drop-sec">📁 本地已有博主</div>
@@ -212,8 +237,23 @@ const platformName = { douyin: '抖音', weibo: '微博' }
                 <div class="drop-sec">
                   🌐 线上搜索{{ searching ? '中…' : `（${platformName[form.platform]}，按粉丝数）` }}
                 </div>
-                <div v-if="searching && !onlineResults.length" class="drop-loading loading-breathe">
+                <div v-if="searching && !onlineResults.length && !needCaptcha" class="drop-loading loading-breathe">
                   正在搜索，约需数秒…
+                </div>
+                <!-- 抖音人机验证引导 -->
+                <div v-if="needCaptcha" class="captcha-box">
+                  <div class="captcha-title">🔐 抖音需要人机验证</div>
+                  <div class="captcha-desc">
+                    抖音搜索需要完成一次滑块验证。点击下方按钮会打开浏览器窗口，
+                    拖动滑块完成后回到这里，验证状态将长期保留。
+                  </div>
+                  <button
+                    class="btn btn-primary btn-sm captcha-btn"
+                    :disabled="verifying"
+                    @click="verifyDouyin"
+                  >
+                    {{ verifying ? '已打开验证窗口，等待完成…（最长2分钟）' : '🔓 打开验证窗口' }}
+                  </button>
                 </div>
                 <button
                   v-for="u in onlineResults"
@@ -229,10 +269,9 @@ const platformName = { douyin: '抖音', weibo: '微博' }
                   </span>
                   <span class="drop-meta">{{ u.followers_text || '粉丝数未知' }}</span>
                 </button>
-                <div v-if="!searching && !onlineResults.length && keyword" class="drop-empty">
+                <div v-if="!searching && !onlineResults.length && keyword && !needCaptcha" class="drop-empty">
                   <template v-if="form.platform === 'douyin'">
-                    抖音线上搜索受平台风控限制<br/>
-                    可从上方「本地已有博主」选择，或手动粘贴 sec_uid
+                    未搜到结果，可从上方「本地已有博主」选择，或手动粘贴 sec_uid
                   </template>
                   <template v-else>未搜到结果，可直接手动填写 ID</template>
                 </div>
@@ -427,6 +466,23 @@ const platformName = { douyin: '抖音', weibo: '微博' }
   color: var(--text-2);
   text-align: center;
 }
+.captcha-box {
+  padding: 14px 12px;
+  margin: 4px 2px;
+  border-radius: 12px;
+  background: rgba(0, 113, 227, 0.06);
+  border: 1px solid rgba(0, 113, 227, 0.15);
+  text-align: center;
+}
+.captcha-title { font-size: 13.5px; font-weight: 700; margin-bottom: 6px; }
+.captcha-desc {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.6;
+  margin-bottom: 12px;
+  text-align: left;
+}
+.captcha-btn { width: 100%; }
 
 .fade-enter-active { transition: opacity 180ms ease-out; }
 .fade-leave-active { transition: opacity 120ms ease-in; }
