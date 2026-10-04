@@ -60,16 +60,18 @@ _FACE_DETECTOR = None
 def _get_face_detector():
     """惰性加载 YuNet 人脸检测器（OpenCV 5.x FaceDetectorYN，模型 232KB 本地）。
 
-    模型查找: app_data/models/face_detection_yunet.onnx
-    （源码运行在项目根；打包后在 exe 旁或资源目录）
+    模型查找: config.FACE_MODEL_PATH（随包资源）→ 用户数据目录（手动放置）。
     """
     global _FACE_DETECTOR
     if _FACE_DETECTOR is None:
         try:
             import cv2
-            for base in (config.BASE_DIR, getattr(config, "RESOURCE_DIR", config.BASE_DIR)):
-                model = os.path.join(base, "app_data", "models", "face_detection_yunet.onnx")
-                if os.path.isfile(model):
+            candidates = [
+                getattr(config, "FACE_MODEL_PATH", ""),
+                os.path.join(config.BASE_DIR, "app_data", "models", "face_detection_yunet.onnx"),
+            ]
+            for model in candidates:
+                if model and os.path.isfile(model):
                     _FACE_DETECTOR = cv2.FaceDetectorYN.create(
                         model, "", (320, 320), score_threshold=0.45,
                     )

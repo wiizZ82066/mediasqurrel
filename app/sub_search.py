@@ -206,14 +206,21 @@ def _dy_open(p, kw: str, headless: bool, use_cookies: bool = False):
     from . import douyin_auth
     from .browser import XHRHunter, get_ua
 
-    ctx = p.chromium.launch_persistent_context(
-        _DY_PROFILE,
-        channel="chrome",
-        headless=headless,
+    common = dict(
         user_agent=get_ua(),
         locale="zh-CN",
         viewport={"width": 1380, "height": 900},
     )
+    try:
+        # 优先系统 Chrome（指纹真实，利于过风控）
+        ctx = p.chromium.launch_persistent_context(
+            _DY_PROFILE, channel="chrome", headless=headless, **common,
+        )
+    except Exception:
+        # 无系统 Chrome 时退回 Playwright 自带 chromium
+        ctx = p.chromium.launch_persistent_context(
+            _DY_PROFILE, headless=headless, **common,
+        )
     if use_cookies:
         douyin_auth.attach_cookies(ctx)
     page = ctx.pages[0] if ctx.pages else ctx.new_page()

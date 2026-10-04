@@ -37,7 +37,15 @@ except ImportError:
     )
     get_ua = _mod.get_ua
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+# 输出根目录基准：
+#   源码运行 = 脚本所在目录；frozen(桌面打包) = 用户可写数据目录
+#   （__file__ 在 frozen 下指向 PyInstaller 临时解压目录，不可作为输出位置）
+if getattr(sys, "frozen", False):
+    _env = os.environ.get("MS_DATA_DIR")
+    _local = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    BASE = os.path.abspath(_env) if _env else os.path.join(_local, "Media Squirrel", "library")
+else:
+    BASE = os.path.dirname(os.path.abspath(__file__))
 
 # UA 按需惰性生成（browserforge 随机真实 Chrome UA），不再写死
 _UA_CACHE = None

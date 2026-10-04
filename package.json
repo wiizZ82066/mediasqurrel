@@ -1,0 +1,60 @@
+{
+  "name": "media-squirrel",
+  "productName": "Media Squirrel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "本地媒体下载管理平台（微博/抖音 下载·订阅·媒体库）",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "icon": "python make_icon.py",
+    "build:frontend": "cd frontend && npm install && npm run build",
+    "build:backend": "powershell -ExecutionPolicy Bypass -File build_backend.ps1",
+    "desktop:dev": "concurrently -k -n backend,vite,electron -c blue,green,yellow \"python run.py --no-browser --no-tray\" \"cd frontend && npm run dev\" \"wait-on http://127.0.0.1:5173 && cross-env DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "desktop:build": "npm run icon && npm run build:frontend && npm run build:backend && electron-builder --win nsis --x64",
+    "desktop:build:dir": "npm run icon && npm run build:frontend && npm run build:backend && electron-builder --win dir --x64"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "wait-on": "^8.0.0"
+  },
+  "build": {
+    "appId": "com.mediasquirrel.app",
+    "productName": "Media Squirrel",
+    "copyright": "MIT License",
+    "directories": {
+      "output": "release",
+      "buildResources": "electron/build"
+    },
+    "files": [
+      "electron/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend-dist/MediaSquirrelBackend",
+        "to": "backend/MediaSquirrelBackend",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "backend-dist/playwright-browsers",
+        "to": "playwright-browsers",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "electron/build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Media Squirrel",
+      "artifactName": "Media-Squirrel-Setup-${version}.exe"
+    }
+  }
+}

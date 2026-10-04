@@ -1,7 +1,7 @@
 # ============================================================
 # 白名单模式：默认忽略根目录所有内容，仅放行代码与文档。
 # 原因：本目录同时存放个人媒体存档（<作者>/<日期>/视频、图片），
-# 绝不能进入 git（将来公开到 GitHub）。
+# 绝不能进入 git（公开到 GitHub）。
 #
 # 新增顶层脚本(.py)时：在下方【放行区】加一行 "!/脚本名.py"
 # 新增代码目录时：加 "!/目录名/" 和 "!/目录名/**"
@@ -19,12 +19,18 @@
 !/weibo_downloader.py
 !/douyin_downloader.py
 !/run.py
+!/make_icon.py
+!/build_backend.ps1
+!/package.json
+!/package-lock.json
 !/app/
 !/app/**
 !/scripts_manifest/
 !/scripts_manifest/**
 !/frontend/
 !/frontend/**
+!/electron/
+!/electron/**
 # ---------- 放行区结束 ----------
 
 # 放行目录内部的常规排除
@@ -38,10 +44,11 @@ __pycache__/
 *.log
 .agent-browser/
 
-# 打包产物（未来重启打包时使用）
+# 桌面打包产物（Electron / PyInstaller）
 backend-dist/
 build/
 dist/
+release/
 portable/
 *.spec
 node_modules/
