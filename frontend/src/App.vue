@@ -142,7 +142,7 @@ onBeforeUnmount(() => {
       class="back-top"
       title="回到顶部"
       @click="scrollToTop"
-    >↑</button>
+    ><span class="tri"></span></button>
   </transition>
 </template>
 
@@ -271,6 +271,16 @@ onBeforeUnmount(() => {
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.2);
 }
 .back-top:active { transform: scale(0.94); }
+/* 实心大向上三角（CSS 绘制） */
+.back-top .tri {
+  display: block;
+  width: 0;
+  height: 0;
+  border-left: 10px solid transparent;
+  border-right: 10px solid transparent;
+  border-bottom: 14px solid var(--text);
+  margin-top: -4px; /* 视觉居中补偿 */
+}
 
 .topbtn-enter-active { transition: all 280ms cubic-bezier(0.34, 1.56, 0.64, 1); }
 .topbtn-leave-active { transition: all 200ms ease-in; }
