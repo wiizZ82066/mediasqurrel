@@ -256,7 +256,15 @@ def _scan_entry(path: str) -> Optional[dict]:
             total_size += os.path.getsize(full)
 
     if not (normal_photos or live_movs or videos):
-        return None
+        # 纯文字微博（只有 context.md 无媒体）：也算有效条目
+        # 否则本地索引缺位 -> 订阅扫描反复重新下载（死循环）
+        if not os.path.isfile(os.path.join(path, "context.md")):
+            return None
+        return {
+            "photos": [], "lives": [], "videos": [],
+            "cover": None, "cover_type": None, "cover_face": None,
+            "gallery": [], "live_map": {}, "size": 0,
+        }
 
     # ---- 封面（最佳图策略） ----
     # live 封面与 mov 同名配对（live01.jpg <-> live01.mov）
