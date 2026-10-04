@@ -10,10 +10,8 @@ const authors = ref([])
 const loading = ref(true)
 const currentAuthor = ref(null)
 
-// 视图与筛选状态
+// 视图状态
 const viewMode = ref('author')          // author | timeline
-const sortKey = ref('date')             // date | size
-const typeFilter = ref('all')           // all | photo | live | video
 const query = ref('')
 
 // 画廊状态
@@ -88,15 +86,6 @@ function dateKey(dateDir) {
   return [y, ...parts.slice(1)].map((p) => String(p).padStart(2, '0')).join('')
 }
 
-// 条目是否通过类型筛选
-function passTypeFilter(e) {
-  if (typeFilter.value === 'all') return true
-  if (typeFilter.value === 'photo') return e.photos.length > 0
-  if (typeFilter.value === 'live') return e.lives.length > 0
-  if (typeFilter.value === 'video') return e.videos.length > 0
-  return true
-}
-
 // 搜索：匹配作者 / 日期 / 标题 / 正文摘要
 function passSearch(e) {
   const kw = query.value.trim().toLowerCase()
@@ -124,25 +113,31 @@ const dupSet = computed(() => {
   return dup
 })
 
-// 当前展示的条目（两种视图共用筛选逻辑）
+// 当前展示的条目（两种视图共用；搜索/时间线为全作者混排，日期倒序）
 const shownEntries = computed(() => {
   let list
-  if (query.value.trim()) {
-    // 搜索模式：全作者混排
-    list = authors.value.flatMap((a) => a.entries)
-  } else if (viewMode.value === 'timeline') {
+  if (query.value.trim() || viewMode.value === 'timeline') {
     list = authors.value.flatMap((a) => a.entries)
   } else {
     const a = authors.value.find((x) => x.name === currentAuthor.value)
     list = a ? a.entries : []
   }
-  list = list.filter((e) => passTypeFilter(e) && passSearch(e))
-  list = [...list].sort((x, y) =>
-    sortKey.value === 'size'
-      ? y.size - x.size
-      : dateKey(y.date_dir).localeCompare(dateKey(x.date_dir)),
+  list = list.filter((e) => passSearch(e))
+  return [...list].sort((x, y) =>
+    dateKey(y.date_dir).localeCompare(dateKey(x.date_dir)),
   )
-  return list
+})
+
+// 时间线分组：按日期分组（组内可含多作者），日期倒序
+const timelineGroups = computed(() => {
+  const groups = new Map()
+  for (const e of shownEntries.value) {
+    const key = dateKey(e.date_dir)
+    if (!groups.has(key)) groups.set(key, { date: e.date_dir, entries: [] })
+    groups.get(key).entries.push(e)
+  }
+  return [...groups.entries()].sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([, g]) => g)
 })
 
 function mediaUrl(author, dateDir, rel) {
@@ -248,7 +243,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     </div>
 
     <template v-else>
-      <!-- 工具栏：搜索 + 视图切换 + 排序 + 筛选 -->
+      <!-- 工具栏：搜索 + 视图切换 + 刷新 -->
       <div class="toolbar card">
         <div class="tb-search">
           <span class="tb-search-icon">🔍</span>
@@ -262,19 +257,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
         <div class="tb-group" role="group" aria-label="视图">
           <button class="tb-btn" :class="{ on: viewMode === 'author' && !query }" @click="viewMode = 'author'; query = ''">👤 按作者</button>
-          <button class="tb-btn" :class="{ on: viewMode === 'timeline' && !query }" @click="viewMode = 'timeline'; query = ''">📅 时间线</button>
-        </div>
-
-        <div class="tb-group" role="group" aria-label="排序">
-          <button class="tb-btn" :class="{ on: sortKey === 'date' }" @click="sortKey = 'date'">最新</button>
-          <button class="tb-btn" :class="{ on: sortKey === 'size' }" @click="sortKey = 'size'">最大</button>
-        </div>
-
-        <div class="tb-group" role="group" aria-label="类型">
-          <button class="tb-btn" :class="{ on: typeFilter === 'all' }" @click="typeFilter = 'all'">全部</button>
-          <button class="tb-btn" :class="{ on: typeFilter === 'photo' }" @click="typeFilter = 'photo'">🖼️</button>
-          <button class="tb-btn" :class="{ on: typeFilter === 'live' }" @click="typeFilter = 'live'">✨</button>
-          <button class="tb-btn" :class="{ on: typeFilter === 'video' }" @click="typeFilter = 'video'">🎬</button>
+          <button class="tb-btn" :class="{ on: viewMode === 'timeline' || !!query }" @click="viewMode = 'timeline'; query = ''">📅 时间线</button>
         </div>
 
         <!-- 手动刷新：内容与实际不符时强制重扫 -->
@@ -310,8 +293,68 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         · {{ shownEntries.length }} 条
       </div>
 
-      <!-- 条目网格 -->
-      <div v-if="shownEntries.length" class="grid grid-4">
+      <!-- 时间线视图：竖线 + 日期节点 + 横向卡片 -->
+      <div v-if="shownEntries.length && (viewMode === 'timeline' || query)" class="timeline">
+        <div
+          v-for="(g, gi) in timelineGroups"
+          :key="g.date"
+          class="tl-group stagger-item"
+          :style="{ animationDelay: Math.min(gi, 10) * 40 + 'ms' }"
+        >
+          <div class="tl-marker">
+            <span class="tl-dot"></span>
+            <span class="tl-date">{{ g.date }}</span>
+            <span class="tl-count">{{ g.entries.length }} 条</span>
+          </div>
+          <div class="tl-cards">
+            <div
+              v-for="e in g.entries"
+              :key="cardKey(e)"
+              class="card hoverable entry-card tl-card"
+              @click="openGallery(e.author, e)"
+              @mouseenter="cardEnter(e)"
+              @mouseleave="cardLeave(e)"
+            >
+              <div class="entry-cover">
+                <video
+                  v-if="hoverLive[cardKey(e)]"
+                  class="cover-live-video"
+                  :src="mediaUrl(e.author, e.date_dir, e.live_map[e.cover])"
+                  muted loop autoplay playsinline
+                ></video>
+                <img
+                  v-else-if="e.cover"
+                  :src="thumbUrl(e.author, e.date_dir, e.cover)"
+                  :style="coverPos(e)"
+                  loading="lazy"
+                  alt=""
+                  @error="$event.target.style.display = 'none'"
+                />
+                <div v-else class="cover-fallback">🖼️</div>
+                <div class="entry-badges">
+                  <span v-if="dupSet.has(`${e.author}/${e.date_dir}`)" class="badge-s badge-dup">♻️ 重复</span>
+                  <span v-if="e.videos.length" class="badge-s">🎬 {{ e.videos.length }}</span>
+                  <span v-if="e.lives.length" class="badge-s">✨ {{ e.lives.length }}</span>
+                  <span v-if="e.photos.length" class="badge-s">🖼️ {{ e.photos.length }}</span>
+                </div>
+                <div v-if="e.cover_type === 'live' && !hoverLive[cardKey(e)]" class="live-overlay">
+                  <span class="live-badge">LIVE</span>
+                </div>
+              </div>
+              <div class="entry-info">
+                <div class="entry-head">
+                  <span class="entry-author">{{ e.author }}</span>
+                </div>
+                <div class="entry-title tl-title">{{ entryTitle(e) }}</div>
+                <div class="entry-meta">{{ entryTime(e) }} · {{ fmtSize(e.size) }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 按作者网格视图 -->
+      <div v-else-if="shownEntries.length" class="grid grid-4">
         <div
           v-for="(e, i) in shownEntries"
           :key="cardKey(e)"
@@ -347,10 +390,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
               <span v-if="e.lives.length" class="badge-s">✨ {{ e.lives.length }}</span>
               <span v-if="e.photos.length" class="badge-s">🖼️ {{ e.photos.length }}</span>
             </div>
-            <div v-if="e.cover_type === 'video'" class="play-overlay">
-              <span class="play-btn">▶</span>
-            </div>
-            <div v-else-if="e.cover_type === 'live' && !hoverLive[cardKey(e)]" class="live-overlay">
+            <div v-if="e.cover_type === 'live' && !hoverLive[cardKey(e)]" class="live-overlay">
               <span class="live-badge">LIVE</span>
             </div>
           </div>
@@ -504,6 +544,63 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .refresh-btn { flex-shrink: 0; }
 .spin { display: inline-block; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- 时间线视图 ---------- */
+.timeline {
+  position: relative;
+  padding-left: 26px;
+}
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 2px;
+}
+.tl-group { position: relative; margin-bottom: 30px; }
+.tl-group:last-child { margin-bottom: 6px; }
+.tl-dot {
+  position: absolute;
+  left: -25px;
+  top: 5px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--blue);
+  box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.15);
+}
+.tl-marker {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.tl-date {
+  font-size: 15px;
+  font-weight: 700;
+  padding: 3px 12px;
+  border-radius: 980px;
+  background: rgba(0, 0, 0, 0.06);
+  font-variant-numeric: tabular-nums;
+}
+.tl-count { font-size: 12px; color: var(--text-2); }
+.tl-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 13px;
+}
+.tl-card { width: 232px; padding: 9px; }
+.tl-card .entry-cover { border-radius: 12px; }
+.tl-title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tb-btn {
   border: none;
   background: transparent;
@@ -598,27 +695,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   font-weight: 600;
 }
 .badge-dup { background: rgba(255, 149, 0, 0.85); }
-.play-overlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-.play-btn {
-  width: 46px;
-  height: 46px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(8px);
-  color: #fff;
-  font-size: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding-left: 3px;
-}
 .live-overlay {
   position: absolute;
   left: 8px;
