@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { store, connectWS, refreshTasks, markNotificationsRead } from './store.js'
 
@@ -21,9 +21,27 @@ function toggleNotif() {
   if (notifOpen.value) markNotificationsRead()
 }
 
+// 回到顶部：内容区滚动超过阈值时显示
+const showTop = ref(false)
+let _contentEl = null
+
+function onContentScroll() {
+  if (_contentEl) showTop.value = _contentEl.scrollTop > 300
+}
+
+function scrollToTop() {
+  _contentEl?.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
 onMounted(() => {
   connectWS()
   refreshTasks()
+  _contentEl = document.querySelector('.content')
+  _contentEl?.addEventListener('scroll', onContentScroll, { passive: true })
+})
+
+onBeforeUnmount(() => {
+  _contentEl?.removeEventListener('scroll', onContentScroll)
 })
 </script>
 
@@ -116,6 +134,16 @@ onMounted(() => {
       {{ t.text }}
     </div>
   </transition-group>
+
+  <!-- 回到顶部 -->
+  <transition name="topbtn">
+    <button
+      v-if="showTop"
+      class="back-top"
+      title="回到顶部"
+      @click="scrollToTop"
+    >↑</button>
+  </transition>
 </template>
 
 <style scoped>
@@ -216,4 +244,36 @@ onMounted(() => {
 .toast-leave-active { transition: all 250ms ease-in; }
 .toast-enter-from { opacity: 0; transform: translateX(60px) scale(0.92); }
 .toast-leave-to { opacity: 0; transform: translateY(-8px); }
+
+/* 回到顶部按钮 */
+.back-top {
+  position: fixed;
+  right: 28px;
+  bottom: 32px;
+  z-index: 450;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 200ms var(--ease), box-shadow 200ms, background 200ms;
+}
+.back-top:hover {
+  transform: translateY(-3px);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.2);
+}
+.back-top:active { transform: scale(0.94); }
+
+.topbtn-enter-active { transition: all 280ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+.topbtn-leave-active { transition: all 200ms ease-in; }
+.topbtn-enter-from,
+.topbtn-leave-to { opacity: 0; transform: translateY(16px) scale(0.85); }
 </style>
