@@ -6,6 +6,7 @@
 import asyncio
 import datetime as _dt
 import os
+import re
 import uuid
 from typing import Optional
 
@@ -100,6 +101,21 @@ async def create(script_id: str, params: dict) -> dict:
     return public_task(task)
 
 
+def _clean_dir_segment(seg: str) -> str:
+    """把日志路径片段清理成纯目录：去大小尾巴/context.md/文件名。"""
+    seg = seg.strip()
+    # 去掉 "(1123882 bytes)" 之类的文件大小尾巴
+    seg = re.sub(r"\s*\(\d+\s*bytes?\)\s*$", "", seg)
+    for stop in ("\\context.md", "/context.md"):
+        seg = seg.split(stop)[0]
+    # "下载完成:" 后面跟的是完整文件路径 -> 取所在目录
+    base = seg.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+    if "." in base and not seg.endswith(("\\", "/", ":")):
+        parent = seg.rsplit("\\", 1)[0] if "\\" in seg else seg.rsplit("/", 1)[0]
+        seg = parent
+    return seg
+
+
 def _detect_output_dir(task: dict, text: str):
     """从日志中提取输出目录（两个脚本都会打印保存/生成路径）。
 
@@ -107,12 +123,10 @@ def _detect_output_dir(task: dict, text: str):
     """
     if task["output_dir"]:
         return
-    for kw in ("保存目录:", "下载完成:", "context.md 已生成:"):
+    for kw in ("保存目录:", "下载完成:", "官方封面已保存:", "context.md 已生成:"):
         idx = text.find(kw)
         if idx >= 0:
-            seg = text[idx:].split(":", 1)[1].strip()
-            for stop in ("\\context.md", "/context.md"):
-                seg = seg.split(stop)[0]
+            seg = _clean_dir_segment(text[idx:].split(":", 1)[1])
             if seg and (":\\" in seg or ":/" in seg or seg.startswith("\\\\")):
                 task["output_dir"] = seg
                 try:
