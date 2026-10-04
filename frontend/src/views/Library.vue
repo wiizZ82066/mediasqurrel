@@ -67,6 +67,20 @@ onMounted(async () => {
   }
 })
 
+// 手动刷新：强制全盘重扫（缓存与实际不符时使用）
+const refreshing = ref(false)
+async function refreshLibrary() {
+  refreshing.value = true
+  try {
+    authors.value = await api.library(true)
+    toast('🔄 媒体库已重新扫描', 'success')
+  } catch (e) {
+    toast('刷新失败: ' + e.message, 'error')
+  } finally {
+    refreshing.value = false
+  }
+}
+
 // 日期目录 -> 可比较键（'26-09-29' / '2026-09-23-16-17' 统一）
 function dateKey(dateDir) {
   const parts = dateDir.split('-')
@@ -262,6 +276,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <button class="tb-btn" :class="{ on: typeFilter === 'live' }" @click="typeFilter = 'live'">✨</button>
           <button class="tb-btn" :class="{ on: typeFilter === 'video' }" @click="typeFilter = 'video'">🎬</button>
         </div>
+
+        <!-- 手动刷新：内容与实际不符时强制重扫 -->
+        <button
+          class="btn btn-ghost btn-sm refresh-btn"
+          :disabled="refreshing"
+          :title="'强制重新扫描全部存档' + (refreshing ? '（扫描中…）' : '')"
+          @click="refreshLibrary"
+        >
+          <span :class="{ spin: refreshing }">🔄</span>
+          {{ refreshing ? '扫描中…' : '刷新' }}
+        </button>
       </div>
 
       <!-- 作者条（仅按作者视图且非搜索时显示） -->
@@ -476,6 +501,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   padding: 3px;
   gap: 2px;
 }
+.refresh-btn { flex-shrink: 0; }
+.spin { display: inline-block; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .tb-btn {
   border: none;
   background: transparent;

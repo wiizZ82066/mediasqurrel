@@ -40,6 +40,19 @@ async def on_startup():
     watcher.init_db()
     watcher.start_scheduler(_dispatch_new_items)
 
+    # 下载任务成功 -> 媒体库缓存自动失效（下次访问即为新数据）
+    task_manager.ON_TASK_DONE.append(lambda task: media_library.invalidate())
+
+    # 启动预热：后台线程扫描一次媒体库写缓存，用户首次访问毫秒级出数据
+    def _warmup():
+        try:
+            media_library.scan_root()
+            print("[startup] 媒体库缓存预热完成")
+        except Exception as e:
+            print(f"[startup] 媒体库预热失败: {e}")
+
+    asyncio.get_event_loop().run_in_executor(None, _warmup)
+
 
 # ---------------------------------------------------------------- 脚本清单
 
@@ -106,8 +119,9 @@ async def ws_endpoint(ws: WebSocket):
 # ---------------------------------------------------------------- 媒体库
 
 @app.get("/api/library")
-def api_library():
-    return media_library.scan_root()
+def api_library(refresh: int = 0):
+    """媒体库（库级缓存）。refresh=1 强制全盘重扫并更新缓存。"""
+    return media_library.scan_root(refresh=bool(refresh))
 
 
 @app.get("/api/library/authors")

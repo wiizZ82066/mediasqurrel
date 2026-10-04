@@ -363,11 +363,8 @@ def _parse_context(path: str) -> tuple[dict, str]:
     return meta, body.strip()
 
 
-def scan_root() -> list[dict]:
-    """返回全部作者：[{name, entries: [{date_dir, ..., meta}]}]
-
-    所有路径字段均为相对 LIBRARY_ROOT 的相对路径，不泄漏本机绝对路径。
-    """
+def _scan_root_nocache() -> list[dict]:
+    """真正执行全盘扫描（慢路径，结果会被上层缓存）。"""
     root = config.LIBRARY_ROOT
     authors = []
     try:
@@ -408,6 +405,56 @@ def scan_root() -> list[dict]:
     # 作者默认按作品数量从大到小
     authors.sort(key=lambda a: a["count"], reverse=True)
     return authors
+
+
+# ---------------------------------------------------------------- 库级缓存
+
+_LIB_CACHE_PATH = os.path.join(config.BASE_DIR, "app_data", "library_cache.json")
+_lib_cache_mem: Optional[list] = None  # 进程内存缓存（文件缓存的热路径）
+
+
+def scan_root(refresh: bool = False) -> list[dict]:
+    """返回全部作者（带库级缓存）。
+
+    缓存层级: 进程内存 -> app_data/library_cache.json -> 全盘扫描。
+    失效: 任务下载完成时 invalidate()；用户手动刷新传 refresh=True。
+    """
+    global _lib_cache_mem
+    if not refresh and _lib_cache_mem is not None:
+        return _lib_cache_mem
+    if not refresh:
+        disk = _load_lib_cache()
+        if disk is not None:
+            _lib_cache_mem = disk
+            return disk
+    result = _scan_root_nocache()
+    _lib_cache_mem = result
+    try:
+        os.makedirs(os.path.dirname(_LIB_CACHE_PATH), exist_ok=True)
+        with open(_LIB_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False)
+    except OSError:
+        pass
+    return result
+
+
+def _load_lib_cache() -> Optional[list]:
+    try:
+        with open(_LIB_CACHE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else None
+    except (OSError, ValueError):
+        return None
+
+
+def invalidate():
+    """清除缓存（下次 scan_root 重扫）。下载任务完成时自动调用。"""
+    global _lib_cache_mem
+    _lib_cache_mem = None
+    try:
+        os.remove(_LIB_CACHE_PATH)
+    except OSError:
+        pass
 
 
 def authors_summary() -> list[dict]:

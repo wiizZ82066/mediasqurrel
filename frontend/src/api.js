@@ -26,7 +26,7 @@ export const api = {
     }),
   tasks: () => req('/api/tasks'),
   cancelTask: (id) => req(`/api/tasks/${id}/cancel`, { method: 'POST' }),
-  library: () => req('/api/library'),
+  library: (refresh = false) => req(`/api/library${refresh ? '?refresh=1' : ''}`),
   browse: (path = '') => req(`/api/browse?path=${encodeURIComponent(path)}`),
   preview: (dir) => req(`/api/preview?dir=${encodeURIComponent(dir)}`),
   search: (q) => req(`/api/search?q=${encodeURIComponent(q)}`),

@@ -138,55 +138,26 @@ _MBLOGID_RE = re.compile(r"mblogid\*\*:\s*([A-Za-z0-9]+)")
 def _local_item_ids() -> set[str]:
     """收集本地存档已有的内容 ID（微博 bid / 抖音 aweme_id）。
 
-    来源: mp4 文件名（抖音）+ 各 context.md 原文链接（两平台）。
-    用于去重的"本地优先"判定：文件还在就不重复下载；
-    文件被删后即使数据库标记过已见，也会重新识别为新内容。
+    数据源: media_library 的库级缓存（内存/磁盘两级）——
+    避免本函数再全盘遍历，与媒体库共用一份缓存。
     """
-    import json as _json
+    from . import media_library
 
     ids: set[str] = set()
-    root = config.LIBRARY_ROOT
-    try:
-        authors = os.listdir(root)
-    except OSError:
-        return ids
-
-    for author in authors:
-        author_path = os.path.join(root, author)
-        if not os.path.isdir(author_path) or author.startswith("."):
-            continue
-        if author in {
-            ".git", ".ab-profile", "app", "frontend", "scripts_manifest",
-            "app_data", "node_modules", "__pycache__", ".venv", ".idea",
-            ".vscode", ".npm-cache", ".agent-browser", "backend-dist",
-            "portable", "build", "src-tauri", "dist",
-        }:
-            continue
-        try:
-            date_dirs = os.listdir(author_path)
-        except OSError:
-            continue
-        for d in date_dirs:
-            dpath = os.path.join(author_path, d)
-            if not os.path.isdir(dpath):
-                continue
-            try:
-                for f in os.listdir(dpath):
-                    if f.endswith(".mp4"):
-                        ids.add(f[:-4])
-            except OSError:
-                pass
-            ctx = os.path.join(dpath, "context.md")
-            try:
-                with open(ctx, "r", encoding="utf-8", errors="replace") as fh:
-                    content = fh.read(2048)
-                for m in _ITEM_LINK_RE.finditer(content):
-                    ids.add(m.group(1) or m.group(2) or "")
-                # 微博短 ID（mblogid 字段，与链接里的长数字 ID 双体系兼容）
-                for m in _MBLOGID_RE.finditer(content):
-                    ids.add(m.group(1))
-            except OSError:
-                continue
+    for author in media_library.scan_root():
+        for e in author.get("entries", []):
+            # 抖音: mp4 文件名即 aweme_id
+            for v in e.get("videos", []):
+                stem = v.rsplit(".", 1)[0]
+                if stem:
+                    ids.add(stem)
+            # 两平台: context.md 的原文链接 + 微博 mblogid 字段
+            link = (e.get("meta") or {}).get("原文链接", "")
+            for m in _ITEM_LINK_RE.finditer(link):
+                ids.add(m.group(1) or m.group(2) or "")
+            mid = (e.get("meta") or {}).get("mblogid", "")
+            if mid:
+                ids.add(mid)
     ids.discard("")
     return ids
 

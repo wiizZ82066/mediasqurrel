@@ -20,6 +20,9 @@ TASK_ORDER: list[str] = []
 
 WS_CLIENTS: set[WebSocket] = set()
 
+# 任务完成回调（main.py 注册：用于媒体库缓存失效等联动）
+ON_TASK_DONE: list = []
+
 _semaphore: Optional[asyncio.Semaphore] = None
 
 
@@ -191,6 +194,15 @@ async def _run(task_id: str):
             if task["status"] == "running":  # 子进程被 kill 的场景
                 task["status"] = "failed"
             await broadcast({"type": "task_update", "task": public_task(task)})
+            # 完成回调（媒体库缓存失效等）
+            if task["status"] == "success":
+                for cb in ON_TASK_DONE:
+                    try:
+                        ret = cb(task)
+                        if asyncio.iscoroutine(ret):
+                            await ret
+                    except Exception as e:
+                        print(f"[task_manager] 完成回调异常: {e}")
 
 
 async def cancel(task_id: str) -> bool:
