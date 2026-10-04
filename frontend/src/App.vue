@@ -264,6 +264,10 @@ onBeforeUnmount(() => {
   font-weight: 700;
   cursor: pointer;
   transition: transform 200ms var(--ease), box-shadow 200ms, background 200ms;
+  /* 布局机制居中：图标永远锁定在圆形几何中心 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .back-top:hover {
   transform: translateY(-3px);
@@ -271,7 +275,9 @@ onBeforeUnmount(() => {
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.2);
 }
 .back-top:active { transform: scale(0.94); }
-/* 实心大向上三角（CSS 绘制） */
+/* 实心大向上三角（CSS border 绘制，由父级 flex 自动居中）
+   视觉微调依据：三角形质心位于底边上方 h/3 ≈ 4.7px，而 border-box
+   几何中心在 h/2 = 7px；质心对齐圆心需上移 7 - 4.7 ≈ 2.3px，取 -2px */
 .back-top .tri {
   display: block;
   width: 0;
@@ -279,7 +285,7 @@ onBeforeUnmount(() => {
   border-left: 10px solid transparent;
   border-right: 10px solid transparent;
   border-bottom: 14px solid var(--text);
-  margin-top: -4px; /* 视觉居中补偿 */
+  transform: translateY(-2px);
 }
 
 .topbtn-enter-active { transition: all 280ms cubic-bezier(0.34, 1.56, 0.64, 1); }
