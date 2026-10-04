@@ -7,6 +7,7 @@ import asyncio
 import datetime as _dt
 import json
 import os
+import re
 import sqlite3
 from typing import Callable, Optional
 
@@ -126,6 +127,70 @@ def mark_seen(platform: str, blogger_id: str, item_id: str):
         )
 
 
+# ---------------------------------------------------------------- 本地内容索引（去重首选）
+
+_ITEM_LINK_RE = re.compile(
+    r"weibo\.com/\d+/([A-Za-z0-9]+)|douyin\.com/video/(\d+)"
+)
+_MBLOGID_RE = re.compile(r"mblogid\*\*:\s*([A-Za-z0-9]+)")
+
+
+def _local_item_ids() -> set[str]:
+    """收集本地存档已有的内容 ID（微博 bid / 抖音 aweme_id）。
+
+    来源: mp4 文件名（抖音）+ 各 context.md 原文链接（两平台）。
+    用于去重的"本地优先"判定：文件还在就不重复下载；
+    文件被删后即使数据库标记过已见，也会重新识别为新内容。
+    """
+    import json as _json
+
+    ids: set[str] = set()
+    root = config.LIBRARY_ROOT
+    try:
+        authors = os.listdir(root)
+    except OSError:
+        return ids
+
+    for author in authors:
+        author_path = os.path.join(root, author)
+        if not os.path.isdir(author_path) or author.startswith("."):
+            continue
+        if author in {
+            ".git", ".ab-profile", "app", "frontend", "scripts_manifest",
+            "app_data", "node_modules", "__pycache__", ".venv", ".idea",
+            ".vscode", ".npm-cache", ".agent-browser", "backend-dist",
+            "portable", "build", "src-tauri", "dist",
+        }:
+            continue
+        try:
+            date_dirs = os.listdir(author_path)
+        except OSError:
+            continue
+        for d in date_dirs:
+            dpath = os.path.join(author_path, d)
+            if not os.path.isdir(dpath):
+                continue
+            try:
+                for f in os.listdir(dpath):
+                    if f.endswith(".mp4"):
+                        ids.add(f[:-4])
+            except OSError:
+                pass
+            ctx = os.path.join(dpath, "context.md")
+            try:
+                with open(ctx, "r", encoding="utf-8", errors="replace") as fh:
+                    content = fh.read(2048)
+                for m in _ITEM_LINK_RE.finditer(content):
+                    ids.add(m.group(1) or m.group(2) or "")
+                # 微博短 ID（mblogid 字段，与链接里的长数字 ID 双体系兼容）
+                for m in _MBLOGID_RE.finditer(content):
+                    ids.add(m.group(1))
+            except OSError:
+                continue
+    ids.discard("")
+    return ids
+
+
 # ---------------------------------------------------------------- 扫描引擎（插件式）
 
 # Scanner: async fn(sub: dict) -> list[dict]
@@ -155,13 +220,21 @@ async def scan_sub(sub: dict) -> dict:
             items = scanner(sub)
             if asyncio.iscoroutine(items):
                 items = await items
+            # 去重策略：本地已有优先，数据库兜底
+            #   - 本地文件存在 -> 跳过（并自愈数据库标记）
+            #   - 本地文件不存在 -> 视为新内容（即使数据库记过"已见"，
+            #     文件被删后重新下载——修复删档后无法重新检测的 bug）
+            local_ids = _local_item_ids()
             first_scan = not _has_any_seen(platform, sub["blogger_id"])
             for it in items:
-                if has_seen(platform, sub["blogger_id"], it["item_id"]):
+                iid = it["item_id"]
+                if iid in local_ids:
+                    mark_seen(platform, sub["blogger_id"], iid)  # 自愈
                     continue
-                mark_seen(platform, sub["blogger_id"], it["item_id"])
                 if first_scan:
+                    mark_seen(platform, sub["blogger_id"], iid)
                     continue  # 首次扫描仅对齐基线，不把历史内容全部入队
+                mark_seen(platform, sub["blogger_id"], iid)
                 result["new_items"].append(it)
             if first_scan:
                 result["baseline"] = len(items)

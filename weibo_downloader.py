@@ -301,6 +301,7 @@ def extract_post(page, url: str) -> dict:
             "publish_datetime": publish_datetime,
             "normal_imgs": normal_imgs,
             "live_videos": live_videos,
+            "mblogid": api_data.get("mblogid") or "",
             "api": True,
         }
 
@@ -486,6 +487,9 @@ def save_content(data: dict, out_root: str) -> str:
     md.append("# 微博内容\n")
     md.append(f"- **作者**: {data['username']}")
     md.append(f"- **原文链接**: {data.get('url', '')}")
+    # mblogid（base62 短 ID）：订阅扫描去重用（长数字 ID 与短 ID 双体系兼容）
+    if data.get("mblogid"):
+        md.append(f"- **mblogid**: {data['mblogid']}")
     md.append(f"- **发布时间**: {data.get('publish_datetime', data['publish_time'])}")
     if data.get("ip_region"):
         md.append(f"- **IP属地**: {data['ip_region']}")
