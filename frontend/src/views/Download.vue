@@ -623,6 +623,7 @@ function carouselPrev() {
 .video-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  justify-content: center; /* 单视频时居中，不贴左 */
   gap: 14px;
 }
 .video-list video {
