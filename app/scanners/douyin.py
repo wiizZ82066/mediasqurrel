@@ -48,11 +48,13 @@ def _scan_sync(sub: dict) -> list[dict]:
         raise RuntimeError("未捕获到 aweme/post 接口（可能被风控，稍后重试）")
 
     items = []
+    seen_ids = set()  # 置顶视频会同时出现在置顶位与时间线，按 id 去重
     for data in hunter.json_results():
         for a in data.get("aweme_list") or []:
             vid = a.get("aweme_id")
-            if not vid:
+            if not vid or str(vid) in seen_ids:
                 continue
+            seen_ids.add(str(vid))
             desc = re.sub(r"\s+", " ", (a.get("desc") or "")).strip()
             items.append({
                 "item_id": str(vid),

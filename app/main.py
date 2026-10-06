@@ -1,6 +1,8 @@
 """FastAPI 入口：REST API + WebSocket + 媒体静态资源 + 前端托管。"""
 import asyncio
+import contextlib
 import datetime as _dt
+import json
 import os
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -11,15 +13,34 @@ from fastapi.staticfiles import StaticFiles
 from . import config, media_library, script_registry, task_manager, watcher
 from . import scanners  # noqa: F401  (import 即注册各平台扫描器)
 
+
+def _app_version() -> str:
+    """读取应用版本：打包资源内 package.json > 根目录 package.json > dev。"""
+    for base in (getattr(config, "RESOURCE_DIR", ""), config.BASE_DIR):
+        pj = os.path.join(base, "package.json")
+        if os.path.isfile(pj):
+            try:
+                with open(pj, "r", encoding="utf-8") as f:
+                    return json.load(f).get("version", "dev")
+            except (OSError, ValueError):
+                continue
+    return "dev"
+
+
+_DEV_MODE = os.environ.get("MS_DEV") == "1" or not getattr(
+    __import__("sys"), "frozen", False
+)
+
 app = FastAPI(title="Media Squirrel", docs_url=None, redoc_url=None)
 
-# 开发期 Vite (5173) 跨域访问
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS：仅开发模式放行 Vite dev server；桌面生产为同源访问，无需 CORS
+if _DEV_MODE:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 async def _dispatch_new_items(items):
@@ -35,8 +56,9 @@ async def _dispatch_new_items(items):
         await task_manager.create(it["script_id"], it["params"])
 
 
-@app.on_event("startup")
-async def on_startup():
+@contextlib.asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # ---- startup ----
     watcher.init_db()
     watcher.start_scheduler(_dispatch_new_items)
 
@@ -44,14 +66,38 @@ async def on_startup():
     task_manager.ON_TASK_DONE.append(lambda task: media_library.invalidate())
 
     # 启动预热：后台线程扫描一次媒体库写缓存，用户首次访问毫秒级出数据
-    def _warmup():
-        try:
-            media_library.scan_root()
-            print("[startup] 媒体库缓存预热完成")
-        except Exception as e:
-            print(f"[startup] 媒体库预热失败: {e}")
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, _warmup)
 
-    asyncio.get_event_loop().run_in_executor(None, _warmup)
+    yield
+
+    # ---- shutdown ----
+    watcher_stop = getattr(watcher, "stop_scheduler", None)
+    if watcher_stop:
+        watcher_stop()
+
+
+def _warmup():
+    try:
+        media_library.scan_root()
+        print("[startup] 媒体库缓存预热完成")
+    except Exception as e:
+        print(f"[startup] 媒体库预热失败: {e}")
+
+
+app = FastAPI(title="Media Squirrel", lifespan=lifespan,
+              docs_url=None, redoc_url=None) if False else app
+
+# 将 lifespan 附加到已创建的 app（保持中间件顺序）
+app.router.lifespan_context = lifespan
+
+
+# ---------------------------------------------------------------- 健康检查
+
+@app.get("/api/health")
+def api_health():
+    """Electron 健康检查端点（200 + status=ok 即就绪）。"""
+    return {"status": "ok", "version": _app_version()}
 
 
 # ---------------------------------------------------------------- 脚本清单
@@ -237,6 +283,9 @@ def api_preview(dir: str):
             ext = os.path.splitext(f)[1].lower()
             full = os.path.join(root, f)
             rel = os.path.relpath(full, config.LIBRARY_ROOT).replace("\\", "/")
+            if f.endswith("_cover.jpg"):
+                # 官方封面是元数据（视频已自带画面），预览不单独展示
+                continue
             if ext in IMG_EXT:
                 images.append(rel)
             elif ext in VID_EXT:

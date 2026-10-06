@@ -197,8 +197,12 @@ async def scan_sub(sub: dict) -> dict:
             #     文件被删后重新下载——修复删档后无法重新检测的 bug）
             local_ids = _local_item_ids()
             first_scan = not _has_any_seen(platform, sub["blogger_id"])
+            dispatched = set()  # 同轮兜底去重（扫描器可能返回重复 item）
             for it in items:
                 iid = it["item_id"]
+                if iid in dispatched:
+                    continue
+                dispatched.add(iid)
                 if iid in local_ids:
                     mark_seen(platform, sub["blogger_id"], iid)  # 自愈
                     continue

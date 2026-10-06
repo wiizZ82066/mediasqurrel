@@ -109,24 +109,33 @@ def resolve_to_video_url(raw: str) -> str:
 
 
 def _attach_dy_cookies(ctx):
-    """注入本地保存的抖音登录态（app_data/douyin_cookies.json，若存在）。"""
+    """注入本地保存的抖音登录态（若存在）。"""
     try:
         try:
             from app.douyin_auth import attach_cookies
         except ImportError:
             import importlib.util as ilu
-            p = os.path.join(BASE, "app", "douyin_auth.py")
-            s = ilu.spec_from_file_location("_dy_auth", p)
-            m = ilu.module_from_spec(s)
-            s.loader.exec_module(m)
-            attach_cookies = m.attach_cookies
+            # 源码运行在脚本目录；frozen 后端在 PyInstaller 资源目录
+            for base in (BASE, getattr(sys, "_MEIPASS", "")):
+                if not base:
+                    continue
+                p = os.path.join(base, "app", "douyin_auth.py")
+                if os.path.isfile(p):
+                    s = ilu.spec_from_file_location("_dy_auth", p)
+                    m = ilu.module_from_spec(s)
+                    s.loader.exec_module(m)
+                    attach_cookies = m.attach_cookies
+                    break
+            else:
+                return
         attach_cookies(ctx)
     except Exception:
         pass  # 无登录态时静默跳过
 
 
-def fetch_aweme_detail(url: str) -> dict:
-    """系统 Chrome 打开视频页，拦截 aweme/v1/web/aweme/detail 响应。"""
+def _fetch_aweme_detail_once(url: str) -> dict | None:
+    """单次尝试：打开视频页拦截 aweme/v1/web/aweme/detail。失败返回 None。"""
+    hunter = None
     with sync_playwright() as p:
         browser = launch_chrome(p, headless=True)
         try:
@@ -139,11 +148,30 @@ def fetch_aweme_detail(url: str) -> dict:
             page.wait_for_timeout(6000)
         finally:
             browser.close()
-
+    if hunter is None:
+        return None
     for data in hunter.json_results():
         if isinstance(data, dict) and "aweme_detail" in data:
             return data["aweme_detail"]
-    raise RuntimeError("未捕获到 aweme_detail 接口响应")
+    return None
+
+
+def fetch_aweme_detail(url: str) -> dict:
+    """拦截 aweme/v1/web/aweme/detail 响应（偶发风控自动重试，共 3 次尝试）。"""
+    last_err = None
+    for attempt in range(3):
+        if attempt:
+            time.sleep(3)  # 风控退避
+            print(f"[*] 第 {attempt + 1} 次尝试（{url.split('/')[-1][:24]}）…")
+        try:
+            detail = _fetch_aweme_detail_once(url)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            continue
+        if detail:
+            return detail
+        last_err = RuntimeError("未捕获到 aweme_detail 接口响应")
+    raise last_err
 
 
 def download(url: str, dest: str) -> int:
