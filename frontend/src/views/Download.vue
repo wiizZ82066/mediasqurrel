@@ -622,8 +622,8 @@ function carouselPrev() {
 
 .video-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  justify-content: center; /* 单视频时居中，不贴左 */
+  grid-template-columns: repeat(auto-fit, minmax(280px, 560px));
+  justify-content: center; /* auto-fit 折叠空轨道后轨道组居中 */
   gap: 14px;
 }
 .video-list video {
