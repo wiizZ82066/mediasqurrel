@@ -286,7 +286,7 @@ defineExpose({ ensureExpanded })
 }
 .pv-grid img:hover { transform: scale(1.03); }
 .pv-videos { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 560px)); justify-content: center; gap: 12px; }
-.pv-videos video { width: 100%; border-radius: 12px; background: #000; }
+.pv-videos video { width: 100%; max-height: 56vh; object-fit: contain; border-radius: 12px; background: #000; }
 .pv-more {
   grid-column: 1 / -1;
   text-align: center;
