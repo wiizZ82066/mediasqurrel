@@ -180,19 +180,22 @@ async def _run(task_id: str):
 
             code = await proc.wait()
             task["exit_code"] = code
-            task["status"] = "success" if code == 0 else "failed"
+            if task.get("_cancelling"):
+                task["status"] = "cancelled"
+            else:
+                task["status"] = "success" if code == 0 else "failed"
         except asyncio.CancelledError:
             pass
         except Exception as e:
             entry = append_log(task_id, f"[管理器] 执行异常: {e}", "stderr")
             await broadcast({"type": "task_log", "task_id": task_id, "log": entry})
-            task["status"] = "failed"
+            task["status"] = "cancelled" if task.get("_cancelling") else "failed"
             task["exit_code"] = -1
         finally:
             task["proc"] = None
             task["finished_at"] = _dt.datetime.now().isoformat(timespec="seconds")
             if task["status"] == "running":  # 子进程被 kill 的场景
-                task["status"] = "failed"
+                task["status"] = "cancelled" if task.get("_cancelling") else "failed"
             await broadcast({"type": "task_update", "task": public_task(task)})
             # 完成回调（媒体库缓存失效等）
             if task["status"] == "success":
@@ -210,15 +213,28 @@ async def cancel(task_id: str) -> bool:
     if not task:
         return False
     if task["status"] == "queued":
+        task["_cancelling"] = True
         task["status"] = "cancelled"
         task["finished_at"] = _dt.datetime.now().isoformat(timespec="seconds")
         await broadcast({"type": "task_update", "task": public_task(task)})
         return True
     if task["status"] == "running" and task.get("proc"):
+        task["_cancelling"] = True
+        entry = append_log(task_id, "[管理器] 取消：终止进程树 (taskkill /T /F)", "stderr")
+        await broadcast({"type": "task_log", "task_id": task_id, "log": entry})
         try:
-            task["proc"].kill()
+            # Windows 进程树终止：直接 kill 只杀 python，其派生的 Chromium 会残留
+            proc = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(task["proc"].pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
         except Exception:
-            pass
+            try:
+                task["proc"].kill()
+            except Exception:
+                pass
         return True
     return False
 

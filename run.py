@@ -41,6 +41,28 @@ import uvicorn
 from app import config
 
 
+def _stdin_watchdog():
+    """桌面模式看门狗：Electron 主进程被强杀时（before-quit 不触发），
+    本进程 stdin 收到 EOF → 自杀，避免后端残留后台。
+
+    仅当 stdin 是管道（被 Electron spawn）时启用；终端直跑时 stdin
+    阻塞在 read，不影响。--no-watchdog 可显式关闭。
+    """
+    if "--no-watchdog" in sys.argv or not sys.stdin or sys.stdin.isatty():
+        return
+
+    def _watch():
+        try:
+            while sys.stdin.read(1):
+                pass
+        except Exception:
+            pass
+        # EOF：父进程已退出
+        os._exit(0)
+
+    threading.Thread(target=_watch, daemon=True).start()
+
+
 def _wait_and_open(url: str):
     """等服务端口就绪后打开浏览器。"""
     def _worker():
@@ -97,6 +119,7 @@ def main():
     ap = argparse.ArgumentParser(description="Media Squirrel 启动器")
     ap.add_argument("--no-tray", action="store_true", help="不启用系统托盘（纯控制台）")
     ap.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    ap.add_argument("--no-watchdog", action="store_true", help="禁用 stdin 看门狗（桌面模式父进程存活检测）")
     ap.add_argument("--port", type=int, default=config.PORT, help=f"端口（默认 {config.PORT}）")
     ap.add_argument("--reload", action="store_true", help="开发模式热重载")
     args = ap.parse_args()
@@ -104,6 +127,8 @@ def main():
     config.PORT = args.port
     url = f"http://{config.HOST}:{args.port}"
     print(f"[*] Media Squirrel 启动中: {url}")
+
+    _stdin_watchdog()
 
     if not args.no_browser:
         _wait_and_open(url)
