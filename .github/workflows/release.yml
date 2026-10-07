@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ---- 安装锁定依赖（禁止依赖开发机状态）----
+      - name: Install Node deps
+        run: npm ci
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Python release deps
+        run: python -m pip install -r requirements-release.txt
+
+      # ---- 干净安装 Playwright 浏览器（指定 revision，不用缓存目录）----
+      - name: Install Playwright browsers (clean)
+        run: python -m playwright install chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.playwright-browsers
+
+      - name: Verify Playwright revision
+        shell: pwsh
+        run: |
+          $bj = Get-ChildItem "C:\hostedtoolcache\windows\Python\*\x64\Lib\site-packages\playwright\driver\package\browsers.json" -ErrorAction SilentlyContinue
+          if (-not $bj) { $bj = Get-ChildItem "$env:pythonLocation\Lib\site-packages\playwright\driver\package\browsers.json" }
+          $data = Get-Content $bj[0].FullName | ConvertFrom-Json
+          $chromium = $data.browsers | Where-Object { $_.name -eq "chromium" } | Select-Object -First 1
+          $revision = $chromium.revision
+          Write-Host "Required chromium revision: $revision"
+          # 动态更新 build_backend.ps1 里的 revision 列表
+          $content = Get-Content build_backend.ps1 -Raw
+          $content = $content -replace 'chromium-\d+', "chromium-$revision" -replace 'chromium_headless_shell-\d+', "chromium_headless_shell-$revision" -replace 'ffmpeg-\d+', "ffmpeg-$($data.browsers | Where-Object { $_.name -eq 'ffmpeg' } | Select-Object -First 1 -ExpandProperty revision)"
+          Set-Content build_backend.ps1 $content -NoNewline
+
+      # ---- 复制干净浏览器到 ms-playwright 默认位置（build_backend.ps1 读取源）----
+      - name: Stage Playwright browsers
+        shell: pwsh
+        run: |
+          $msPw = Join-Path $env:LOCALAPPDATA "ms-playwright"
+          New-Item -ItemType Directory -Force -Path $msPw | Out-Null
+          Get-ChildItem "${{ github.workspace }}\.playwright-browsers" -Directory | ForEach-Object {
+            Copy-Item $_.FullName (Join-Path $msPw $_.Name) -Recurse -Force
+            Write-Host "  staged: $($_.Name)"
+          }
+
+      # ---- 构建 ----
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Generate icon
+        run: python make_icon.py
+
+      - name: Build backend (PyInstaller)
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File build_backend.ps1
+
+      - name: Size report
+        shell: pwsh
+        run: |
+          $be = (Get-ChildItem backend-dist\MediaSquirrelBackend -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
+          $pw = (Get-ChildItem backend-dist\playwright-browsers -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
+          Write-Host "backend: $([math]::Round($be,0)) MB | playwright: $([math]::Round($pw,0)) MB"
+
+      # ---- 签名校验（正式 Release 必须有证书，否则 FAIL）----
+      - name: Verify signing secrets (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.WIN_CSC_LINK }}" ] || [ -z "${{ secrets.WIN_CSC_KEY_PASSWORD }}" ]; then
+            echo "::error::Release build requires WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD secrets (Authenticode certificate)"
+            exit 1
+          fi
+          if [ -z "${{ secrets.ELECTRON_BUILDER_UPDATE_SIGN_KEY }}" ]; then
+            echo "::error::Release build requires ELECTRON_BUILDER_UPDATE_SIGN_KEY secret (Ed25519 update manifest signing)"
+            exit 1
+          fi
+
+      - name: Build Electron app (NSIS)
+        shell: pwsh
+        run: npx electron-builder --win nsis --x64 --publish never
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          ELECTRON_BUILDER_UPDATE_SIGN_KEY: ${{ secrets.ELECTRON_BUILDER_UPDATE_SIGN_KEY }}
+
+      # ---- 签名验证 ----
+      - name: Verify Authenticode signatures
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem "release\Media-Squirrel-Setup-*.exe" | Select-Object -First 1
+          $sig = Get-AuthenticodeSignature $exe.FullName
+          Write-Host "Installer signature: $($sig.Status)"
+          if ($sig.Status -ne "Valid") {
+            Write-Host "::error::Installer not properly signed: $($sig.StatusMessage)"
+            exit 1
+          }
+          $appExe = "release\win-unpacked\Media Squirrel.exe"
+          $sig2 = Get-AuthenticodeSignature $appExe
+          Write-Host "App exe signature: $($sig2.Status)"
+          if ($sig2.Status -ne "Valid") { exit 1 }
+
+      # ---- GitHub Release（仅 tag 触发）----
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/Media-Squirrel-Setup-*.exe
+            release/latest.yml
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
