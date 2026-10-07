@@ -4,6 +4,10 @@
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
+# The only browser revision required by the pinned playwright version.
+# Determined from playwright driver's browsers.json (chromium/headless-shell/ffmpeg).
+$RequiredRevisions = @("chromium-1234", "chromium_headless_shell-1234", "ffmpeg-1011")
+
 Write-Host "[1/3] frontend dist check..." -ForegroundColor Cyan
 if (-not (Test-Path "frontend\dist\index.html")) {
     Write-Error "frontend/dist missing. Run: cd frontend; npm run build"
@@ -52,25 +56,34 @@ python -m PyInstaller `
   --exclude-module PySide2 `
   --exclude-module PySide6 `
   --exclude-module qtpy `
+  --exclude-module patchright `
   run.py
 if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller failed" }
 
-Write-Host "[3/3] playwright chromium..." -ForegroundColor Cyan
+# patchright is emergency-only (USE_PATCHRIGHT=False), remove from release
+$pr = "backend-dist\MediaSquirrelBackend\_internal\patchright"
+if (Test-Path $pr) {
+    Remove-Item $pr -Recurse -Force
+    Write-Host "  - removed patchright (saves ~88 MB)"
+}
+
+Write-Host "[3/3] playwright chromium (required revisions only)..." -ForegroundColor Cyan
 $msPw = Join-Path $env:LOCALAPPDATA "ms-playwright"
 $dst = "backend-dist\playwright-browsers"
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 if (Test-Path $msPw) {
-    Get-ChildItem $msPw -Directory -Filter "chromium*" | ForEach-Object {
-        Copy-Item $_.FullName (Join-Path $dst $_.Name) -Recurse -Force
-        Write-Host ("  + " + $_.Name)
-    }
-    Get-ChildItem $msPw -Directory -Filter "ffmpeg*" | ForEach-Object {
-        Copy-Item $_.FullName (Join-Path $dst $_.Name) -Recurse -Force
-        Write-Host ("  + " + $_.Name)
+    foreach ($rev in $RequiredRevisions) {
+        $srcDir = Join-Path $msPw $rev
+        if (Test-Path $srcDir) {
+            Copy-Item $srcDir (Join-Path $dst $rev) -Recurse -Force
+            Write-Host ("  + " + $rev)
+        } else {
+            Write-Warning ("required revision missing on this machine: " + $rev)
+        }
     }
 } else {
     Write-Warning "ms-playwright not found; bundled browsers skipped"
 }
 
-$size = (Get-ChildItem backend-dist -Recurse | Measure-Object Length -Sum).Sum / 1MB
+$size = (Get-ChildItem backend-dist -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
 Write-Host ("=== DONE: backend-dist ({0:N0} MB) ===" -f $size)

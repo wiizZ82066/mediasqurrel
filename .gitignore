@@ -13,9 +13,16 @@
 # ---------- 放行区 ----------
 !/.gitignore
 !/.gitattributes
+!/.github/
+!/.github/**
 !/DESIGN.md
 !/README.md
+!/CURRENT_BASELINE.md
+!/RELEASE_AUDIT.md
+!/BUILD_SIZE_REPORT.md
+!/RELEASE_TEST_REPORT.md
 !/requirements.txt
+!/requirements-release.txt
 !/weibo_downloader.py
 !/douyin_downloader.py
 !/run.py
@@ -52,3 +59,9 @@ release/
 portable/
 *.spec
 node_modules/
+
+# 更新签名私钥（只允许存在于 CI secret / 本机，绝不入库）
+update-private-key.pem
+*.pem
+*.pfx
+*.key
