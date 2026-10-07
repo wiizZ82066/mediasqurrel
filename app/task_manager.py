@@ -162,6 +162,10 @@ async def _run(task_id: str):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *task["command"],
+                # Electron's stdin pipe is consumed by the parent watchdog.
+                # Inheriting that busy Windows pipe can block a frozen child
+                # before Python starts. Downloaders never read interactive input.
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=config.BASE_DIR,

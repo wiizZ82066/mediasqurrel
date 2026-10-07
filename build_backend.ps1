@@ -27,6 +27,7 @@ python -m PyInstaller `
   --add-data "weibo_downloader.py;." `
   --add-data "douyin_downloader.py;." `
   --add-data "frontend/dist;frontend/dist" `
+  --add-data "package.json;." `
   --add-data "app_data/models;app_data/models" `
   --collect-all playwright `
   --collect-all pystray `

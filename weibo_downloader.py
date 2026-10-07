@@ -163,7 +163,13 @@ def extract_cover_from_mov(mov_path: str, jpg_path: str) -> bool:
         cap.release()
         if not ret:
             return False
-        cv2.imwrite(jpg_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        # OpenCV's Windows filename handling can silently fail for Chinese paths.
+        # Encode in memory and let Python write the Unicode filesystem path.
+        encoded, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        if not encoded:
+            return False
+        with open(jpg_path, 'wb') as output:
+            output.write(jpeg.tobytes())
         return True
     except Exception as e:
         print(f"    [x] 提取封面失败 {mov_path}: {e}")

@@ -313,7 +313,7 @@ if (!gotLock) {
     try {
       // DEV 模式: 后端由 concurrently 单独启动，Electron 只做健康检查；
       // 生产模式: Electron 负责启动后端（自动选可用端口）
-      const port = IS_DEV ? 8642 : await pickFreePort();
+      const port = IS_DEV ? Number(process.env.MS_PORT || 8642) : await pickFreePort();
       if (!IS_DEV) {
         await startBackend(port);
       }

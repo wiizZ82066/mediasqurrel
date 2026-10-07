@@ -34,7 +34,9 @@ def _resolve_base_dir() -> str:
 BASE_DIR = _resolve_base_dir()
 
 # 只读资源目录（frozen 时为 PyInstaller 解压目录）
-RESOURCE_DIR = getattr(sys, "_MEIPASS", BASE_DIR)
+RESOURCE_DIR = getattr(
+    sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 
 # 脚本注册清单目录
 MANIFEST_DIR = os.path.join(RESOURCE_DIR, "scripts_manifest")
