@@ -6,7 +6,14 @@ Set-Location $PSScriptRoot
 
 # The only browser revision required by the pinned playwright version.
 # Determined from playwright driver's browsers.json (chromium/headless-shell/ffmpeg).
-$RequiredRevisions = @("chromium-1234", "chromium_headless_shell-1234", "ffmpeg-1011")
+$browserJson = python -c "import pathlib,playwright; print((pathlib.Path(playwright.__file__).parent/'driver/package/browsers.json').read_text())"
+if ($LASTEXITCODE -ne 0) { throw "Cannot read pinned Playwright browser metadata" }
+$browserData = ($browserJson -join "`n") | ConvertFrom-Json
+$RequiredRevisions = foreach ($name in @("chromium", "chromium-headless-shell", "ffmpeg")) {
+    $browser = $browserData.browsers | Where-Object { $_.name -eq $name } | Select-Object -First 1
+    if (-not $browser) { throw "Browser metadata missing: $name" }
+    ($name.Replace('-', '_') + '-' + $browser.revision)
+}
 
 Write-Host "[1/3] frontend dist check..." -ForegroundColor Cyan
 if (-not (Test-Path "frontend\dist\index.html")) {
@@ -14,8 +21,14 @@ if (-not (Test-Path "frontend\dist\index.html")) {
 }
 
 Write-Host "[2/3] PyInstaller..." -ForegroundColor Cyan
-if (Test-Path backend-dist) { Remove-Item backend-dist -Recurse -Force }
-if (Test-Path build) { Remove-Item build -Recurse -Force }
+foreach ($name in @('backend-dist', 'build')) {
+    $target = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $name))
+    if ($target -ne (Join-Path $PSScriptRoot $name)) { throw "Unexpected build path: $target" }
+    if (Test-Path -LiteralPath $target) {
+        if ((Get-Item -LiteralPath $target).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Build path is a reparse point" }
+        Remove-Item -LiteralPath $target -Recurse -Force
+    }
+}
 if (Test-Path MediaSquirrelBackend.spec) { Remove-Item MediaSquirrelBackend.spec -Force }
 
 python -m PyInstaller `
@@ -69,7 +82,9 @@ if (Test-Path $pr) {
 }
 
 Write-Host "[3/3] playwright chromium (required revisions only)..." -ForegroundColor Cyan
-$msPw = Join-Path $env:LOCALAPPDATA "ms-playwright"
+$msPw = $env:PLAYWRIGHT_BROWSERS_PATH
+if (-not $msPw) { $msPw = Join-Path $env:LOCALAPPDATA "ms-playwright" }
+$msPw = [IO.Path]::GetFullPath($msPw)
 $dst = "backend-dist\playwright-browsers"
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 if (Test-Path $msPw) {
@@ -79,11 +94,11 @@ if (Test-Path $msPw) {
             Copy-Item $srcDir (Join-Path $dst $rev) -Recurse -Force
             Write-Host ("  + " + $rev)
         } else {
-            Write-Warning ("required revision missing on this machine: " + $rev)
+            throw ("Required browser revision missing: " + $srcDir)
         }
     }
 } else {
-    Write-Warning "ms-playwright not found; bundled browsers skipped"
+    throw "Playwright browser directory missing: $msPw"
 }
 
 $size = (Get-ChildItem backend-dist -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
