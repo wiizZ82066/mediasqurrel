@@ -4,8 +4,9 @@ import contextlib
 import datetime as _dt
 import json
 import os
+import secrets
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -101,6 +102,20 @@ def api_health():
 
 
 # ---------------------------------------------------------------- 脚本清单
+
+@app.post('/api/desktop/update-lock')
+async def api_update_lock(request: Request, body: dict):
+    # Only the owning Electron main process receives this per-launch token.
+    token = os.environ.get('MS_DESKTOP_TOKEN', '')
+    supplied = request.headers.get('x-desktop-token', '')
+    if not token or not secrets.compare_digest(token, supplied):
+        raise HTTPException(status_code=403, detail='Forbidden')
+    action = body.get('action')
+    if action == 'release':
+        task_manager.release_update_lock()
+    elif action not in ('status', 'acquire'):
+        raise HTTPException(status_code=400, detail='Invalid action')
+    return task_manager.update_state(acquire=action == 'acquire')
 
 @app.get("/api/scripts")
 def api_scripts():

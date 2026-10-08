@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { store, connectWS, refreshTasks, markNotificationsRead } from './store.js'
+import DesktopUpdate from './components/DesktopUpdate.vue'
 
 const route = useRoute()
 const navItems = [
@@ -75,6 +76,7 @@ onBeforeUnmount(() => {
       </button>
 
       <div class="sidebar-footer">
+        <DesktopUpdate />
         <div>
           <span class="dot" :style="{ color: store.wsConnected ? 'var(--green)' : 'var(--orange)' }"></span>
           {{ store.wsConnected ? '实时连接正常' : '连接中…' }}

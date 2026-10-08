@@ -8,6 +8,7 @@ import datetime as _dt
 import os
 import re
 import uuid
+import time
 from typing import Optional
 
 from fastapi import WebSocket
@@ -24,6 +25,21 @@ WS_CLIENTS: set[WebSocket] = set()
 ON_TASK_DONE: list = []
 
 _semaphore: Optional[asyncio.Semaphore] = None
+_update_locked_until = 0.0
+
+
+def update_state(acquire: bool = False) -> dict:
+    """Called on the event loop, atomically with create() before its first await."""
+    global _update_locked_until
+    count = sum(t['status'] in ('queued', 'running') for t in TASKS.values())
+    if acquire and count == 0:
+        _update_locked_until = time.monotonic() + 30
+    return {'active': count, 'locked': time.monotonic() < _update_locked_until}
+
+
+def release_update_lock():
+    global _update_locked_until
+    _update_locked_until = 0.0
 
 
 def _sem() -> asyncio.Semaphore:
@@ -62,6 +78,8 @@ def public_task(t: dict) -> dict:
 
 async def create(script_id: str, params: dict) -> dict:
     """校验参数并创建排队任务，返回任务对象。"""
+    if time.monotonic() < _update_locked_until:
+        raise ValueError('应用正在安装更新，请稍后重试')
     manifest = script_registry.get(script_id)
     if not manifest:
         raise ValueError(f"未知脚本: {script_id}")
@@ -96,8 +114,12 @@ async def create(script_id: str, params: dict) -> dict:
     TASK_ORDER.insert(0, task_id)
     # 只保留最近 200 条任务记录
     if len(TASK_ORDER) > 200:
-        old = TASK_ORDER.pop()
-        TASKS.pop(old, None)
+        # Never evict queued/running work: update gating must see every task.
+        old = next((tid for tid in reversed(TASK_ORDER)
+                    if TASKS[tid]['status'] not in ('queued', 'running')), None)
+        if old is not None:
+            TASK_ORDER.remove(old)
+            TASKS.pop(old, None)
 
     asyncio.create_task(_run(task_id))
     await broadcast({"type": "task_update", "task": public_task(task)})

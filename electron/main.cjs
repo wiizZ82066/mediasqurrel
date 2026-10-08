@@ -3,12 +3,14 @@
 // 绝不使用外部浏览器（无 webbrowser.open / shell.openExternal 打开主界面）。
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, nativeImage, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
+const { randomBytes } = require('crypto');
+const desktopToken = randomBytes(32).toString('hex');
 
 const IS_DEV = !!process.env.DEV_SERVER_URL;
 const DEV_URL = process.env.DEV_SERVER_URL || '';
@@ -26,7 +28,7 @@ function backendExePath() {
 
 function userDataDir() {
   const local = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '~', 'AppData', 'Local');
-  return path.join(local, 'Media Squirrel');
+  return process.env.MS_DATA_DIR || path.join(local, 'Media Squirrel');
 }
 
 // ---------- 端口 ----------
@@ -75,7 +77,7 @@ async function startBackend(port) {
   fs.mkdirSync(dataDir, { recursive: true });
 
   // Playwright 浏览器目录：优先随包分发的 chromium，其次用户已装的 ms-playwright
-  const env = { ...process.env, MS_PORT: String(port) };
+  const env = { ...process.env, MS_PORT: String(port), MS_DESKTOP_TOKEN: desktopToken };
   const bundledBrowsers = path.join(process.resourcesPath || '', 'playwright-browsers');
   if (!IS_DEV && fs.existsSync(bundledBrowsers)) {
     env.PLAYWRIGHT_BROWSERS_PATH = bundledBrowsers;
@@ -101,7 +103,10 @@ async function startBackend(port) {
 
   backendProc.stdout.on('data', (d) => process.stdout.write(`[backend] ${d}`));
   backendProc.stderr.on('data', (d) => process.stderr.write(`[backend] ${d}`));
-  backendProc.on('exit', onBackendUnexpectedExit);
+  const startedProc = backendProc;
+  backendProc.on('exit', code => {
+    if (backendProc === startedProc) onBackendUnexpectedExit(code);
+  });
 }
 
 // backend 意外退出：自动重启一次；正常退出（quitting）忽略
@@ -134,16 +139,27 @@ function showBackendDeadDialog() {
   app.quit();
 }
 
+let stopping = null;
 function killBackend() {
-  if (!backendProc || backendProc.killed) return;
-  const pid = backendProc.pid;
-  try {
-    // Windows: 树杀（后端会 spawn 下载脚本/浏览器子进程）
-    spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
-  } catch (e) {
-    try { backendProc.kill('SIGKILL'); } catch (_) { /* noop */ }
-  }
+  if (stopping) return stopping;
+  if (!backendProc) return Promise.resolve();
+  const proc = backendProc;
+  // Detach unexpected-exit recovery during an intentional shutdown.
   backendProc = null;
+  stopping = new Promise((resolve, reject) => {
+    const killer = spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    const timer = setTimeout(() => reject(new Error('后端关闭超时，已取消更新安装')), 8000);
+    killer.once('error', error => { clearTimeout(timer); reject(error); });
+    killer.once('exit', code => {
+      clearTimeout(timer);
+      if (code === 0 || proc.exitCode !== null) resolve();
+      else reject(new Error('无法关闭后端，已取消更新安装'));
+    });
+  }).catch(error => {
+    if (proc.exitCode === null) backendProc = proc;
+    throw error;
+  }).finally(() => { stopping = null; });
+  return stopping;
 }
 
 // ---------- 窗口与托盘 ----------
@@ -170,6 +186,12 @@ function createWindow(url) {
 
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.loadURL(url);
+  // The update bridge belongs only to this local app, never remote documents.
+  const origin = new URL(url).origin;
+  mainWindow.webContents.on('will-navigate', (event, target) => {
+    if (new URL(target).origin !== origin) event.preventDefault();
+  });
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   // renderer/GPU 崩溃：重载页面（backend 由独立看门狗负责）
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
@@ -199,101 +221,64 @@ function createTray(port) {
     { label: '显示窗口', click: () => (mainWindow ? (mainWindow.show(), mainWindow.focus()) : null) },
     { label: '隐藏窗口', click: () => mainWindow && mainWindow.hide() },
     { type: 'separator' },
-    { label: '检查更新', click: () => checkForUpdates(true) },
+    { label: '检查更新', click: () => { mainWindow.show(); void updates?.check(); } },
+    { label: '安装已下载更新', click: () => { mainWindow.show(); void updates?.install(); } },
     { type: 'separator' },
     { label: '退出', click: () => app.quit() },
   ]));
   tray.on('double-click', () => mainWindow && mainWindow.show());
 }
 
-// ---------- 自动更新（electron-updater + GitHub Releases） ----------
-// 签名: Ed25519 清单签名（公钥已嵌入 app-update.yml），
-//       签名无效/未签名清单自动拒绝（fail-closed）。
+// ---------- GitHub Releases updates (unsigned Windows distribution) ----------
 const { autoUpdater } = require('electron-updater');
-const { Notification } = require('electron');
+const { createUpdates } = require('./updates.cjs');
+let updates = null;
 
-let updateDownloaded = false;
+function updateBackend(action) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: currentPort,
+      path: '/api/desktop/update-lock', method: 'POST', timeout: 3000,
+      headers: { 'Content-Type': 'application/json', 'X-Desktop-Token': desktopToken } }, res => {
+      let body = '';
+      res.on('data', chunk => { body += chunk; if (body.length > 4096) req.destroy(new Error('Invalid update status')); });
+      res.on('error', reject);
+      res.on('end', () => {
+        try {
+          if (res.statusCode !== 200) throw new Error('Cannot confirm task status');
+          const result = JSON.parse(body);
+          if (!Number.isInteger(result.active) || result.active < 0 || typeof result.locked !== 'boolean') throw new Error('Invalid task status');
+          resolve(result);
+        } catch (error) { reject(error); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('Task status request timed out')));
+    req.end(JSON.stringify({ action }));
+  });
+}
 
 function setupAutoUpdater() {
-  if (IS_DEV) return; // 开发模式不检查更新
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true; // 用户退出时安装已下载的更新
-
-  autoUpdater.on('update-available', (info) => {
-    console.log(`[updater] 发现新版本 v${info.version}`);
+  if (IS_DEV || !app.isPackaged) return;
+  updates = createUpdates({ updater: autoUpdater, app, dialog, backend: updateBackend,
+    stopBackend: killBackend,
+    resumeBackend: async () => {
+      if (!backendProc) await startBackend(currentPort);
+      await waitForBackend(currentPort);
+    },
   });
-  autoUpdater.on('download-progress', (p) => {
-    if (p.percent > 0 && p.percent % 25 < 1) {
-      console.log(`[updater] 下载中 ${p.percent.toFixed(0)}%`);
-    }
-  });
-  autoUpdater.on('update-downloaded', (info) => {
-    updateDownloaded = true;
-    if (Notification.isSupported()) {
-      new Notification({
-        title: 'Media Squirrel 更新就绪',
-        body: `v${info.version} 已下载，将在下次退出时安装`,
-      }).show();
-    }
-  });
-  autoUpdater.on('error', (err) => {
-    // 更新失败不影响正常使用
-    console.warn('[updater] 更新检查失败:', err.message);
-  });
-
-  autoUpdater.checkForUpdates().catch(() => { /* 静默 */ });
+  void updates.check();
 }
 
-// 手动检查（托盘菜单触发）：有已下载更新 → 直接安装（有任务时提示等待）
-async function checkForUpdates(manual) {
-  if (IS_DEV) {
-    if (manual) dialog.showMessageBox({ message: '开发模式不支持更新检查' });
-    return;
-  }
-  if (updateDownloaded) {
-    const hasRunning = await backendHasRunningTasks();
-    if (hasRunning) {
-      dialog.showMessageBox({
-        type: 'info',
-        message: '更新已就绪，但存在进行中的下载任务',
-        detail: '请等待任务完成后再退出安装（退出时将自动安装更新）。',
-      });
-      return;
+for (const action of ['state', 'check', 'install']) {
+  ipcMain.handle('updates:' + action, (event) => {
+    const frame = event.senderFrame;
+    if (!mainWindow || event.sender !== mainWindow.webContents || !frame ||
+        frame !== mainWindow.webContents.mainFrame ||
+        new URL(frame.url).origin !== new URL(IS_DEV ? DEV_URL : `http://127.0.0.1:${currentPort}`).origin) {
+      throw new Error('Untrusted update request');
     }
-    app.isQuitting = true;
-    autoUpdater.quitAndInstall();
-    return;
-  }
-  try {
-    const result = await autoUpdater.checkForUpdates();
-    if (manual) {
-      if (!result || !result.updateInfo || result.updateInfo.version === app.getVersion()) {
-        dialog.showMessageBox({ message: `当前已是最新版本 v${app.getVersion()}` });
-      }
-    }
-  } catch (e) {
-    if (manual) dialog.showErrorBox('更新检查失败', String(e && e.message || e));
-  }
-}
-
-// 查询后端是否有进行中任务（下载任务保护）
-function backendHasRunningTasks() {
-  return new Promise((resolve) => {
-    const req = http.get(
-      { host: '127.0.0.1', port: currentPort, path: '/api/tasks', timeout: 3000 },
-      (res) => {
-        let body = '';
-        res.on('data', (d) => (body += d));
-        res.on('end', () => {
-          try {
-            const tasks = JSON.parse(body);
-            resolve(tasks.some((t) => t.status === 'queued' || t.status === 'running'));
-          } catch { resolve(false); }
-        });
-      },
-    );
-    req.on('error', () => resolve(false));
-    req.on('timeout', () => { req.destroy(); resolve(false); });
+    if (!updates) return { status: 'disabled', version: app.getVersion(), message: '开发模式不检查更新', canInstall: false };
+    return action === 'state' ? updates.getState() : updates[action]();
   });
 }
 
@@ -331,10 +316,14 @@ if (!gotLock) {
 
   app.on('window-all-closed', (e) => { /* 托盘常驻，不退出 */ });
 
-  app.on('before-quit', () => {
+  app.on('before-quit', event => {
     app.isQuitting = true;
-    killBackend();
+    if (backendProc || stopping) {
+      event.preventDefault();
+      killBackend().then(() => app.quit()).catch(error => {
+        app.isQuitting = false;
+        dialog.showErrorBox('退出失败', error.message);
+      });
+    }
   });
-
-  process.on('exit', killBackend);
 }
