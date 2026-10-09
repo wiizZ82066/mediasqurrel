@@ -63,6 +63,10 @@ def main():
                     assert all(check.result(timeout=25)["status"] == "ok" for check in checks)
                 process.stdin.close()
                 assert process.wait(timeout=10) == 0, "Parent EOF did not stop the backend"
+            except Exception:
+                print(f"Frozen backend failure; exit code: {process.poll()}")
+                print((data / "backend.log").read_text(encoding="utf-8", errors="replace")[-8000:])
+                raise
             finally:
                 if process.poll() is None:
                     process.kill()
