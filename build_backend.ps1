@@ -61,6 +61,8 @@ python -m PyInstaller `
   --hidden-import "app.scanners" `
   --hidden-import "app.scanners.weibo" `
   --hidden-import "app.scanners.douyin" `
+  --hidden-import "weibo_downloader" `
+  --hidden-import "douyin_downloader" `
   --hidden-import "uvicorn.logging" `
   --exclude-module tkinter `
   --exclude-module matplotlib `

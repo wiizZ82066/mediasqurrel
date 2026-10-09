@@ -58,6 +58,8 @@ jobs:
         run: python make_icon.py
       - name: Build backend
         run: ./build_backend.ps1
+      - name: Test frozen downloaders and bundled browser
+        run: ./.github/scripts/test-frozen.ps1
       - name: Build unsigned Windows installer
         run: npx --no-install electron-builder --win nsis --x64 --publish never
       - name: Validate release files and checksums
