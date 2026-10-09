@@ -51,9 +51,44 @@ def _stdin_watchdog():
     if "--no-watchdog" in sys.argv or not sys.stdin or sys.stdin.isatty():
         return
 
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+        import time
+        from ctypes import wintypes
+
+        # An indefinitely blocked stdin read can stall NumPy DLL loading and
+        # subsequent API worker startup on Windows. Poll for data/disconnect
+        # instead; only read bytes already available in the parent pipe.
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        peek_pipe = kernel.PeekNamedPipe
+        peek_pipe.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+                              wintypes.LPVOID, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+        peek_pipe.restype = wintypes.BOOL
+        read_file = kernel.ReadFile
+        read_file.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+                              ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+        read_file.restype = wintypes.BOOL
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+        buffer = ctypes.create_string_buffer(1024)
+        available = wintypes.DWORD()
+        count = wintypes.DWORD()
+
+        def read_parent():
+            if not peek_pipe(handle, None, 0, None, ctypes.byref(available), None):
+                return False
+            if available.value:
+                return read_file(handle, buffer, min(available.value, len(buffer)),
+                                 ctypes.byref(count), None) and count.value
+            time.sleep(0.25)
+            return True
+    else:
+        def read_parent():
+            return sys.stdin.read(1)
+
     def _watch():
         try:
-            while sys.stdin.read(1):
+            while read_parent():
                 pass
         except Exception:
             pass

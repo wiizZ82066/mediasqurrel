@@ -21,3 +21,5 @@ print('Frozen requests, OpenCV, browserforge and bundled browser: PASS')
 '@ | Set-Content -LiteralPath $smoke -Encoding ascii
 & $exe --internal-run $smoke
 if ($LASTEXITCODE -ne 0) { throw 'Frozen runtime check failed' }
+python (Join-Path $PSScriptRoot 'test-frozen-backend.py')
+if ($LASTEXITCODE -ne 0) { throw 'Frozen backend lifecycle check failed' }
