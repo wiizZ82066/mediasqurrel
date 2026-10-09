@@ -111,6 +111,10 @@ class TaskStoreTests(StoreFixture, unittest.TestCase):
             self.assertNotIn('confidential', redact_text(f'{name}=confidential'))
             self.assertNotIn('confidential', redact_text(f'https://host/?{name}=confidential'))
         self.assertNotIn('confidential', redact_text('https://host/#access_token=confidential&other=1'))
+        self.assertNotIn('confidential', redact_text('{"headers":{"Authorization":"confidential"}}'))
+        started = time.perf_counter()
+        self.assertEqual(redact_text('x' * 70000), 'x' * 70000)
+        self.assertLess(time.perf_counter() - started, 1.0)
 
     def test_archive_compression_does_not_hold_global_write_lock(self):
         self.store.save(task('finished', 'success'))
