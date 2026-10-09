@@ -1,915 +1,114 @@
 <script setup>
-// 媒体库页：搜索 + 作者/时间线双视图 + 排序筛选 + 摘要卡片 + 画廊（预加载）
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api.js'
-import { toast } from '../store.js'
-
-const route = useRoute()
-const authors = ref([])
-const loading = ref(true)
-const currentAuthor = ref(null)
-
-// 视图状态
-const viewMode = ref('author')          // author | timeline
-const query = ref('')
-
-// 画廊状态
-const gallery = ref(null) // { list, index, author, dateDir }
-const livePlaying = ref(false) // Live 图当前是否悬停播放中
-
-// 卡片 Live 悬停状态：{ [卡片key]: true }
-const hoverLive = ref({})
-
-const currentItem = computed(
-  () => gallery.value ? gallery.value.list[gallery.value.index] || {} : {},
-)
-
-watch(
-  () => gallery.value && gallery.value.index,
-  () => { livePlaying.value = false },
-)
-
-function cardKey(e) {
-  return e.author + '/' + e.date_dir
-}
-
-// 卡片封面悬停：进入加载 mov 循环静音播放，移出恢复封面
-function cardEnter(e) {
-  if (e.cover_type === 'live' && e.live_map?.[e.cover]) hoverLive.value[cardKey(e)] = true
-}
-function cardLeave(e) {
-  hoverLive.value[cardKey(e)] = false
-}
-
-onMounted(async () => {
+import { store, toast, onTaskEvent } from '../store.js'
+import AppIcon from '../components/AppIcon.vue'
+import PlatformLogo from '../components/PlatformLogo.vue'
+import ActivityProgress from '../components/ActivityProgress.vue'
+import MediaThumbnail from '../components/MediaThumbnail.vue'
+const route=useRoute(), router=useRouter(), saved=store.libraryState || {}
+const roots=ref([]), rootId=ref(saved.rootId || ''), entries=ref(saved.entries || []), total=ref(saved.total || 0), page=ref(saved.page || 1)
+const viewMode=ref(saved.viewMode || 'timeline'), author=ref(saved.author || ''), query=ref(saved.query || ''), platform=ref(saved.platform || ''), mediaType=ref(saved.mediaType || ''), status=ref(saved.status || ''), sort=ref(saved.sort || 'desc')
+const dateFrom=ref(saved.dateFrom || ''), dateTo=ref(saved.dateTo || ''), groupBy=ref(saved.groupBy || 'month'), dates=ref([])
+const authors=ref([]), authorQuery=ref(''), authorPage=ref(1), authorTotal=ref(0)
+const loading=ref(false), error=ref(''), scan=ref(null), scanBusy=ref(false), changed=ref(false)
+const gallery=ref(null), galleryIndex=ref(0), detailBusy=ref(false), detailError=ref(''), livePlaying=ref(false), mediaError=ref('')
+const viewerEl=ref(null), closeButton=ref(null)
+const pageSize=60
+let ready=false, disposed=false, listSequence=0, detailSequence=0, auxSequence=0, listController=null, detailController=null, auxController=null, debounceTimer=null, authorTimer=null, scanTimer=null, contentEl=null, restoreFocus=null, preloads=[]
+const maxPage=computed(()=>Math.max(1,Math.ceil(total.value/pageSize)))
+const activeScan=computed(()=>['queued','running'].includes(scan.value?.status))
+const currentItem=computed(()=>gallery.value?.gallery?.[galleryIndex.value] || null)
+const visibleThumbnails=computed(()=>{const items=gallery.value?.gallery || []; const start=Math.max(0,Math.min(galleryIndex.value-4,items.length-9));return items.slice(start,start+9).map((item,i)=>({...item,index:start+i}))})
+const selectedRoot=computed(()=>roots.value.find(root=>root.id===rootId.value))
+const unsubscribe=onTaskEvent(message=>{if(message.type!=='library_cover')return;const update=message.entry;for(const item of [...entries.value,...(gallery.value?[gallery.value]:[])])if(item.id===update.id && (!item.signature || !update.cover_signature || item.signature===update.cover_signature))Object.assign(item,update)})
+const datesLabel={published:'发布时间',directory:'目录日期',downloaded:'下载时间',imported:'导入时间'}
+function dayOf(value) { if(!value) return '日期未知'; const date=new Date(value); return Number.isNaN(date.getTime())?String(value):new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(date) }
+function displayTime(value) { if(!value) return ''; const date=new Date(value);return Number.isNaN(date.getTime())?value:new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(date) }
+const entryGroups=computed(()=>{ if(viewMode.value==='author') return [{date:author.value || '全部作者',items:entries.value}];const groups=new Map();for(const entry of entries.value){const day=dayOf(entry.sort_at);const key=groupBy.value==='year'?day.slice(0,4):groupBy.value==='month'?day.slice(0,7):day;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(entry)}return [...groups].map(([date,items])=>({date,items})) })
+function mediaUrl(entry,rel) { return `/media/roots/${encodeURIComponent(entry.root_id)}/${[entry.rel_dir,rel].filter(Boolean).join('/').split('/').map(encodeURIComponent).join('/')}` }
+function thumbUrl(entry,rel,width=480) { return '/api/thumb?'+new URLSearchParams({root_id:entry.root_id,p:[entry.rel_dir,rel].filter(Boolean).join('/'),w:width}) }
+function coverStyle(entry) { return entry.cover_face?{objectPosition:`${entry.cover_face.x*100}% ${entry.cover_face.y*100}%`}:{} }
+function remember() { store.libraryState={rootId:rootId.value,entries:entries.value,total:total.value,page:page.value,viewMode:viewMode.value,author:author.value,query:query.value,platform:platform.value,mediaType:mediaType.value,status:status.value,sort:sort.value,dateFrom:dateFrom.value,dateTo:dateTo.value,groupBy:groupBy.value,scrollTop:contentEl?.scrollTop || 0} }
+function filters() { return {root_id:rootId.value,author:viewMode.value==='author'?author.value:'',q:query.value.trim(),platform:platform.value,media_type:mediaType.value,status:status.value,sort:sort.value,date_from:dateFrom.value,date_to:dateTo.value} }
+async function loadEntries({reset=false,restore=false}={}) {
+  if(!rootId.value) return
+  listController?.abort();listController=new AbortController();const sequence=++listSequence
+  if(reset)page.value=1
+  loading.value=true;error.value=''
   try {
-    authors.value = await api.library()
-    if (authors.value.length) currentAuthor.value = authors.value[0].name
-    // 支持外部跳转定位（任务页「媒体库」按钮）: ?author=xx&entry=yy
-    const qAuthor = route.query.author ? decodeURIComponent(route.query.author) : ''
-    const qEntry = route.query.entry ? decodeURIComponent(route.query.entry) : ''
-    if (qAuthor && authors.value.some((a) => a.name === qAuthor)) {
-      currentAuthor.value = qAuthor
-      if (qEntry) {
-        const entry = authors.value
-          .find((a) => a.name === qAuthor)?.entries
-          .find((e) => e.date_dir === qEntry)
-        if (entry) setTimeout(() => openGallery(qAuthor, entry), 300)
-      }
-    }
-  } catch (e) {
-    toast('媒体库加载失败: ' + e.message, 'error')
-  } finally {
-    loading.value = false
-  }
-})
-
-// 手动刷新：强制全盘重扫（缓存与实际不符时使用）
-const refreshing = ref(false)
-async function refreshLibrary() {
-  refreshing.value = true
-  try {
-    authors.value = await api.library(true)
-    toast('🔄 媒体库已重新扫描', 'success')
-  } catch (e) {
-    toast('刷新失败: ' + e.message, 'error')
-  } finally {
-    refreshing.value = false
-  }
+    if(dateFrom.value && dateTo.value && dateFrom.value>dateTo.value)throw new Error('开始日期不能晚于结束日期。')
+    const result=await api.libraryEntries({...filters(),page:page.value,page_size:pageSize,signal:listController.signal})
+    if(disposed || sequence!==listSequence)return
+    entries.value=result.items;total.value=result.total;changed.value=false
+    if(page.value>maxPage.value){page.value=maxPage.value;return loadEntries()}
+    await nextTick(); if(contentEl)contentEl.scrollTop=restore?(saved.scrollTop || 0):0
+    remember()
+  }catch(e){if(sequence===listSequence && e.name!=='AbortError')error.value=e.message}
+  finally{if(sequence===listSequence)loading.value=false}
 }
-
-// 日期目录 -> 可比较键（'26-09-29' / '2026-09-23-16-17' 统一）
-function dateKey(dateDir) {
-  const parts = dateDir.split('-')
-  const y = parts[0].length === 2 ? '20' + parts[0] : parts[0]
-  return [y, ...parts.slice(1)].map((p) => String(p).padStart(2, '0')).join('')
+async function loadAuxiliary() {
+  if(!rootId.value)return
+  auxController?.abort();auxController=new AbortController();const sequence=++auxSequence
+  const shared={root_id:rootId.value,signal:auxController.signal}
+  const result=await Promise.allSettled([api.libraryAuthors({...shared,q:authorQuery.value,page:authorPage.value,page_size:30}),api.libraryDates({...shared,author:viewMode.value==='author'?author.value:'',q:query.value.trim(),group:groupBy.value,limit:240})])
+  if(disposed || sequence!==auxSequence)return
+  if(result[0].status==='fulfilled'){authors.value=result[0].value.items;authorTotal.value=result[0].value.total}
+  if(result[1].status==='fulfilled')dates.value=result[1].value.items
 }
-
-// 搜索：匹配作者 / 日期 / 标题 / 正文摘要
-function passSearch(e) {
-  const kw = query.value.trim().toLowerCase()
-  if (!kw) return true
-  return [e.author, e.date_dir, e.text_preview || '', e.meta?.['视频标题'] || '']
-    .some((h) => (h || '').toLowerCase().includes(kw))
+watch([rootId,viewMode,author,query,platform,mediaType,status,sort,dateFrom,dateTo],()=>{if(!ready)return;clearTimeout(debounceTimer);listController?.abort();++listSequence;loading.value=true;debounceTimer=setTimeout(()=>{loadEntries({reset:true});loadAuxiliary()},300)})
+watch(authorQuery,()=>{authorPage.value=1})
+watch(rootId,()=>{if(ready){scan.value=null;pollScan()}})
+watch(groupBy,()=>{if(ready)loadAuxiliary()})
+watch([authorQuery,authorPage],()=>{if(!ready)return;clearTimeout(authorTimer);authorTimer=setTimeout(loadAuxiliary,300)})
+function changePage(delta) { const next=page.value+delta;if(next<1 || next>maxPage.value || loading.value)return;page.value=next;loadEntries() }
+function navigateDate(event) {const value=event.target.value;if(!value){dateFrom.value='';dateTo.value='';return}const [y,m,d]=value.split('-').map(Number);dateFrom.value=`${y}-${String(m||1).padStart(2,'0')}-${String(d||1).padStart(2,'0')}`;const last=new Date(Date.UTC(y,m || 12,0));dateTo.value=d?dateFrom.value:`${y}-${String(m||12).padStart(2,'0')}-${m?last.getUTCDate():31}`}
+async function pollScan() {
+  try {const result=await api.libraryScans();if(disposed)return;const old=scan.value;scan.value=result.items?.find(item=>item.root_id===rootId.value) || null;if(old && ['running','queued'].includes(old.status) && !activeScan.value){await loadEntries();loadAuxiliary();toast(scan.value.status==='success'?'媒体索引已更新':'索引扫描已停止，请查看结果',scan.value.status==='success'?'success':'info')}}catch{ /* list remains available while polling retries */ }
 }
-
-// 重复检测：同作者内视频文件名出现多次的条目
-const dupSet = computed(() => {
-  const seen = new Map()
-  const dup = new Set()
-  for (const a of authors.value) {
-    for (const e of a.entries) {
-      for (const v of e.videos) {
-        if (seen.has(v)) {
-          dup.add(`${e.author}/${e.date_dir}`)
-          dup.add(seen.get(v))
-        } else {
-          seen.set(v, `${e.author}/${e.date_dir}`)
-        }
-      }
-    }
-  }
-  return dup
-})
-
-// 当前展示的条目（两种视图共用；搜索/时间线为全作者混排，日期倒序）
-const shownEntries = computed(() => {
-  let list
-  if (query.value.trim() || viewMode.value === 'timeline') {
-    list = authors.value.flatMap((a) => a.entries)
-  } else {
-    const a = authors.value.find((x) => x.name === currentAuthor.value)
-    list = a ? a.entries : []
-  }
-  list = list.filter((e) => passSearch(e))
-  return [...list].sort((x, y) =>
-    dateKey(y.date_dir).localeCompare(dateKey(x.date_dir)),
-  )
-})
-
-// 时间线分组：按日期分组（组内可含多作者），日期倒序
-const timelineGroups = computed(() => {
-  const groups = new Map()
-  for (const e of shownEntries.value) {
-    const key = dateKey(e.date_dir)
-    if (!groups.has(key)) groups.set(key, { date: e.date_dir, entries: [] })
-    groups.get(key).entries.push(e)
-  }
-  return [...groups.entries()].sort((a, b) => b[0].localeCompare(a[0]))
-    .map(([, g]) => g)
-})
-
-function mediaUrl(author, dateDir, rel) {
-  return `/media/${encodeURIComponent(author)}/${encodeURIComponent(dateDir)}/${rel.split('/').map(encodeURIComponent).join('/')}`
+async function startScan() {scanBusy.value=true;try{await api.libraryScan(rootId.value);await pollScan();toast('已开始建立索引，原文件保持原位','info')}catch(e){toast(e.message,'error')}finally{scanBusy.value=false}}
+async function cancelScan(){try{await api.cancelLibraryScan(scan.value.id);await pollScan()}catch(e){toast(e.message,'error')}}
+async function openEntry(id) {
+  detailController?.abort();detailController=new AbortController();const sequence=++detailSequence;detailBusy.value=true;detailError.value='';restoreFocus=document.activeElement
+  try{const result=await api.libraryEntry(id,detailController.signal);if(disposed || sequence!==detailSequence)return;gallery.value=result;document.querySelector('.layout')?.setAttribute('inert','');galleryIndex.value=0;livePlaying.value=false;mediaError.value='';await nextTick();closeButton.value?.focus();preloadNeighbors()}
+  catch(e){if(sequence===detailSequence && e.name!=='AbortError')detailError.value=e.message}
+  finally{if(sequence===detailSequence)detailBusy.value=false}
 }
-
-function relPath(author, dateDir, rel) {
-  return `${author}/${dateDir}/${rel}`
-}
-
-function thumbUrl(author, dateDir, rel) {
-  return `/api/thumb?p=${encodeURIComponent(relPath(author, dateDir, rel))}`
-}
-
-function fmtSize(n) {
-  const units = ['B', 'KB', 'MB', 'GB']
-  let i = 0
-  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++ }
-  return n.toFixed(1) + ' ' + units[i]
-}
-
-// 条目标题：视频标题 / 正文摘要 / 目录名
-function entryTitle(e) {
-  return (e.text_preview || e.meta?.['视频标题'] || e.date_dir || '').trim()
-}
-
-// 封面裁剪定位：检测到人脸时对准人脸（避免裁剪切脸），否则居中
-function coverPos(e) {
-  if (e.cover_face) {
-    return {
-      objectPosition: `${(e.cover_face.x * 100).toFixed(1)}% ${(e.cover_face.y * 100).toFixed(1)}%`,
-    }
-  }
-  return {}
-}
-
-// 唯一时间行：优先精确发布时间，其次日期目录（不重复显示两个时间）
-function entryTime(e) {
-  return e.meta?.['发布时间'] || e.date_dir
-}
-
-function openGallery(author, entry, startIdx = 0) {
-  gallery.value = {
-    list: entry.gallery,
-    index: startIdx,
-    author,
-    dateDir: entry.date_dir,
-  }
-}
-
-function galleryNext() {
-  const g = gallery.value
-  if (g && g.index < g.list.length - 1) g.index++
-}
-function galleryPrev() {
-  const g = gallery.value
-  if (g && g.index > 0) g.index--
-}
-function closeGallery() {
-  gallery.value = null
-}
-
-// 画廊预加载：当前项 ±1 的原图
-watch(
-  () => gallery.value && gallery.value.index,
-  () => {
-    const g = gallery.value
-    if (!g) return
-    for (const idx of [g.index + 1, g.index - 1]) {
-      const item = g.list[idx]
-      if (item && item.type === 'image') {
-        const img = new Image()
-        img.src = mediaUrl(g.author, g.dateDir, item.rel)
-      }
-    }
-  },
-)
-
-function onKey(evt) {
-  if (!gallery.value) return
-  if (evt.key === 'ArrowRight') galleryNext()
-  else if (evt.key === 'ArrowLeft') galleryPrev()
-  else if (evt.key === 'Escape') closeGallery()
-}
-window.addEventListener('keydown', onKey)
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
+function clearPreloads(){for(const image of preloads)image.src='';preloads=[]}
+function preloadNeighbors(){clearPreloads();const entry=gallery.value;if(!entry)return;for(const index of [galleryIndex.value-1,galleryIndex.value+1]){const item=entry.gallery[index];const rel=item?.type==='image'?item.rel:item?.poster;if(rel){const image=new Image();image.src=mediaUrl(entry,rel);preloads.push(image)}}}
+function navigateMedia(delta){const next=galleryIndex.value+delta;if(next<0 || next>=(gallery.value?.gallery?.length || 0))return;galleryIndex.value=next}
+watch(galleryIndex,()=>{livePlaying.value=false;mediaError.value='';preloadNeighbors()})
+function closeGallery(){document.querySelector('.layout')?.removeAttribute('inert');gallery.value=null;clearPreloads();restoreFocus?.focus?.({preventScroll:true});if(route.query.entry_id || route.query.task_id || route.query.entry)router.replace({path:'/library',query:{}})}
+function onKey(event){if(!gallery.value)return;if(event.key==='Escape'){event.preventDefault();closeGallery()}else if(event.key==='ArrowRight'){event.preventDefault();navigateMedia(1)}else if(event.key==='ArrowLeft'){event.preventDefault();navigateMedia(-1)}else if(event.key==='Tab'){const controls=[...viewerEl.value.querySelectorAll('button:not(:disabled),[href],video[controls],summary,[tabindex]:not([tabindex="-1"])')];const first=controls[0],last=controls.at(-1);if(event.shiftKey && document.activeElement===first){event.preventDefault();last?.focus()}else if(!event.shiftKey && document.activeElement===last){event.preventDefault();first?.focus()}}}
+async function locateRoute(){try{if(route.query.entry_id)return await openEntry(String(route.query.entry_id));if(route.query.task_id){const located=await api.libraryLocate({task_id:String(route.query.task_id)});return await openEntry(located.entry_id)}if(route.query.author && route.query.entry){const located=await api.libraryLocate({rel_dir:`${route.query.author}/${route.query.entry}`,root_id:rootId.value});await openEntry(located.entry_id)}}catch(e){detailError.value='无法定位该内容：'+e.message}}
+watch(()=>route.fullPath,()=>{if(ready)locateRoute()})
+onMounted(async()=>{contentEl=document.querySelector('.content');window.addEventListener('keydown',onKey);try{const result=await api.libraryRoots();roots.value=result.items;if(!roots.value.some(item=>item.id===rootId.value))rootId.value=result.default_root_id || roots.value[0]?.id || '';await loadEntries({restore:!!saved.entries});await loadAuxiliary();ready=true;await locateRoute();await pollScan();scanTimer=setInterval(()=>{if(activeScan.value)pollScan()},2000)}catch(e){error.value=e.message;ready=true}})
+onBeforeUnmount(()=>{unsubscribe();document.querySelector('.layout')?.removeAttribute('inert');remember();disposed=true;listController?.abort();detailController?.abort();auxController?.abort();clearTimeout(debounceTimer);clearTimeout(authorTimer);clearInterval(scanTimer);clearPreloads();window.removeEventListener('keydown',onKey)})
 </script>
-
 <template>
-  <div class="view-root">
-    <h1 class="page-title">媒体库</h1>
-    <p class="page-sub">已下载内容的时间线，点击卡片浏览全部图片与视频</p>
-
-    <div v-if="loading" class="card empty loading-breathe">
-      <div class="empty-icon">🗂️</div>
-      <p>正在扫描本地存档…</p>
+  <div class="library-view">
+    <div class="page-heading"><div><h1 class="page-title">媒体库</h1><p class="page-sub">按作者或日期浏览本地内容，原文件保留在媒体目录。</p></div><button class="btn btn-ghost" :disabled="!rootId || activeScan || scanBusy" @click="startScan"><AppIcon name="scan"/>{{ activeScan?'正在建立索引':'更新索引' }}</button></div>
+    <div v-if="roots.length" class="card library-toolbar">
+      <div class="toolbar-row"><label class="search-input"><span class="sr-only">搜索媒体库</span><input v-model="query" class="input" type="search" placeholder="搜索作者、标题、正文或日期"></label><div class="view-switch" role="group" aria-label="媒体库视图"><button :class="{selected:viewMode==='timeline'}" :aria-pressed="viewMode==='timeline'" @click="viewMode='timeline'"><AppIcon name="calendar" :size="19"/>时间线</button><button :class="{selected:viewMode==='author'}" :aria-pressed="viewMode==='author'" @click="viewMode='author'"><AppIcon name="person" :size="19"/>作者</button></div></div>
+      <div class="filters-row"><label>媒体目录<select v-model="rootId" class="select"><option v-for="root in roots" :key="root.id" :value="root.id">{{ root.label }}</option></select></label><label>平台<select v-model="platform" class="select"><option value="">全部平台</option><option value="weibo">微博</option><option value="douyin">抖音</option></select></label><label>内容<select v-model="mediaType" class="select"><option value="">全部类型</option><option value="image">图片</option><option value="video">视频</option><option value="live">Live 图</option><option value="text">文字</option></select></label><label>状态<select v-model="status" class="select"><option value="">全部可用</option><option value="complete">已验证完整</option><option value="legacy">旧格式存档</option><option value="partial">未完成</option><option value="missing">文件缺失</option></select></label><label>排序<select v-model="sort" class="select"><option value="desc">从新到旧</option><option value="asc">从旧到新</option></select></label></div>
+      <div class="date-row"><label>从<input v-model="dateFrom" type="date" class="input"></label><label>至<input v-model="dateTo" type="date" class="input"></label><label>分组<select v-model="groupBy" class="select"><option value="year">年</option><option value="month">月</option><option value="day">日</option></select></label><label class="date-navigation">日期导航<select class="select" aria-label="跳转日期范围" @change="navigateDate"><option value="">全部日期</option><option v-for="item in dates" :key="item.date" :value="item.date">{{ item.date }} · {{ item.count }} 条</option></select></label></div>
+      <p class="toolbar-hint">按发布时间排序；缺失时依次使用目录日期、下载时间、导入时间。日期按 Asia/Shanghai 显示，导航列出最近 240 组。</p>
     </div>
-
-    <div v-else-if="!authors.length" class="card empty">
-      <div class="empty-icon">📭</div>
-      <p>媒体库还是空的，先去下载一些内容吧</p>
-      <router-link to="/" class="btn btn-primary" style="text-decoration:none">去下载</router-link>
-    </div>
-
-    <template v-else>
-      <!-- 工具栏：搜索 + 视图切换 + 刷新 -->
-      <div class="toolbar card">
-        <div class="tb-search">
-          <span class="tb-search-icon">🔍</span>
-          <input
-            v-model="query"
-            class="input tb-input"
-            placeholder="搜索作者 / 日期 / 标题 / 正文…"
-          />
-          <button v-if="query" class="tb-clear" @click="query = ''">✕</button>
-        </div>
-
-        <div class="tb-group" role="group" aria-label="视图">
-          <button class="tb-btn" :class="{ on: viewMode === 'author' && !query }" @click="viewMode = 'author'; query = ''">👤 按作者</button>
-          <button class="tb-btn" :class="{ on: viewMode === 'timeline' || !!query }" @click="viewMode = 'timeline'; query = ''">📅 时间线</button>
-        </div>
-
-        <!-- 手动刷新：内容与实际不符时强制重扫 -->
-        <button
-          class="btn btn-ghost btn-sm refresh-btn"
-          :disabled="refreshing"
-          :title="'强制重新扫描全部存档' + (refreshing ? '（扫描中…）' : '')"
-          @click="refreshLibrary"
-        >
-          <span :class="{ spin: refreshing }">🔄</span>
-          {{ refreshing ? '扫描中…' : '刷新' }}
-        </button>
-      </div>
-
-      <!-- 作者条（仅按作者视图且非搜索时显示） -->
-      <div v-if="!query && viewMode === 'author'" class="author-bar">
-        <button
-          v-for="(a, i) in authors"
-          :key="a.name"
-          class="author-chip stagger-item"
-          :class="{ active: a.name === currentAuthor }"
-          :style="{ animationDelay: i * 40 + 'ms' }"
-          @click="currentAuthor = a.name"
-        >
-          {{ a.name }}
-          <span class="chip-count">{{ a.count }}</span>
-        </button>
-      </div>
-
-      <!-- 结果计数 -->
-      <div class="result-count">
-        {{ query ? `搜索 “${query}” 命中` : viewMode === 'timeline' ? '时间线' : currentAuthor }}
-        · {{ shownEntries.length }} 条
-      </div>
-
-      <!-- 时间线视图：竖线 + 日期节点 + 横向卡片 -->
-      <div v-if="shownEntries.length && (viewMode === 'timeline' || query)" class="timeline">
-        <div
-          v-for="(g, gi) in timelineGroups"
-          :key="g.date"
-          class="tl-group stagger-item"
-          :style="{ animationDelay: Math.min(gi, 10) * 40 + 'ms' }"
-        >
-          <div class="tl-marker">
-            <span class="tl-dot"></span>
-            <span class="tl-date">{{ g.date }}</span>
-            <span class="tl-count">{{ g.entries.length }} 条</span>
-          </div>
-          <div class="tl-cards">
-            <div
-              v-for="e in g.entries"
-              :key="cardKey(e)"
-              class="card hoverable entry-card tl-card"
-              @click="openGallery(e.author, e)"
-              @mouseenter="cardEnter(e)"
-              @mouseleave="cardLeave(e)"
-            >
-              <div class="entry-cover">
-                <video
-                  v-if="hoverLive[cardKey(e)]"
-                  class="cover-live-video"
-                  :src="mediaUrl(e.author, e.date_dir, e.live_map[e.cover])"
-                  muted loop autoplay playsinline
-                ></video>
-                <img
-                  v-else-if="e.cover"
-                  :src="thumbUrl(e.author, e.date_dir, e.cover)"
-                  :style="coverPos(e)"
-                  loading="lazy"
-                  alt=""
-                  @error="$event.target.style.display = 'none'"
-                />
-                <div v-else class="cover-fallback">🖼️</div>
-                <div class="entry-badges">
-                  <span v-if="dupSet.has(`${e.author}/${e.date_dir}`)" class="badge-s badge-dup">♻️ 重复</span>
-                  <span v-if="e.videos.length" class="badge-s">🎬 {{ e.videos.length }}</span>
-                  <span v-if="e.lives.length" class="badge-s">✨ {{ e.lives.length }}</span>
-                  <span v-if="e.photos.length" class="badge-s">🖼️ {{ e.photos.length }}</span>
-                </div>
-                <div v-if="e.cover_type === 'live' && !hoverLive[cardKey(e)]" class="live-overlay">
-                  <span class="live-badge">LIVE</span>
-                </div>
-              </div>
-              <div class="entry-info">
-                <div class="entry-head">
-                  <span class="entry-author">{{ e.author }}</span>
-                </div>
-                <div class="entry-title tl-title">{{ entryTitle(e) }}</div>
-                <div class="entry-meta">{{ entryTime(e) }} · {{ fmtSize(e.size) }}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 按作者网格视图 -->
-      <div v-else-if="shownEntries.length" class="grid grid-4">
-        <div
-          v-for="(e, i) in shownEntries"
-          :key="cardKey(e)"
-          class="card hoverable entry-card stagger-item"
-          :style="{ animationDelay: Math.min(i, 12) * 40 + 'ms' }"
-          @click="openGallery(e.author, e)"
-          @mouseenter="cardEnter(e)"
-          @mouseleave="cardLeave(e)"
-        >
-          <div class="entry-cover">
-            <!-- Live 悬停播放（静音循环），默认显示封面 jpg -->
-            <video
-              v-if="hoverLive[cardKey(e)]"
-              class="cover-live-video"
-              :src="mediaUrl(e.author, e.date_dir, e.live_map[e.cover])"
-              muted
-              loop
-              autoplay
-              playsinline
-            ></video>
-            <img
-              v-else-if="e.cover"
-              :src="thumbUrl(e.author, e.date_dir, e.cover)"
-              :style="coverPos(e)"
-              loading="lazy"
-              alt=""
-              @error="$event.target.style.display = 'none'"
-            />
-            <div v-else class="cover-fallback">🖼️</div>
-            <div class="entry-badges">
-              <span v-if="dupSet.has(`${e.author}/${e.date_dir}`)" class="badge-s badge-dup">♻️ 重复</span>
-              <span v-if="e.videos.length" class="badge-s">🎬 {{ e.videos.length }}</span>
-              <span v-if="e.lives.length" class="badge-s">✨ {{ e.lives.length }}</span>
-              <span v-if="e.photos.length" class="badge-s">🖼️ {{ e.photos.length }}</span>
-            </div>
-            <div v-if="e.cover_type === 'live' && !hoverLive[cardKey(e)]" class="live-overlay">
-              <span class="live-badge">LIVE</span>
-            </div>
-          </div>
-          <div class="entry-info">
-            <div class="entry-head">
-              <span class="entry-title">{{ entryTitle(e) }}</span>
-              <span v-if="query || viewMode === 'timeline'" class="entry-author">{{ e.author }}</span>
-            </div>
-            <div class="entry-meta">
-              {{ entryTime(e) }} · {{ fmtSize(e.size) }}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div v-else class="card empty">
-        <div class="empty-icon">🔍</div>
-        <p>没有匹配的内容</p>
-      </div>
-    </template>
-
-    <!-- 画廊弹层 -->
-    <transition name="fade">
-      <div v-if="gallery" class="g-mask" @click="closeGallery">
-        <div class="g-stage" @click.stop>
-          <div class="g-topbar">
-            <span class="g-title">
-              {{ gallery.author }} · {{ gallery.dateDir }}
-            </span>
-            <span class="g-counter">
-              {{ gallery.index + 1 }} / {{ gallery.list.length }}
-            </span>
-            <button class="btn btn-ghost btn-sm g-close" @click="closeGallery">关闭 ✕</button>
-          </div>
-
-          <div class="g-main">
-            <button class="g-nav g-prev" :disabled="gallery.index === 0" @click="galleryPrev">‹</button>
-
-            <div class="g-item" :key="gallery.index">
-              <!-- Live 图：默认封面 jpg，悬停自动加载播放 mov，移出恢复封面 -->
-              <div
-                v-if="currentItem.live && currentItem.poster"
-                class="g-live"
-                @mouseenter="livePlaying = true"
-                @mouseleave="livePlaying = false"
-              >
-                <img
-                  v-if="!livePlaying"
-                  :src="mediaUrl(gallery.author, gallery.dateDir, currentItem.poster)"
-                />
-                <video
-                  v-else
-                  :src="mediaUrl(gallery.author, gallery.dateDir, currentItem.rel)"
-                  loop
-                  autoplay
-                  playsinline
-                  controls
-                ></video>
-                <span v-if="!livePlaying" class="live-badge">LIVE</span>
-              </div>
-              <img
-                v-else-if="currentItem.type === 'image'"
-                :src="mediaUrl(gallery.author, gallery.dateDir, currentItem.rel)"
-              />
-              <video
-                v-else
-                :src="mediaUrl(gallery.author, gallery.dateDir, currentItem.rel)"
-                controls
-                autoplay
-              ></video>
-            </div>
-
-            <button
-              class="g-nav g-next"
-              :disabled="gallery.index === gallery.list.length - 1"
-              @click="galleryNext"
-            >›</button>
-          </div>
-
-          <div class="g-strip">
-            <div
-              v-for="(item, idx) in gallery.list"
-              :key="item.rel"
-              class="g-thumb"
-              :class="{ active: idx === gallery.index, video: item.type === 'video' }"
-              @click="gallery.index = idx"
-            >
-              <img
-                :src="thumbUrl(gallery.author, gallery.dateDir, item.poster || item.rel)"
-                loading="lazy"
-                alt=""
-              />
-              <span v-if="item.type === 'video' && !item.live" class="g-thumb-play">▶</span>
-              <span v-else-if="item.live" class="g-thumb-live">LIVE</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </transition>
+    <div v-if="viewMode==='author' && roots.length" class="author-panel"><label><span class="sr-only">筛选作者</span><input v-model="authorQuery" class="input" type="search" placeholder="筛选作者昵称"></label><div class="author-chips"><button :class="{selected:!author}" @click="author=''">全部作者</button><button v-for="item in authors" :key="item.name" :class="{selected:author===item.name}" @click="author=item.name">{{ item.name }} <span>{{ item.count }}</span></button></div><div v-if="authorTotal>30" class="author-pager"><button class="text-button" :disabled="authorPage===1" @click="authorPage--">上一组作者</button><span>{{ authorPage }} / {{ Math.ceil(authorTotal/30) }}</span><button class="text-button" :disabled="authorPage*30>=authorTotal" @click="authorPage++">下一组作者</button></div></div>
+    <div v-if="scan" class="scan-note"><div><AppIcon name="scan" :size="20"/>索引扫描：{{ {running:'进行中',queued:'排队中',success:'完成',failed:'失败',cancelled:'已取消',interrupted:'已中断'}[scan.status] || scan.status }} · 已检查 {{ scan.processed || 0 }} 个目录，更新 {{ scan.changed || 0 }} 条<span v-if="scan.error" class="error-text"> · {{ scan.error }}</span><button v-if="activeScan" class="text-button" @click="cancelScan">取消</button></div><ActivityProgress v-if="activeScan" :status="scan.status" :progress="{completed:scan.processed,total:scan.total,unit:'个目录',label:'后台建立媒体索引'}" label="媒体索引进度"/></div>
+    <p v-if="detailBusy" class="list-note" role="status">正在读取内容详情…</p><p v-if="detailError" class="error-text" role="alert">{{ detailError }}</p>
+    <div v-if="error" class="card error-text" role="alert">{{ error }} <button class="text-button" @click="loadEntries()">重新加载</button></div>
+    <p v-if="loading" class="list-note" role="status">正在读取媒体索引…</p>
+    <div v-if="!loading && !error && !entries.length" class="card library-empty"><AppIcon name="library" :size="72"/><h2>{{ query || author || dateFrom || dateTo || status || platform || mediaType?'没有符合条件的内容':'这里还没有媒体内容' }}</h2><p>已有媒体文件夹可在设置中只建立索引；文件不会复制或移动。</p><p v-if="selectedRoot" class="root-path">当前目录：{{ selectedRoot.path }}</p><div><router-link to="/settings" class="btn btn-ghost">媒体目录与导入</router-link><router-link to="/" class="btn btn-primary">下载内容</router-link></div></div>
+    <template v-for="group in entryGroups" :key="group.date"><section v-if="group.items.length" class="entry-section"><h2>{{ group.date }}<span>{{ group.items.length }} 条 / 本页</span></h2><div class="entry-grid"><button v-for="entry in group.items" :key="entry.id" class="entry-card" @click="openEntry(entry.id)"><div class="entry-cover"><MediaThumbnail v-if="entry.cover && entry.availability!=='missing'" :src="thumbUrl(entry,entry.cover)" :position="coverStyle(entry)"/><AppIcon v-else :name="entry.availability==='missing'?'folder':'library'" :size="54"/><span v-if="entry.counts?.videos || entry.counts?.lives" class="media-kind">{{ entry.counts?.lives?'Live':'视频' }}</span><span v-if="entry.archive_status!=='complete' || entry.availability==='missing'" class="archive-badge">{{ entry.availability==='missing'?'文件缺失':entry.archive_status==='partial'?'未完成':'旧格式' }}</span></div><div class="entry-caption"><div class="entry-author"><PlatformLogo v-if="entry.platform" :platform="entry.platform" :size="19"/><strong>{{ entry.author }}</strong></div><p class="entry-title">{{ entry.text_preview || entry.date_dir || '文字内容' }}</p><p class="entry-date">{{ dayOf(entry.sort_at) }} · {{ datesLabel[entry.date_source] || '日期' }}</p><p class="entry-count">{{ entry.counts?.photos || 0 }} 图片 · {{ entry.counts?.videos || 0 }} 视频 · {{ entry.counts?.lives || 0 }} Live</p></div></button></div></section></template>
+    <nav v-if="total" class="pagination" aria-label="媒体分页"><button class="btn btn-ghost" :disabled="loading || page===1" @click="changePage(-1)">上一页</button><span>第 {{ page }} / {{ maxPage }} 页 · 共 {{ total }} 条</span><button class="btn btn-ghost" :disabled="loading || page>=maxPage" @click="changePage(1)">下一页</button></nav>
+    <Teleport to="body"><div v-if="gallery" class="gallery-mask" @click.self="closeGallery"><section ref="viewerEl" class="gallery-panel" role="dialog" aria-modal="true" aria-label="媒体查看器"><header class="gallery-head"><div><strong>{{ gallery.author }}</strong><p>{{ displayTime(gallery.sort_at) }} · {{ datesLabel[gallery.date_source] }}</p></div><span>{{ gallery.gallery?.length ? galleryIndex+1 : 0 }} / {{ gallery.gallery?.length || 0 }}</span><button ref="closeButton" class="viewer-button" aria-label="关闭查看器" @click="closeGallery"><AppIcon name="close"/></button></header><div class="gallery-stage"><button class="viewer-button gallery-prev" :disabled="galleryIndex===0" aria-label="上一项" @click="navigateMedia(-1)">‹</button><div v-if="currentItem" class="gallery-media" :key="currentItem.id || currentItem.rel"><template v-if="currentItem.live && !livePlaying"><img v-if="currentItem.poster" :src="mediaUrl(gallery,currentItem.poster)" alt="Live 图静态画面" @error="mediaError='静态画面无法读取，可尝试播放 Live 图。'"><button class="live-play" @click="livePlaying=true"><AppIcon name="play"/>播放 Live 图</button></template><video v-else-if="currentItem.type==='video'" :src="mediaUrl(gallery,currentItem.rel)" :poster="currentItem.poster?mediaUrl(gallery,currentItem.poster):undefined" controls playsinline :autoplay="currentItem.live && livePlaying" preload="metadata" @error="mediaError='视频无法读取或浏览器不支持此格式，请检查原文件。'"></video><img v-else :src="mediaUrl(gallery,currentItem.rel)" alt="媒体原图" @error="mediaError='图片无法读取，请检查文件是否移动或删除。'"><p v-if="mediaError" class="media-error" role="alert">{{ mediaError }}</p></div><div v-else class="text-only"><AppIcon name="library" :size="64"/><p>这是一条文字存档</p></div><button class="viewer-button gallery-next" :disabled="galleryIndex>=(gallery.gallery?.length || 0)-1" aria-label="下一项" @click="navigateMedia(1)">›</button></div><div v-if="visibleThumbnails.length>1" class="gallery-thumbnails"><button v-for="item in visibleThumbnails" :key="item.id || item.rel" :class="{selected:item.index===galleryIndex}" :aria-label="`查看第 ${item.index+1} 项`" @click="galleryIndex=item.index"><img v-if="item.type==='image' || item.poster" :src="thumbUrl(gallery,item.poster || item.rel,160)" alt=""><AppIcon v-else name="play" :size="25"/><span v-if="item.live">Live</span></button></div><details class="gallery-details"><summary>内容说明与存档信息</summary><p>{{ gallery.text || gallery.text_preview || '没有正文' }}</p><dl><template v-for="(value,key) in gallery.meta" :key="key"><dt>{{ key }}</dt><dd>{{ value }}</dd></template><dt>目录</dt><dd>{{ gallery.rel_dir }}</dd><dt>完整性</dt><dd>{{ gallery.archive_status==='complete'?'已验证完整':gallery.archive_status==='partial'?'未完成':'旧格式，尚未确认完整' }}</dd></dl></details></section></div></Teleport>
   </div>
 </template>
-
 <style scoped>
-/* ---------- 工具栏 ---------- */
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 18px;
-  margin-bottom: 18px;
-}
-.tb-search {
-  position: relative;
-  flex: 1;
-  min-width: 220px;
-}
-.tb-search-icon {
-  position: absolute;
-  left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 14px;
-  opacity: 0.5;
-}
-.tb-input { padding-left: 36px; padding-right: 34px; }
-.tb-clear {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  border: none;
-  background: rgba(0, 0, 0, 0.08);
-  color: var(--text-2);
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  cursor: pointer;
-  font-size: 11px;
-  line-height: 1;
-}
-.tb-clear:hover { background: rgba(0, 0, 0, 0.16); }
-
-.tb-group {
-  display: flex;
-  background: rgba(0, 0, 0, 0.05);
-  border-radius: 10px;
-  padding: 3px;
-  gap: 2px;
-}
-.refresh-btn { flex-shrink: 0; }
-.spin { display: inline-block; animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* ---------- 时间线视图 ---------- */
-.timeline {
-  position: relative;
-  padding-left: 26px;
-}
-.timeline::before {
-  content: '';
-  position: absolute;
-  left: 7px;
-  top: 10px;
-  bottom: 10px;
-  width: 2px;
-  background: rgba(0, 0, 0, 0.1);
-  border-radius: 2px;
-}
-.tl-group { position: relative; margin-bottom: 30px; }
-.tl-group:last-child { margin-bottom: 6px; }
-.tl-dot {
-  position: absolute;
-  left: -25px;
-  top: 5px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--blue);
-  box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.15);
-}
-.tl-marker {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-.tl-date {
-  font-size: 15px;
-  font-weight: 700;
-  padding: 3px 12px;
-  border-radius: 980px;
-  background: rgba(0, 0, 0, 0.06);
-  font-variant-numeric: tabular-nums;
-}
-.tl-count { font-size: 12px; color: var(--text-2); }
-.tl-cards {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  margin-top: 13px;
-}
-.tl-card { width: 232px; padding: 9px; }
-.tl-card .entry-cover { border-radius: 12px; }
-.tl-title {
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tb-btn {
-  border: none;
-  background: transparent;
-  font-family: var(--font);
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-2);
-  padding: 6px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 180ms var(--ease);
-  white-space: nowrap;
-}
-.tb-btn:hover { color: var(--text); }
-.tb-btn.on {
-  background: #fff;
-  color: var(--text);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-}
-
-.author-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 16px;
-}
-.author-chip {
-  padding: 8px 16px;
-  border-radius: 980px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background: rgba(255, 255, 255, 0.7);
-  font-family: var(--font);
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--text);
-  cursor: pointer;
-  transition: all 200ms var(--ease);
-}
-.author-chip:hover { transform: translateY(-1px); background: #fff; }
-.author-chip.active {
-  background: var(--text);
-  color: #fff;
-  border-color: var(--text);
-}
-.chip-count { opacity: 0.6; font-size: 12px; margin-left: 3px; }
-
-.result-count {
-  font-size: 12.5px;
-  color: var(--text-2);
-  margin-bottom: 14px;
-}
-
-/* ---------- 条目卡片 ---------- */
-.entry-card { padding: 10px; overflow: hidden; cursor: zoom-in; }
-.entry-cover {
-  position: relative;
-  aspect-ratio: 4/3;
-  border-radius: 14px;
-  overflow: hidden;
-  background: rgba(0, 0, 0, 0.04);
-}
-.entry-cover img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transition: transform 400ms var(--ease);
-}
-.entry-card:hover .entry-cover img { transform: scale(1.045); }
-.cover-fallback {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 40px;
-}
-.entry-badges {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  display: flex;
-  gap: 5px;
-  flex-wrap: wrap;
-}
-.badge-s {
-  padding: 2px 8px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(6px);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-}
-.badge-dup { background: rgba(255, 149, 0, 0.85); }
-.live-overlay {
-  position: absolute;
-  left: 8px;
-  top: 8px;
-  pointer-events: none;
-}
-.live-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 7px;
-  background: rgba(255, 59, 48, 0.9);
-  color: #fff;
-  font-size: 10.5px;
-  font-weight: 800;
-  letter-spacing: 0.5px;
-}
-.live-badge::before {
-  content: '';
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #fff;
-}
-.entry-info { padding: 10px 6px 4px; }
-.entry-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-.entry-title {
-  font-size: 13.5px;
-  font-weight: 700;
-  line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
-}
-.entry-author {
-  font-size: 11.5px;
-  color: var(--blue);
-  font-weight: 600;
-  background: rgba(0, 113, 227, 0.1);
-  padding: 1px 8px;
-  border-radius: 7px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 90px;
-  flex-shrink: 0;
-}
-.entry-meta { font-size: 11.5px; color: var(--text-2); margin-top: 4px; }
-
-/* ---------- 画廊 ---------- */
-.g-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 500;
-  background: rgba(10, 10, 12, 0.8);
-  backdrop-filter: blur(24px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.g-stage {
-  width: min(94vw, 1200px);
-  max-height: 92vh;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.g-topbar {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  color: #fff;
-}
-.g-title { font-size: 14px; font-weight: 600; opacity: 0.9; }
-.g-counter {
-  font-size: 13px;
-  opacity: 0.65;
-  font-variant-numeric: tabular-nums;
-}
-.g-close { margin-left: auto; color: #fff; background: rgba(255,255,255,0.14); border: none; }
-
-.g-main {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 200px;
-}
-.g-item {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  max-width: 100%;
-  animation: gItemIn 280ms var(--ease);
-}
-@keyframes gItemIn {
-  from { opacity: 0; transform: scale(0.97); }
-  to { opacity: 1; transform: scale(1); }
-}
-.g-item img, .g-item video {
-  max-width: 100%;
-  max-height: 66vh;
-  border-radius: 14px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
-}
-
-/* Live 图：悬停播放（默认封面态） */
-.g-live { position: relative; }
-.g-live img,
-.g-live video {
-  max-width: 100%;
-  max-height: 66vh;
-  border-radius: 14px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
-  display: block;
-}
-.g-live .live-badge {
-  position: absolute;
-  left: 14px;
-  top: 14px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
-  pointer-events: none;
-}
-
-/* 卡片 Live 悬停播放 */
-.cover-live-video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  background: #000;
-}
-.g-nav {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 2;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: none;
-  background: rgba(255, 255, 255, 0.16);
-  backdrop-filter: blur(10px);
-  color: #fff;
-  font-size: 26px;
-  line-height: 1;
-  cursor: pointer;
-  transition: background 180ms, transform 180ms;
-}
-.g-nav:hover:not(:disabled) { background: rgba(255, 255, 255, 0.3); }
-.g-nav:disabled { opacity: 0.25; cursor: default; }
-.g-prev { left: 10px; }
-.g-next { right: 10px; }
-
-.g-strip {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding: 6px 2px 10px;
-}
-.g-thumb {
-  position: relative;
-  flex-shrink: 0;
-  width: 76px;
-  height: 57px;
-  border-radius: 8px;
-  overflow: hidden;
-  cursor: pointer;
-  opacity: 0.5;
-  transition: opacity 180ms, transform 180ms, outline-color 180ms;
-  outline: 2px solid transparent;
-  outline-offset: 2px;
-}
-.g-thumb:hover { opacity: 0.85; }
-.g-thumb.active {
-  opacity: 1;
-  outline-color: #fff;
-  transform: translateY(-2px);
-}
-.g-thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.g-thumb-play {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-size: 15px;
-  background: rgba(0, 0, 0, 0.3);
-}
-.g-thumb-live {
-  position: absolute;
-  left: 4px;
-  top: 4px;
-  padding: 1px 5px;
-  border-radius: 5px;
-  background: rgba(255, 59, 48, 0.9);
-  color: #fff;
-  font-size: 8.5px;
-  font-weight: 800;
-  letter-spacing: 0.5px;
-}
-
-.fade-enter-active { transition: opacity 250ms ease-out; }
-.fade-leave-active { transition: opacity 180ms ease-in; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
+.page-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }.page-heading>.btn { flex-shrink:0; }.library-toolbar { padding:20px; margin-bottom:22px; }.toolbar-row,.filters-row,.date-row { display:flex; gap:12px; flex-wrap:wrap; }.toolbar-row { align-items:center; }.search-input { flex:1; min-width:180px; }.view-switch { display:flex; padding:3px; background:#e9edf0; border-radius:12px; }.view-switch button { display:flex; align-items:center; gap:6px; border:0; background:transparent; padding:9px 12px; border-radius:9px; cursor:pointer; font-size:13px; }.view-switch .selected { background:#fff; color:var(--blue); }.filters-row,.date-row { margin-top:16px; }.filters-row label,.date-row label { flex:1; min-width:110px; font-size:12px; color:var(--text-2); }.filters-row select,.date-row select,.date-row input { margin-top:6px; padding:9px 10px; font-size:12px; min-width:0; }.date-row .date-navigation { flex:1.6; }.toolbar-hint { color:var(--text-2); font-size:11.5px; line-height:1.6; margin-top:14px; }.author-panel { margin:20px 0; }.author-panel>label { display:block; max-width:250px; margin-bottom:12px; }.author-chips { display:flex; gap:8px; flex-wrap:wrap; }.author-chips button { border:1px solid var(--border); border-radius:12px; padding:8px 12px; font-size:13px; background:#fff; cursor:pointer; }.author-chips .selected { border-color:var(--blue); color:var(--blue); }.author-chips span { color:var(--text-2); margin-left:8px; }.author-pager { display:flex; gap:12px; align-items:center; font-size:12px; margin-top:12px; }.scan-note { background:#e8f0f2; padding:12px 16px; border-radius:12px; font-size:12px; line-height:1.8; margin:18px 0; }.scan-note .app-icon { margin-right:6px; }.list-note { font-size:13px; margin:14px 0; color:var(--text-2); }.entry-section { margin-bottom:28px; }.entry-section h2 { font-size:19px; margin:22px 0 14px; display:flex; align-items:center; gap:12px; }.entry-section h2 span { font-size:12px; font-weight:400; color:var(--text-2); }.entry-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }.entry-card { min-width:0; text-align:left; border:1px solid #fff; border-radius:17px; overflow:hidden; background:#fff; box-shadow:0 3px 15px #182b3010; cursor:pointer; }.entry-card:hover { border-color:#a5becb; }.entry-cover { aspect-ratio:4/3; position:relative; display:flex; align-items:center; justify-content:center; background:#e8efec; overflow:hidden; }.entry-cover img { width:100%; height:100%; object-fit:cover; }.media-kind,.archive-badge { position:absolute; background:#182b35bb; color:#fff; border-radius:6px; padding:3px 7px; font-size:10px; }.media-kind { left:10px; bottom:10px; }.archive-badge { right:10px; top:10px; }.entry-caption { padding:13px 15px 15px; }.entry-author { display:flex; align-items:center; gap:6px; min-width:0; }.entry-author strong { font-size:13px; text-overflow:ellipsis; white-space:nowrap; overflow:hidden; }.entry-title { font-size:12.5px; line-height:1.7; height:42px; overflow:hidden; margin:6px 0 8px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }.entry-date,.entry-count { font-size:10.5px; color:var(--text-2); line-height:1.7; }.pagination { display:flex; align-items:center; justify-content:center; gap:18px; margin:32px 0 15px; font-size:13px; color:var(--text-2); }.library-empty { text-align:center; padding:60px 25px; }.library-empty h2 { font-size:19px; margin:20px 0 14px; }.library-empty p { font-size:13px; color:var(--text-2); line-height:1.8; }.library-empty>div { margin-top:24px; display:flex; justify-content:center; flex-wrap:wrap; gap:12px; }.root-path { overflow-wrap:anywhere; }.text-button { border:0; color:var(--blue); background:none; cursor:pointer; font-size:12px; padding:3px 5px; }.text-button:disabled { opacity:.4; }.error-text { color:#b53d30; font-size:13px; line-height:1.7; }.sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }.gallery-mask { position:fixed; inset:0; z-index:700; display:grid; place-items:center; background:#131a24ed; padding:20px; }.gallery-panel { width:min(1200px,100%); height:min(900px,100%); color:#eef1f4; display:flex; flex-direction:column; min-height:0; }.gallery-head { display:flex; align-items:center; gap:20px; padding-bottom:12px; }.gallery-head>div { flex:1; min-width:0; }.gallery-head strong { font-size:17px; }.gallery-head p { color:#acb8c2; font-size:12px; margin-top:6px; }.gallery-head>span { font-size:12px; color:#acb8c2; }.viewer-button { border:1px solid #ffffff20; border-radius:12px; background:#ffffff12; color:#fff; width:40px; height:40px; display:grid; place-items:center; cursor:pointer; flex-shrink:0; }.viewer-button:disabled { opacity:.25; cursor:default; }.gallery-stage { min-height:0; flex:1; position:relative; display:flex; align-items:center; justify-content:center; gap:10px; }.gallery-prev,.gallery-next { font-size:32px; }.gallery-media { flex:1; height:100%; min-width:0; display:flex; justify-content:center; align-items:center; position:relative; }.gallery-media img,.gallery-media video { max-width:100%; max-height:100%; object-fit:contain; }.live-play { position:absolute; bottom:16px; border:1px solid #fff5; background:#ffffffe6; color:#245943; padding:10px 15px; border-radius:25px; cursor:pointer; display:flex; align-items:center; gap:8px; }.media-error { position:absolute; bottom:65px; padding:12px; font-size:12px; color:#ffe3db; background:#421e1bd9; border-radius:8px; }.text-only { flex:1; text-align:center; }.text-only p { margin-top:20px; color:#aebfc4; }.gallery-thumbnails { display:flex; gap:7px; align-items:center; justify-content:center; overflow:auto; flex-shrink:0; padding:15px 0 10px; }.gallery-thumbnails button { width:58px; height:54px; flex-shrink:0; border:2px solid transparent; border-radius:8px; background:#ffffff15; overflow:hidden; cursor:pointer; position:relative; }.gallery-thumbnails .selected { border-color:#8abcdf; }.gallery-thumbnails img { width:100%; height:100%; object-fit:cover; }.gallery-thumbnails span { position:absolute; bottom:2px; left:4px; font-size:9px; color:#fff; background:#0008; }.gallery-details { font-size:12px; color:#c6d1d9; max-height:25%; overflow:auto; padding:10px 5px; line-height:1.7; }.gallery-details summary { cursor:pointer; }.gallery-details p { white-space:pre-wrap; margin:10px 0; }.gallery-details dl { display:grid; grid-template-columns:auto 1fr; gap:4px 15px; }.gallery-details dd { overflow-wrap:anywhere; }
+@media(min-width:1450px){.entry-grid { grid-template-columns:repeat(4,minmax(0,1fr)); }}
+@media(max-width:1050px){.entry-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }.date-row label { flex-basis:40%; }}
+@media(max-width:767px){.page-heading { flex-wrap:wrap; margin-bottom:20px; }.page-heading .page-sub { margin-bottom:0; }.toolbar-row { display:block; }.view-switch { width:max-content; margin-top:12px; }.entry-grid { gap:12px; }.entry-caption { padding:10px; }.entry-title { font-size:12px; }.entry-count { font-size:9px; }.pagination { gap:10px; font-size:11px; }.pagination .btn { padding:9px 14px; }.gallery-mask { padding:12px; }.gallery-stage { gap:0; }.gallery-prev,.gallery-next { position:absolute; bottom:14px; z-index:2; background:#16283fbb; }.gallery-prev { left:5px; }.gallery-next { right:5px; }.gallery-thumbnails { justify-content:flex-start; }.gallery-head { gap:10px; }.gallery-head strong { font-size:14px; }.gallery-head p { font-size:10px; }.library-toolbar { padding:16px; } }
 </style>

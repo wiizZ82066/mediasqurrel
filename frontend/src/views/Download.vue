@@ -1,648 +1,223 @@
 <script setup>
-// 下载页：选脚本 -> 动态渲染 manifest 表单 -> 提交任务 + 输出目录选择 + 实时预览
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api.js'
-import { store, toast } from '../store.js'
-
+import { store, toast, upsertTaskSummary, onTaskEvent } from '../store.js'
+import AppIcon from '../components/AppIcon.vue'
+import PlatformLogo from '../components/PlatformLogo.vue'
+import ActivityProgress from '../components/ActivityProgress.vue'
 const router = useRouter()
+const saved = store.downloadState
 const scripts = ref([])
-const selectedId = ref('')
+const selectedId = ref(saved.selectedId)
 const form = ref({})
+const selected = computed(() => scripts.value.find(s => s.id === selectedId.value))
+const mainParam = computed(() => selected.value?.params.find(p => ['input', 'url'].includes(p.name)))
 const submitting = ref(false)
-
-// 目录选择器
+const clipboardBusy = ref(false)
+const clipboardMessage = ref('')
+const loadError = ref('')
+const rootPath = ref('')
+const defaultOutput = ref('')
+const task = ref(saved.task)
+const entry = ref(null)
+const previewError = ref('')
+const previewLoading = ref(false)
+let previewSequence = 0
+let inputRevision = 0
+let pollTimer = null
+let disposed = false
 const browsing = ref(false)
 const browsePath = ref('')
 const browseDirs = ref([])
-const browseTarget = ref(null) // 正在为哪个参数浏览
-
-// 输出预览
-const previewDir = ref('')
-const previewData = ref(null)
-const carouselIdx = ref(0)
-const trackedTaskId = ref(null)
-let pollTimer = null
-
-const selected = computed(() => scripts.value.find((s) => s.id === selectedId.value))
-
-onMounted(async () => {
-  try {
-    scripts.value = await api.scripts()
-    if (scripts.value.length) select(scripts.value[0].id)
-  } catch (e) {
-    toast('加载脚本清单失败: ' + e.message, 'error')
-  }
-  pollTimer = setInterval(pollPreview, 2000)
-})
-
-onBeforeUnmount(() => clearInterval(pollTimer))
-
+const browseTarget = ref('')
+const browseBusy = ref(false)
+let browseSequence = 0
+const statusLabels = { queued:'排队中', running:'下载中', success:'下载完成', failed:'下载失败', cancelled:'已取消', interrupted:'运行中断' }
+function defaults(script) { return Object.fromEntries((script?.params || []).map(p => [p.name, p.default ?? (p.kind === 'switch' ? false : '')])) }
 function select(id) {
-  selectedId.value = id
-  const s = scripts.value.find((x) => x.id === id)
-  const defaults = {}
-  for (const p of s?.params || []) {
-    defaults[p.name] = p.default ?? (p.kind === 'switch' ? false : '')
+  if (selectedId.value) saved.drafts[selectedId.value] = { ...form.value }
+  selectedId.value = id; saved.selectedId = id
+  form.value = { ...defaults(scripts.value.find(s => s.id === id)), ...(saved.drafts[id] || {}) }
+  inputRevision++; clipboardMessage.value = ''
+}
+watch(form, value => { if (selectedId.value) saved.drafts[selectedId.value] = { ...value } }, { deep:true })
+function detectPlatforms(text) {
+  const found = new Set()
+  for (const match of text.matchAll(/https?:\/\/[^\s<>"，。！？]+/gi)) {
+    try {
+      const host = new URL(match[0]).hostname.toLowerCase()
+      for (const script of scripts.value) if ((script.link_hints || []).some(h => host === h || host.endsWith('.' + h))) found.add(script.id)
+    } catch { /* invalid URL is reported by validation */ }
   }
-  form.value = defaults
+  return [...found]
 }
-
-// 内容有效性校验：检测主输入是否匹配当前脚本（不匹配提示，不切换）
-const linkWarning = ref('')
-
-function validateMainInput() {
-  linkWarning.value = ''
-  const mainParam = selected.value?.params.find(
-    (p) => p.name === 'input' || p.name === 'url',
-  )
-  if (!mainParam) return true
-  const val = String(form.value[mainParam.name] || '').trim()
-  if (!val) return true  // 空值交给必填校验
-
-  const hints = selected.value.link_hints || []
-  if (hints.length && !hints.some((h) => val.includes(h))) {
-    // 内容不属于当前平台：找出它像哪个平台，给出针对性提示
-    const hit = scripts.value.find((s) =>
-      (s.link_hints || []).some((h) => val.includes(h)),
-    )
-    linkWarning.value = hit
-      ? `检测到的是${hit.name}的内容，请先切换到「${hit.name}」`
-      : `未检测到${selected.value.name}支持的链接，请检查内容`
-    return false
+const linkWarning = computed(() => {
+  const value = String(form.value[mainParam.value?.name] || '').trim()
+  if (!value) return ''
+  const detected = detectPlatforms(value)
+  if (detected.length > 1) return '包含多个平台链接，请每次提交一个平台的内容。'
+  if (!detected.includes(selectedId.value)) return detected.length ? '链接属于另一平台；请切换平台后提交。' : '未识别到支持的链接，请检查完整分享文案或网址。'
+  return ''
+})
+function acceptPaste(text) {
+  const platforms = detectPlatforms(text)
+  if (platforms.length !== 1) { clipboardMessage.value = platforms.length ? '剪贴板中有多个平台链接，请手动选择内容。' : '剪贴板中没有受支持的链接，可继续手动输入或按 Ctrl+V。'; return }
+  const id = platforms[0]
+  if (id !== selectedId.value) {
+    const target = saved.drafts[id]
+    const param = scripts.value.find(s => s.id === id)?.params.find(p => ['input','url'].includes(p.name))
+    if (target?.[param?.name]) {
+      // Preserve another platform's existing draft; never replace it silently.
+      clipboardMessage.value = '另一平台已有未提交内容，请先处理该草稿，再粘贴。'; return
+    }
+    select(id)
+    toast(`已识别链接并切换到${selected.value.name}`, 'info')
   }
-  return true
+  form.value[mainParam.value.name] = text; inputRevision++
+  clipboardMessage.value = '已粘贴。检查内容后开始下载。'
 }
-
-function onPasteInput(evt, paramName) {
-  // 粘贴后校验（仅提示，不自动切换）
-  if (paramName === 'input' || paramName === 'url') {
-    setTimeout(validateMainInput, 50)
-  }
-}
-
-// ---------- 目录选择器 ----------
-function openBrowser(paramName) {
-  browsing.value = true
-  browseTarget.value = paramName
-  browsePath.value = ''
-  loadBrowse('')
-}
-
-async function loadBrowse(path) {
+async function readClipboard() {
+  if (!mainParam.value || clipboardBusy.value) return
+  if (String(form.value[mainParam.value.name] || '').trim()) { clipboardMessage.value = '已保留输入内容。请先清空，或选中文本后按 Ctrl+V 替换。'; return }
+  const revision = inputRevision; const platform = selectedId.value
+  clipboardBusy.value = true
   try {
-    const r = await api.browse(path)
-    browsePath.value = r.current
-    browseDirs.value = r.dirs
-  } catch (e) {
-    toast('目录加载失败: ' + e.message, 'error')
-  }
+    if (!navigator.clipboard?.readText) throw new Error('unsupported')
+    const text = await navigator.clipboard.readText()
+    if (disposed || revision !== inputRevision || platform !== selectedId.value || String(form.value[mainParam.value?.name] || '').trim()) return
+    if (!text.trim()) clipboardMessage.value = '剪贴板为空。复制链接后重试，或直接输入。'
+    else acceptPaste(text)
+  } catch { clipboardMessage.value = '无法读取剪贴板。请允许浏览器权限后重试，或按 Ctrl+V 粘贴。' }
+  finally { clipboardBusy.value = false }
 }
-
-function pickDir(rel) {
-  form.value[browseTarget.value] = rel
-  browsing.value = false
-  toast('已选择输出目录: ' + rel, 'info')
+function onPaste(event) {
+  // Native paste into existing text is an explicit editing action, so leave it native.
+  if (String(form.value[mainParam.value?.name] || '').trim()) return
+  const text = event.clipboardData?.getData('text') || ''
+  if (detectPlatforms(text).length === 1) { event.preventDefault(); acceptPaste(text) }
 }
-
-function browseUp() {
-  const parts = browsePath.value.split('/').filter(Boolean)
-  parts.pop()
-  loadBrowse(parts.join('/'))
-}
-
-// ---------- 输出预览 ----------
+function editInput() { inputRevision++; clipboardMessage.value = '' }
 async function submit() {
-  if (!selected.value) return
-  // 内容有效性校验：不匹配当前平台则阻止并提示（不切换脚本）
-  if (!validateMainInput()) {
-    toast(linkWarning.value, 'error')
-    return
-  }
+  if (linkWarning.value) { toast(linkWarning.value, 'error'); return }
   submitting.value = true
   try {
-    const task = await api.createTask(selectedId.value, { ...form.value })
-    toast(`${selected.value.icon} 已创建任务，正在排队执行`, 'success')
-    trackedTaskId.value = task.id
-    carouselIdx.value = 0
-  } catch (e) {
-    toast(e.message, 'error')
-  } finally {
-    submitting.value = false
-  }
+    const params = { ...form.value }
+    if (selectedId.value === 'weibo') params.url = String(params.url || '').match(/https?:\/\/[^\s<>"，。！？）)]+/i)?.[0] || params.url
+    const created = await api.createTask(selectedId.value, params)
+    task.value = created; saved.task = created; upsertTaskSummary(created)
+    previewSequence++; entry.value = null; previewError.value = ''; previewLoading.value = false
+    toast('已创建下载任务', 'success')
+    if (created.status === 'success') loadPreview()
+  } catch(e) { toast(e.message, 'error') }
+  finally { submitting.value = false }
 }
-
-// 主输入变化时实时校验
-watch(
-  () => {
-    const mainParam = selected.value?.params.find(
-      (p) => p.name === 'input' || p.name === 'url',
-    )
-    return mainParam ? form.value[mainParam.name] : ''
-  },
-  () => validateMainInput(),
-)
-
-// 跟踪任务：下载成功后自动清空主输入框
-watch(
-  () => store.tasks.find((t) => t.id === trackedTaskId.value)?.status,
-  (status) => {
-    if (status === 'success' && trackedTaskId.value) {
-      const mainParam = selected.value?.params.find(
-        (p) => p.name === 'input' || p.name === 'url',
-      )
-      if (mainParam && form.value[mainParam.name]) {
-        form.value[mainParam.name] = ''
-        toast('🧹 下载完成，已清空输入框', 'info')
-      }
-    }
-  },
-)
-
-// 清空指定输入框
-function clearField(name) {
-  form.value[name] = ''
-}
-
-// 跟踪任务输出目录 + 轮询内容
-async function pollPreview() {
-  // 优先：用户手动选择/输入的输出目录，立即预览其内容
-  const outParam = selected.value?.params.find((p) => p.label.includes('目录'))
-  const manual = outParam ? String(form.value[outParam.name] || '').trim() : ''
-  if (manual) {
-    if (manual !== previewDir.value) {
-      previewDir.value = manual
-      carouselIdx.value = 0
-    }
-  } else {
-    // 其次：跟踪中的任务，同步其输出目录
-    const t = store.tasks.find((x) => x.id === trackedTaskId.value)
-    if (t?.output_rel && t.output_rel !== previewDir.value) {
-      previewDir.value = t.output_rel
-    }
-    // 无跟踪任务时，退回展示最近一次成功任务的输出
-    if (!previewDir.value) {
-      const done = store.tasks.find((x) => x.status === 'success' && x.output_rel)
-      if (done) previewDir.value = done.output_rel
-    }
-  }
-  if (!previewDir.value) return
+async function loadPreview() {
+  const current = task.value
+  if (current?.status !== 'success') return
+  const sequence = ++previewSequence
+  previewLoading.value = true; previewError.value = ''
   try {
-    const r = await api.preview(previewDir.value)
-    // 只在内容变化时替换，避免轮询导致重渲染闪烁
-    const sig = r.images.join('|') + '#' + r.videos.join('|')
-    const old = previewData.value
-    if (!old || old._sig !== sig) {
-      r._sig = sig
-      previewData.value = r
-      if (carouselIdx.value >= r.images.length) carouselIdx.value = 0
-    }
-  } catch { /* 目录尚不存在等情况静默 */ }
+    const located = await api.libraryLocate({ task_id: current.id })
+    const detail = await api.libraryEntry(located.entry_id)
+    if (disposed || sequence !== previewSequence || task.value?.id !== current.id) return
+    entry.value = detail
+  } catch(e) { if (sequence === previewSequence) previewError.value = '媒体索引尚不可用，可查看任务记录或稍后重试。' }
+  finally { if (sequence === previewSequence) previewLoading.value = false }
 }
-
-const mediaUrl = (rel) => '/media/' + rel.split('/').map(encodeURIComponent).join('/')
-const thumbUrl = (rel) => '/api/thumb?p=' + encodeURIComponent(rel)
-
-// 堆叠轮播：以 carouselIdx 为中心，前后各叠 2 张
-function stackStyle(i, total) {
-  const offset = i - carouselIdx.value
-  const wrap = (n, m) => ((n % m) + m) % m // 循环绕回
-  const off = wrap(offset, Math.max(total, 1))
-  const rel = off > total / 2 ? off - total : off // 取最短方向
-  const depth = Math.min(Math.abs(rel), 3)
-  return {
-    transform: `translateX(${rel * 46}px) translateY(${depth * 8}px) rotate(${rel * 5}deg) scale(${1 - depth * 0.05})`,
-    zIndex: 30 - depth,
-    opacity: depth >= 3 ? 0 : 1 - depth * 0.22,
-    pointerEvents: rel === 0 ? 'auto' : 'none',
-    transition: 'all 450ms cubic-bezier(.4,0,.2,1)',
-  }
+function updateTask(summary) {
+  if (summary?.id !== task.value?.id) return
+  const becameSuccess = summary.status === 'success' && task.value?.status !== 'success'
+  task.value = { ...task.value, ...summary }; saved.task = task.value
+  if (becameSuccess) loadPreview()
 }
-
-function carouselNext() {
-  const n = previewData.value?.images.length || 0
-  if (n) carouselIdx.value = (carouselIdx.value + 1) % n
+const unsubscribe = onTaskEvent(msg => {
+  if (msg.type === 'task_update') updateTask(msg.task)
+  if (msg.type === 'library_cover' && entry.value?.id === msg.entry.id) Object.assign(entry.value, msg.entry)
+  if (msg.type === 'task_progress' && msg.task_id === task.value?.id) updateTask({ id: msg.task_id, progress: msg.progress })
+  if (msg.type === 'reconnect') refreshTrackedTask()
+})
+async function refreshTrackedTask() {
+  if (!task.value?.id) return
+  try { const summary = await api.task(task.value.id); if (!disposed) updateTask(summary) } catch { /* Task page remains available. */ }
 }
-function carouselPrev() {
-  const n = previewData.value?.images.length || 0
-  if (n) carouselIdx.value = (carouselIdx.value - 1 + n) % n
+const coverUrl = computed(() => entry.value?.cover ? '/api/thumb?' + new URLSearchParams({ p: `${entry.value.rel_dir}/${entry.value.cover}`, root_id:entry.value.root_id, w:720 }) : '')
+function openLibrary() { if (entry.value?.id) router.push({ path:'/library', query:{ entry_id:entry.value.id } }) }
+function openTask() { if (task.value) router.push({ path:'/tasks', query:{ task:task.value.id } }) }
+async function loadBrowse(path) {
+  const sequence = ++browseSequence; browseBusy.value = true
+  try { const result = await api.browse(path); if(sequence === browseSequence) { browsePath.value = result.current === '.' ? '' : result.current; browseDirs.value = result.dirs } }
+  catch(e) { toast(e.message,'error') }
+  finally { if(sequence === browseSequence) browseBusy.value = false }
 }
+function openBrowser(name) { browseTarget.value=name; browsing.value=true; loadBrowse('') }
+function pickDir(path) { form.value[browseTarget.value]=path; browsing.value=false }
+function browseUp() { const parts=browsePath.value.split('/').filter(Boolean); parts.pop(); loadBrowse(parts.join('/')) }
+function onKey(event) { if(event.key === 'Escape') browsing.value=false }
+onMounted(async () => {
+  const content = document.querySelector('.content'); if (content) content.scrollTop = 0
+  window.addEventListener('keydown',onKey)
+  try { scripts.value=await api.scripts(); const id=scripts.value.some(s=>s.id===selectedId.value)?selectedId.value:scripts.value[0]?.id; selectedId.value=''; if(id) select(id) }
+  catch(e) { loadError.value=e.message }
+  api.libraryRoots().then(r=>{rootPath.value=r.items?.find(i=>i.id===r.default_root_id)?.path || ''}).catch(()=>{})
+  api.settings().then(result=>{defaultOutput.value=result.paths?.default_download_dir || result.paths?.library_root || ''}).catch(()=>{})
+  await refreshTrackedTask(); if(task.value?.status==='success') loadPreview()
+  pollTimer=setInterval(()=>{if(!store.wsConnected || ['queued','running'].includes(task.value?.status)) refreshTrackedTask()},5000)
+})
+onBeforeUnmount(()=>{disposed=true; previewSequence++; clearInterval(pollTimer); unsubscribe(); window.removeEventListener('keydown',onKey)})
 </script>
-
 <template>
-  <div class="view-root">
-    <h1 class="page-title">下载内容</h1>
-    <p class="page-sub">粘贴链接或分享文案，选择脚本开始下载</p>
-
-    <!-- 脚本选择 -->
-    <div class="grid grid-4" style="margin-bottom: 24px">
-      <div
-        v-for="(s, i) in scripts"
-        :key="s.id"
-        class="card hoverable script-card stagger-item"
-        :class="{ picked: s.id === selectedId }"
-        :style="{ animationDelay: i * 40 + 'ms' }"
-        @click="select(s.id)"
-      >
-        <div class="script-icon">{{ s.icon }}</div>
-        <div class="script-name">{{ s.name }}</div>
-        <div class="script-desc">{{ s.description }}</div>
-        <div v-if="!s.available" class="script-warn">⚠️ 脚本文件缺失</div>
-      </div>
-      <div v-if="!scripts.length" class="card loading-breathe" style="grid-column: 1 / -1; text-align:center; color: var(--text-2)">
-        正在加载脚本清单…
-      </div>
-    </div>
-
-    <!-- 动态参数表单 -->
-    <div v-if="selected" class="card">
-      <template v-for="p in selected.params" :key="p.name">
-        <div v-if="p.kind === 'switch'" class="field">
-          <div class="switch-row">
-            <div>
-              <label style="margin:0">{{ p.label }}</label>
-              <div class="hint" style="margin-top:3px">{{ p.help }}</div>
+  <div class="download-view">
+    <h1 class="page-title">下载内容</h1><p class="page-sub">保存喜欢的内容，在本地相册中慢慢浏览。</p>
+    <div class="download-columns">
+      <section class="card download-form">
+        <div class="platforms" aria-label="下载平台">
+          <button v-for="script in scripts" :key="script.id" class="platform-choice" :class="{selected:script.id===selectedId}" :aria-pressed="script.id===selectedId" @click="select(script.id)"><PlatformLogo :platform="script.id" :size="34"/><span>{{ script.name }}</span></button>
+        </div>
+        <p v-if="loadError" role="alert" class="error-text">脚本清单加载失败：{{ loadError }}</p>
+        <p v-else-if="!selected" class="muted">正在加载脚本清单…</p>
+        <form v-if="selected" @submit.prevent="submit">
+          <p class="form-description">{{ selected.description }}</p>
+          <template v-for="param in selected.params" :key="selectedId+param.name">
+            <div v-if="param.kind==='switch'" class="field switch-row"><div><label :for="'param-'+param.name">{{ param.label }}</label><p class="hint">{{ param.help }}</p></div><label class="switch"><input :id="'param-'+param.name" v-model="form[param.name]" type="checkbox"><span class="track"><span class="thumb"></span></span></label></div>
+            <div v-else class="field">
+              <div class="field-label"><label :for="'param-'+param.name">{{ param.label }}<span v-if="param.required" class="required"> *</span></label><button v-if="param.name===mainParam?.name" type="button" class="btn btn-ghost btn-sm" :disabled="clipboardBusy" @click="readClipboard"><AppIcon name="paste" :size="18"/>{{ clipboardBusy?'读取中…':'粘贴' }}</button></div>
+              <div v-if="param.name===mainParam?.name" class="main-input">
+                <textarea :id="'param-'+param.name" v-model="form[param.name]" class="textarea" :required="param.required" :placeholder="param.placeholder" @click="!String(form[param.name] || '').trim() && readClipboard()" @input="editInput" @paste="onPaste"></textarea>
+                <button v-if="form[param.name]" type="button" class="clear-input" @click="form[param.name]=''; editInput()">清空</button>
+              </div>
+              <div v-else-if="param.name==='out' || param.label.includes('目录')" class="directory-input"><input :id="'param-'+param.name" v-model="form[param.name]" class="input" placeholder="留空使用默认媒体目录"><button type="button" class="btn btn-ghost btn-sm" @click="openBrowser(param.name)"><AppIcon name="folder" :size="20"/>浏览</button></div>
+              <input v-else :id="'param-'+param.name" v-model="form[param.name]" class="input" :required="param.required" :placeholder="param.placeholder">
+              <p v-if="param.name==='out'" class="hint path-hint">默认下载：{{ defaultOutput || rootPath || '设置中的媒体目录' }}。相对路径以媒体库根目录为起点。</p>
+              <p v-else-if="param.name!==mainParam?.name && param.help" class="hint">{{ param.help }}</p>
+              <template v-if="param.name===mainParam?.name"><p class="hint">点击空输入框可读取剪贴板；已有内容时请用 Ctrl+V 编辑。</p><p v-if="clipboardMessage" class="clipboard-message" role="status">{{ clipboardMessage }}</p><p v-if="linkWarning" class="error-text" role="status">{{ linkWarning }}</p></template>
             </div>
-            <label class="switch">
-              <input type="checkbox" v-model="form[p.name]" />
-              <span class="track"><span class="thumb"></span></span>
-            </label>
+          </template>
+          <div class="form-actions"><button class="btn btn-primary" :disabled="submitting || !selected.available">{{ submitting?'提交中…':'开始下载' }}</button><router-link to="/tasks" class="btn btn-ghost">任务队列</router-link></div>
+          <p v-if="!selected.available" class="error-text">脚本文件不可用，请在设置中检测环境。</p>
+        </form>
+      </section>
+      <section class="card result-panel" aria-label="下载结果预览">
+        <h2>本次下载</h2>
+        <div v-if="!task" class="result-empty"><AppIcon name="library" :size="72"/><h3>内容会在这里等你</h3><p>提交下载后显示对应任务的进度，完成后可进入媒体库查看。</p></div>
+        <template v-else>
+          <div class="result-task"><PlatformLogo :platform="task.script_id"/><div><strong>{{ task.script_name }}</strong><p class="task-id">任务 {{ task.id }}</p></div><span :class="'tag tag-'+task.status">{{ statusLabels[task.status] || task.status }}</span></div>
+          <ActivityProgress :status="task.status" :progress="task.progress" label="本次下载进度"/>
+          <div v-if="task.status==='success'" class="completed-preview">
+            <button v-if="entry" class="cover-button" aria-label="在媒体库打开本次下载" @click="openLibrary"><img v-if="coverUrl" :src="coverUrl" alt="本次下载的内容封面" :style="entry.cover_face?{objectPosition:`${entry.cover_face.x*100}% ${entry.cover_face.y*100}%`}:{}"><span v-else class="text-cover"><AppIcon name="library" :size="60"/>文字内容已保存</span></button>
+            <p v-if="entry" class="result-caption">{{ entry.author }} · {{ entry.sort_at || entry.date_dir }}<span>{{ entry.text_preview || entry.text?.slice(0,140) }}</span></p>
+            <p v-if="previewLoading" class="muted">正在读取媒体索引…</p><p v-if="previewError" class="muted">{{ previewError }} <button class="text-button" @click="loadPreview">重试</button></p>
           </div>
-        </div>
-
-        <div v-else class="field">
-          <label>
-            {{ p.label }}
-            <span v-if="p.required" style="color: var(--red)">*</span>
-          </label>
-
-          <!-- 目录参数：输入框 + 浏览按钮 -->
-          <div v-if="p.label.includes('目录')" class="dir-row">
-            <div class="input-wrap">
-              <input
-                class="input"
-                v-model="form[p.name]"
-                :placeholder="p.placeholder"
-                @paste="onPasteInput($event, p.name)"
-              />
-              <button
-                v-if="form[p.name]"
-                class="clear-btn"
-                title="清空"
-                @click="clearField(p.name)"
-              >✕</button>
-            </div>
-            <button class="btn btn-ghost dir-btn" @click="openBrowser(p.name)">📂 浏览</button>
-          </div>
-
-          <div v-else-if="p.kind === 'textarea'" class="input-wrap textarea-wrap">
-            <textarea
-              class="textarea"
-              v-model="form[p.name]"
-              :placeholder="p.placeholder"
-              @paste="onPasteInput($event, p.name)"
-            ></textarea>
-            <button
-              v-if="form[p.name]"
-              class="clear-btn ta-clear"
-              title="清空"
-              @click="clearField(p.name)"
-            >✕ 清空</button>
-          </div>
-          <div v-else class="input-wrap">
-            <input
-              class="input"
-              v-model="form[p.name]"
-              :placeholder="p.placeholder"
-              @paste="onPasteInput($event, p.name)"
-            />
-            <button
-              v-if="form[p.name]"
-              class="clear-btn"
-              title="清空"
-              @click="clearField(p.name)"
-            >✕</button>
-          </div>
-          <div v-if="p.help" class="hint">{{ p.help }}</div>
-          <div
-            v-if="(p.name === 'input' || p.name === 'url') && linkWarning"
-            class="link-warning"
-          >⚠️ {{ linkWarning }}</div>
-        </div>
-      </template>
-
-      <div style="display: flex; gap: 12px; margin-top: 22px">
-        <button class="btn btn-primary" :disabled="submitting" @click="submit">
-          {{ submitting ? '提交中…' : '🚀 开始下载' }}
-        </button>
-        <router-link to="/tasks" class="btn btn-ghost" style="text-decoration:none">
-          查看任务队列
-        </router-link>
-      </div>
+          <div v-else class="result-empty pending"><AppIcon :name="task.status==='running'?'download':'tasks'" :size="58"/><p>{{ ['running','queued'].includes(task.status)?'完成后在这里显示本次内容的封面。':'此次任务尚未完成，可在任务记录中查看原因或重试。' }}</p></div>
+          <div class="form-actions"><button class="btn btn-ghost btn-sm" @click="openTask">定位任务</button><button v-if="entry" class="btn btn-primary btn-sm" @click="openLibrary">打开媒体库</button><button v-if="['queued','running'].includes(task.status)" class="btn btn-danger-ghost btn-sm" @click="api.cancelTask(task.id).then(updateTask).catch(e=>toast(e.message,'error'))">取消下载</button></div>
+        </template>
+      </section>
     </div>
-
-    <!-- 输出实时预览 -->
-    <div v-if="previewData && (previewData.images.length || previewData.videos.length)" class="card preview-card">
-      <div class="preview-head">
-        <span class="section-title" style="margin:0">📥 输出预览</span>
-        <span class="preview-dir">{{ previewDir }}</span>
-      </div>
-
-      <!-- 图片堆叠轮播 -->
-      <div v-if="previewData.images.length" class="stack-wrap">
-        <button class="g-nav g-prev" @click="carouselPrev">‹</button>
-        <div class="stack">
-          <div
-            v-for="(img, i) in previewData.images"
-            :key="img"
-            class="stack-card"
-            :style="stackStyle(i, previewData.images.length)"
-          >
-            <img :src="mediaUrl(img)" loading="lazy" alt="" />
-          </div>
-        </div>
-        <button class="g-nav g-next" @click="carouselNext">›</button>
-        <div class="stack-count">{{ carouselIdx + 1 }} / {{ previewData.images.length }}</div>
-      </div>
-
-      <!-- 视频播放器（最多渲染 8 个，避免大量 video 元素拖垮页面） -->
-      <div v-if="previewData.videos.length" class="video-list">
-        <video
-          v-for="v in previewData.videos.slice(0, 8)"
-          :key="v"
-          :src="mediaUrl(v)"
-          controls
-          preload="metadata"
-        ></video>
-        <div v-if="previewData.videos.length > 8" class="video-more">
-          还有 {{ previewData.videos.length - 8 }} 个视频，已省略渲染
-        </div>
-      </div>
-    </div>
-
-    <!-- 目录选择器弹层 -->
-    <transition name="fade">
-      <div v-if="browsing" class="browse-mask" @click="browsing = false">
-        <div class="browse-panel" @click.stop>
-          <div class="browse-head">
-            <button class="btn btn-ghost btn-sm" :disabled="!browsePath || browsePath === '.'" @click="browseUp">⬆ 上级</button>
-            <span class="browse-path">{{ browsePath === '.' ? '根目录' : browsePath }}</span>
-            <button class="btn btn-ghost btn-sm" @click="browsing = false">取消</button>
-          </div>
-          <div class="browse-list">
-            <div v-if="!browseDirs.length" class="browse-empty">（无子目录）</div>
-            <button
-              v-for="d in browseDirs"
-              :key="d.rel"
-              class="browse-item"
-              @click="loadBrowse(d.rel)"
-              @dblclick="pickDir(d.rel)"
-            >
-              <span class="browse-icon">📁</span>
-              <span class="browse-name">{{ d.name }}</span>
-              <span class="browse-count">{{ d.entries }} 条</span>
-              <span class="browse-pick" @click.stop="pickDir(d.rel)">选此目录</span>
-            </button>
-          </div>
-          <div class="browse-tip">单击进入子目录 · 点「选此目录」确认</div>
-        </div>
-      </div>
-    </transition>
+    <div v-if="browsing" class="modal-mask" @click.self="browsing=false"><section class="browse-panel card" role="dialog" aria-modal="true" aria-label="选择输出目录"><div class="browse-head"><button class="btn btn-ghost btn-sm" :disabled="!browsePath || browseBusy" @click="browseUp">上级</button><strong>{{ browsePath || '默认媒体目录' }}</strong><button class="btn btn-ghost btn-sm" @click="browsing=false">关闭</button></div><p class="hint path-hint">{{ rootPath }}</p><div class="browse-list"><p v-if="browseBusy">正在读取目录…</p><p v-else-if="!browseDirs.length" class="muted">此目录没有子目录。</p><div v-for="dir in browseDirs" :key="dir.rel" class="browse-row"><button @click="loadBrowse(dir.rel)"><AppIcon name="folder" :size="22"/>{{ dir.name }}</button><button class="text-button" @click="pickDir(dir.rel)">选择</button></div></div><button class="btn btn-primary btn-sm" :disabled="browseBusy" @click="pickDir(browsePath)">使用当前目录</button></section></div>
   </div>
 </template>
-
 <style scoped>
-.script-card {
-  cursor: pointer;
-  position: relative;
-  padding: 20px;
-  border: 2px solid transparent;
-}
-.script-card.picked {
-  border-color: var(--blue);
-  box-shadow: 0 10px 36px rgba(0, 113, 227, 0.22);
-}
-.script-icon { font-size: 30px; margin-bottom: 10px; }
-.script-name { font-size: 15.5px; font-weight: 700; margin-bottom: 5px; }
-.script-desc { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
-.script-warn { font-size: 12px; color: var(--orange); margin-top: 8px; }
-
-/* ---------- 目录选择 ---------- */
-.dir-row { display: flex; gap: 10px; }
-.dir-row .input-wrap { flex: 1; }
-.dir-btn { flex-shrink: 0; }
-
-/* 输入框清空按钮 */
-.input-wrap { position: relative; }
-.link-warning {
-  margin-top: 7px;
-  font-size: 12.5px;
-  color: var(--red);
-  background: rgba(255, 59, 48, 0.08);
-  border: 1px solid rgba(255, 59, 48, 0.18);
-  border-radius: 9px;
-  padding: 7px 12px;
-  line-height: 1.5;
-  animation: fadeUp 250ms var(--ease);
-}
-.clear-btn {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  border: none;
-  background: rgba(0, 0, 0, 0.08);
-  color: var(--text-2);
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  cursor: pointer;
-  font-size: 11px;
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 150ms, color 150ms;
-}
-.clear-btn:hover { background: rgba(0, 0, 0, 0.18); color: var(--text); }
-.ta-clear {
-  width: auto;
-  padding: 0 10px;
-  border-radius: 11px;
-  font-size: 12px;
-  top: 12px;
-  transform: none;
-}
-.textarea-wrap .textarea { padding-right: 84px; }
-
-.browse-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 520;
-  background: rgba(10, 10, 12, 0.4);
-  backdrop-filter: blur(10px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.browse-panel {
-  width: min(560px, 92vw);
-  max-height: 74vh;
-  background: rgba(250, 250, 252, 0.96);
-  border-radius: 20px;
-  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.3);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.browse-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 18px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-}
-.browse-path {
-  flex: 1;
-  font-size: 13.5px;
-  font-weight: 700;
-  font-family: Consolas, monospace;
-  word-break: break-all;
-}
-.browse-list { flex: 1; overflow-y: auto; padding: 10px 12px; }
-.browse-empty { text-align: center; color: var(--text-2); padding: 30px; font-size: 13px; }
-.browse-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 11px 14px;
-  border: none;
-  border-radius: 12px;
-  background: transparent;
-  font-family: var(--font);
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 150ms;
-  text-align: left;
-}
-.browse-item:hover { background: rgba(0, 0, 0, 0.05); }
-.browse-icon { font-size: 17px; }
-.browse-name { flex: 1; font-weight: 600; word-break: break-all; }
-.browse-count { font-size: 12px; color: var(--text-2); }
-.browse-pick {
-  font-size: 12px;
-  color: var(--blue);
-  background: rgba(0, 113, 227, 0.1);
-  padding: 3px 10px;
-  border-radius: 8px;
-  white-space: nowrap;
-}
-.browse-pick:hover { background: rgba(0, 113, 227, 0.2); }
-.browse-tip {
-  padding: 10px 16px;
-  font-size: 12px;
-  color: var(--text-2);
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
-  text-align: center;
-}
-
-/* ---------- 输出预览 ---------- */
-.preview-card { margin-top: 20px; }
-.preview-head {
-  display: flex;
-  align-items: baseline;
-  gap: 14px;
-  margin-bottom: 18px;
-  flex-wrap: wrap;
-}
-.preview-dir {
-  font-size: 12px;
-  color: var(--text-2);
-  font-family: Consolas, monospace;
-  word-break: break-all;
-}
-
-.stack-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 10px 50px 26px;
-}
-.stack {
-  position: relative;
-  width: 320px;
-  height: 240px;
-}
-.stack-card {
-  position: absolute;
-  inset: 0;
-  border-radius: 16px;
-  overflow: hidden;
-  background: #fff;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
-}
-.stack-card img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.stack-count {
-  position: absolute;
-  bottom: 4px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 12px;
-  color: var(--text-2);
-  font-variant-numeric: tabular-nums;
-  background: rgba(255, 255, 255, 0.8);
-  padding: 2px 12px;
-  border-radius: 10px;
-  backdrop-filter: blur(6px);
-}
-.g-nav {
-  position: absolute;
-  top: 45%;
-  z-index: 40;
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
-  border: none;
-  background: rgba(0, 0, 0, 0.08);
-  color: var(--text);
-  font-size: 22px;
-  line-height: 1;
-  cursor: pointer;
-  transition: background 180ms;
-}
-.g-nav:hover { background: rgba(0, 0, 0, 0.16); }
-.g-prev { left: 0; }
-.g-next { right: 0; }
-
-.video-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 560px));
-  justify-content: center; /* auto-fit 折叠空轨道后轨道组居中 */
-  gap: 14px;
-}
-.video-list video {
-  width: 100%;
-  max-height: 56vh;          /* 竖屏视频限高，完整展示不滚动 */
-  object-fit: contain;       /* 保持比例完整画面，黑边自适应 */
-  border-radius: 14px;
-  background: #000;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-}
-.video-more {
-  grid-column: 1 / -1;
-  text-align: center;
-  font-size: 12.5px;
-  color: var(--text-2);
-  padding: 10px;
-}
-
-.fade-enter-active { transition: opacity 200ms ease-out; }
-.fade-leave-active { transition: opacity 150ms ease-in; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
+.download-columns { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:24px; align-items:start; }.download-form,.result-panel { min-width:0; }.platforms { display:flex; gap:10px; margin-bottom:24px; }.platform-choice { flex:1; display:flex; align-items:center; gap:10px; border:1px solid var(--border); border-radius:14px; padding:12px; background:#fff; cursor:pointer; font-size:13px; text-align:left; }.platform-choice.selected { border-color:var(--blue); background:#f1f7fc; }.form-description { color:var(--text-2); font-size:13px; line-height:1.6; margin-bottom:22px; }.field-label { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }.field-label label { margin:0; }.required,.error-text { color:#bb392d; }.error-text,.clipboard-message { font-size:12px; margin-top:8px; line-height:1.6; }.clipboard-message { color:#47766a; }.main-input { position:relative; }.main-input textarea { min-height:150px; padding-bottom:36px; }.clear-input { position:absolute; right:12px; bottom:12px; border:0; background:#eef0f3; padding:4px 10px; border-radius:8px; font-size:12px; cursor:pointer; }.directory-input { display:flex; gap:8px; }.directory-input .input { min-width:0; }.directory-input .btn { flex-shrink:0; }.path-hint { overflow-wrap:anywhere; }.form-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:22px; }.result-panel h2 { font-size:18px; margin-bottom:22px; }.result-empty { min-height:335px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; text-align:center; padding:25px 10px; }.result-empty h3 { font-size:17px; }.result-empty p,.muted { color:var(--text-2); font-size:13px; line-height:1.7; }.result-empty.pending { min-height:260px; }.result-task { display:flex; gap:10px; align-items:center; }.result-task>div { min-width:0; flex:1; }.result-task strong { font-size:14px; }.task-id { font:11px Consolas,monospace; color:var(--text-2); overflow-wrap:anywhere; margin-top:4px; }.completed-preview { margin-top:20px; }.cover-button { border:0; width:100%; border-radius:14px; overflow:hidden; cursor:pointer; background:#e9eeec; aspect-ratio:4/3; }.cover-button img { width:100%; height:100%; object-fit:cover; display:block; }.text-cover { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:15px; color:var(--text-2); }.result-caption { margin-top:14px; font-size:13px; line-height:1.6; overflow-wrap:anywhere; }.result-caption span { display:block; color:var(--text-2); margin-top:5px; }.text-button { border:0; background:transparent; color:var(--blue); cursor:pointer; font-size:13px; padding:4px; }.modal-mask { position:fixed; inset:0; z-index:600; background:#19242f55; display:grid; place-items:center; padding:20px; }.browse-panel { width:min(560px,100%); background:#f8f9fb; }.browse-head { display:flex; align-items:center; gap:12px; margin-bottom:12px; }.browse-head strong { flex:1; font-size:13px; overflow-wrap:anywhere; }.browse-list { max-height:48vh; overflow:auto; margin:20px 0; }.browse-row { display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--border); }.browse-row>button:first-child { flex:1; border:0; background:transparent; text-align:left; padding:12px 0; display:flex; align-items:center; gap:10px; cursor:pointer; overflow-wrap:anywhere; }.hint { color:var(--text-2); font-size:12px; line-height:1.6; }
+@media(max-width:1050px) { .download-columns { grid-template-columns:minmax(0,1fr); }.result-empty { min-height:230px; }.cover-button { max-height:420px; } }
+@media(max-width:450px) { .platform-choice { padding:10px 8px; gap:6px; }.platform-choice span { font-size:12px; }.result-task { flex-wrap:wrap; } }
 </style>

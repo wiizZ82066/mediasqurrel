@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api.js'
 import { store, onTaskEvent, upsertTaskSummary, removeTaskSummary, toast } from '../store.js'
 import ActivityProgress from '../components/ActivityProgress.vue'
+import PlatformLogo from '../components/PlatformLogo.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -11,6 +12,7 @@ const saved = store.taskListState
 const tasks = ref([...saved.items])
 const query = ref(saved.q)
 const status = ref(saved.status)
+const includeHidden = ref(!!saved.includeHidden)
 const cursor = ref(saved.cursor)
 const nextCursor = ref(saved.nextCursor)
 const previous = ref([...saved.previous])
@@ -55,7 +57,7 @@ function closeLogs(id) {
 function rememberList() {
   Object.assign(saved, {
     items: [...tasks.value], cursor: cursor.value, nextCursor: nextCursor.value,
-    previous: [...previous.value], status: status.value, q: query.value,
+    previous: [...previous.value], status: status.value, q: query.value, includeHidden: includeHidden.value,
     scrollTop: contentElement?.scrollTop || 0, loaded: true,
   })
 }
@@ -70,7 +72,7 @@ async function loadPage({ target = cursor.value, reset = false, restore = false 
   liveUpdates.clear()
   progressUpdates.clear()
   try {
-    const result = await api.taskPage({ cursor: target, status: status.value, q: query.value.trim(), signal: controller.signal })
+    const result = await api.taskPage({ cursor: target, status: status.value, q: query.value.trim(), includeHidden: includeHidden.value, signal: controller.signal })
     if (disposed || sequence !== pageSequence) return false
     tasks.value = result.items.map((task) => {
       const latest = liveUpdates.get(task.id) || task
@@ -97,7 +99,7 @@ async function loadPage({ target = cursor.value, reset = false, restore = false 
   }
 }
 
-watch([query, status], (values, old) => {
+watch([query, status, includeHidden], (values, old) => {
   clearTimeout(debounceTimer)
   pageRequest?.abort()
   ++pageSequence
@@ -290,6 +292,10 @@ async function act(task, action) {
       closeLogs(task.id)
       tasks.value = tasks.value.filter((item) => item.id !== task.id)
       toast('任务记录已隐藏，日志与媒体文件已保留', 'success')
+    } else if (action === 'restore') {
+      await api.restoreTask(task.id)
+      await loadPage({ restore: true })
+      toast('任务记录已恢复，可再次查看详细日志', 'success')
     } else if (action === 'deleteLogs') {
       if (!window.confirm('永久删除这条任务的全部详细日志？任务记录和媒体文件会保留，此操作无法撤销。')) return
       await api.deleteTaskLogs(task.id)
@@ -303,11 +309,12 @@ async function act(task, action) {
   }
 }
 
-function gotoLibrary(task) {
-  const parts = (task.output_rel || '').replaceAll('\\', '/').split('/').filter(Boolean)
-  if (parts.length < 2) return toast('此输出暂未关联到媒体库', 'info')
+async function gotoLibrary(task) {
   rememberList()
-  router.push({ path: '/library', query: { author: parts[0], entry: parts[1] } })
+  try {
+    const located = await api.libraryLocate({ task_id: task.id })
+    router.push({ path: '/library', query: { entry_id: located.entry_id } })
+  } catch (error) { toast('此任务尚未关联媒体索引：' + error.message, 'info') }
 }
 
 onMounted(async () => {
@@ -340,6 +347,7 @@ onBeforeUnmount(() => {
     <div class="card task-filters">
       <label class="search-field">搜索任务<input v-model="query" class="input" type="search" placeholder="任务 ID、平台或链接" /></label>
       <label>状态<select v-model="status" class="select"><option value="">全部状态</option><option v-for="(label, value) in statusText" :key="value" :value="value">{{ label }}</option></select></label>
+      <label class="hidden-filter"><input v-model="includeHidden" type="checkbox"> 包含隐藏任务</label>
       <button class="btn btn-ghost" :disabled="loading" @click="loadPage({ target: '', reset: true })">刷新列表</button>
     </div>
     <p v-if="changed" class="update-note" role="status">任务有更新。刷新列表以查看新增任务。</p>
@@ -352,25 +360,27 @@ onBeforeUnmount(() => {
     </div>
     <div class="task-list" :aria-busy="loading">
       <article v-for="task in tasks" :key="task.id" class="card task-card">
-        <button class="task-head" :aria-expanded="!!logs[task.id]" :aria-controls="`logs-${task.id}`" @click="toggleLogs(task.id)">
-          <span class="platform-mark" :class="task.script_id">{{ task.script_id === 'weibo' ? '微' : task.script_id === 'douyin' ? '抖' : '文' }}</span>
+        <button class="task-head" :aria-expanded="!!logs[task.id]" :aria-controls="`logs-${task.id}`" :disabled="task.hidden" @click="toggleLogs(task.id)">
+          <PlatformLogo :platform="task.script_id" :size="36"/>
           <span class="task-info"><span class="task-name">{{ task.script_name }}</span><span class="task-param">{{ task.params?.input || task.params?.url || task.id }}</span><span class="task-meta">{{ formatTime(task.created_at) }} · {{ task.id }}<template v-if="task.exit_code != null"> · 退出码 {{ task.exit_code }}</template></span></span>
           <span class="tag" :class="'tag-' + task.status"><span class="dot"></span>{{ statusText[task.status] || task.status }}</span>
           <span class="chevron" aria-hidden="true">{{ logs[task.id] ? '−' : '+' }}</span>
         </button>
+        <p v-if="task.hidden" class="attempt-note">此任务记录已隐藏。恢复后可查看原有日志，媒体文件不受影响。</p>
         <p v-if="task.parent_task_id" class="attempt-note">第 {{ task.attempt || 2 }} 次尝试 · 原任务 {{ task.parent_task_id }}</p>
         <p v-if="task.status === 'interrupted'" class="interrupted-note">程序退出时下载尚未结束。可创建新任务重试，不会自动续传。</p>
         <p v-if="task.error" class="task-error">{{ task.error }}</p>
         <ActivityProgress :progress="task.progress" :status="task.status" :label="`${task.script_name}下载进度`" />
         <div class="task-actions">
-          <button class="btn btn-ghost btn-sm" @click="toggleLogs(task.id)">{{ logs[task.id] ? '收起日志' : '查看日志' }}</button>
+          <button v-if="!task.hidden" class="btn btn-ghost btn-sm" @click="toggleLogs(task.id)">{{ logs[task.id] ? '收起日志' : '查看日志' }}</button>
           <button v-if="isActive(task)" class="btn btn-danger-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'cancel')">取消任务</button>
-          <template v-else>
+          <template v-else-if="!task.hidden">
             <button v-if="['failed', 'cancelled', 'interrupted'].includes(task.status)" class="btn btn-primary btn-sm" :disabled="busy[task.id]" @click="act(task, 'retry')">创建重试任务</button>
             <button v-if="task.output_rel" class="btn btn-ghost btn-sm" @click="gotoLibrary(task)">在媒体库查看</button>
             <button class="btn btn-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'hide')">隐藏任务记录</button>
             <button class="btn btn-danger-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'deleteLogs')">删除详细日志</button>
           </template>
+          <button v-if="task.hidden" class="btn btn-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'restore')">恢复任务记录</button>
         </div>
         <p v-if="task.output_rel || task.output_dir" class="task-outdir">输出：{{ task.output_rel || task.output_dir }}</p>
         <section v-if="logs[task.id]" :id="`logs-${task.id}`" class="log-panel" aria-label="任务详细日志">
@@ -408,6 +418,7 @@ onBeforeUnmount(() => {
 .task-card { padding: 18px 22px; }
 .task-head { display: flex; align-items: center; gap: 14px; width: 100%; border: 0; background: transparent; text-align: left; padding: 0; color: inherit; font: inherit; cursor: pointer; }
 .task-head:focus-visible { outline: 2px solid var(--blue); outline-offset: 5px; border-radius: 8px; }
+.hidden-filter { display:flex; align-items:center; gap:6px; white-space:nowrap; font-size:12px; }
 .platform-mark { width: 36px; height: 36px; display: grid; place-items: center; flex-shrink: 0; border-radius: 11px; background: #e8eef7; color: #46638a; font-size: 17px; font-weight: 700; }
 .platform-mark.weibo { background: #fff0df; color: #c36034; }
 .platform-mark.douyin { background: #e8f3f6; color: #2a737d; }

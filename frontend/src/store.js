@@ -8,8 +8,9 @@ export const store = reactive({
   subScans: {},
   wsConnected: false,
   toasts: [],
-  notifications: [],   // 通知中心（最近 50 条）
-  unread: 0,
+  downloadState: { selectedId: '', drafts: {}, task: null },
+  libraryState: null,
+  preferences: { density: 'comfortable' },
   taskListState: { items: [], cursor: '', nextCursor: null, previous: [], status: '', q: '', scrollTop: 0, loaded: false },
 })
 
@@ -53,14 +54,18 @@ export function removeTaskSummary(id) {
   taskRevisions.delete(id)
 }
 
-export function pushNotification(n) {
-  store.notifications.unshift(n)
-  if (store.notifications.length > 50) store.notifications.pop()
-  store.unread++
-}
-
-export function markNotificationsRead() {
-  store.unread = 0
+const terminalEvents = new Map()
+const pendingEvents = new Map()
+let eventTimer = null
+function backgroundToast(key, text, kind, to) {
+  const group = pendingEvents.get(key)
+  if (group) group.count++
+  else pendingEvents.set(key, { text, kind, to, count: 1 })
+  if (!eventTimer) eventTimer = setTimeout(() => {
+    eventTimer = null
+    for (const [key, event] of pendingEvents) toast(event.text, event.kind, { key, to: event.to, count: event.count })
+    pendingEvents.clear()
+  }, 900)
 }
 
 export function connectWS() {
@@ -86,19 +91,11 @@ export function connectWS() {
     try { msg = JSON.parse(ev.data) } catch { return }
     if (msg.type === 'task_update') {
       upsertTaskSummary(msg.task)
-      if (['success', 'failed'].includes(msg.task.status)) {
-        toast(
-          msg.task.status === 'success'
-            ? `${msg.task.script_icon} ${msg.task.script_name} 下载成功`
-            : `${msg.task.script_icon} ${msg.task.script_name} 下载失败`,
-          msg.task.status === 'success' ? 'success' : 'error',
-        )
-        pushNotification({
-          level: msg.task.status === 'success' ? 'success' : 'error',
-          title: msg.task.status === 'success' ? '下载完成' : '下载失败',
-          text: msg.task.script_name,
-          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-        })
+      if (['success', 'failed', 'interrupted'].includes(msg.task.status) && terminalEvents.get(msg.task.id) !== msg.task.status) {
+        terminalEvents.set(msg.task.id, msg.task.status)
+        if (terminalEvents.size > 1000) terminalEvents.delete(terminalEvents.keys().next().value)
+        const success = msg.task.status === 'success'
+        backgroundToast('task-' + msg.task.status, success ? '下载任务已完成' : '下载任务未完成，请查看任务记录', success ? 'success' : 'error', '/tasks')
       }
     } else if (msg.type === 'task_progress') {
       const task = store.tasks.find((t) => t.id === msg.task_id)
@@ -113,8 +110,7 @@ export function connectWS() {
     } else if (msg.type === 'task_log') {
       // No global log retention. Open panels consume bounded, sequenced events.
     } else if (msg.type === 'notification') {
-      pushNotification(msg)
-      toast(`🔔 ${msg.title}: ${msg.text}`, 'info')
+      backgroundToast('subscription-' + (msg.level || 'info'), `${msg.title}: ${msg.text}`, msg.level === 'error' ? 'error' : 'info', '/subs')
     }
     emitTaskEvent(msg)
   }
@@ -161,11 +157,22 @@ export async function refreshSubs() {
 }
 
 let toastSeq = 0
-export function toast(text, kind = 'info') {
-  const id = ++toastSeq
-  store.toasts.push({ id, text, kind })
-  setTimeout(() => {
-    const i = store.toasts.findIndex((t) => t.id === id)
-    if (i >= 0) store.toasts.splice(i, 1)
-  }, 3600)
+const toastTimers = new Map()
+export function dismissToast(id) {
+  clearTimeout(toastTimers.get(id))
+  toastTimers.delete(id)
+  store.toasts = store.toasts.filter(item => item.id !== id)
+}
+export function toast(text, kind = 'info', options = {}) {
+  const key = options.key || `${kind}:${text}`
+  let item = store.toasts.find(t => t.key === key)
+  if (item) {
+    item.count += options.count || 1
+    clearTimeout(toastTimers.get(item.id))
+  } else {
+    item = { id: ++toastSeq, key, text, kind, count: options.count || 1, to: options.to || '' }
+    store.toasts.push(item)
+    if (store.toasts.length > 3) dismissToast(store.toasts[0].id)
+  }
+  toastTimers.set(item.id, setTimeout(() => dismissToast(item.id), kind === 'error' ? 8000 : 5000))
 }
