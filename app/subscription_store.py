@@ -5,6 +5,7 @@ opens a database; ``db.migrate`` applies SCHEMA with the other application table
 """
 import datetime as dt
 import json
+import math
 import uuid
 
 from . import db
@@ -285,6 +286,30 @@ def latest_snapshots():
     return result
 
 
+def public_coverage(snapshot_json):
+    """Read a small whitelisted projection, never return an arbitrary snapshot."""
+    if not isinstance(snapshot_json, str) or len(snapshot_json) > 16384:
+        return {}
+    try:
+        snapshot = json.loads(snapshot_json)
+    except (ValueError, TypeError):
+        return {}
+    coverage = snapshot.get('coverage') if isinstance(snapshot, dict) else None
+    if not isinstance(coverage, dict):
+        return {}
+    result = {}
+    if isinstance(coverage.get('complete'), bool):
+        result['complete'] = coverage['complete']
+    for key in ('reason', 'scope', 'oldest_at', 'cutoff_at'):
+        if isinstance(coverage.get(key), str):
+            result[key] = redact_text(coverage[key][:200])
+    for key in ('pages', 'items', 'elapsed_seconds'):
+        value = coverage.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
+            result[key] = value
+    return result
+
+
 def list_scans(sub_id=None, *, limit=50, offset=0):
     limit, offset = min(200, max(1, int(limit))), max(0, int(offset))
     clause = " WHERE sub_id=?" if sub_id is not None else ""
@@ -292,10 +317,15 @@ def list_scans(sub_id=None, *, limit=50, offset=0):
     with db.connect() as conn:
         rows = conn.execute(
             "SELECT id,sub_id,platform,blogger_id,trigger,status,started_at,finished_at,"
-            "items_count,new_count,baseline,error FROM subscription_scans" + clause +
+            "items_count,new_count,baseline,error,substr(snapshot_json,1,16385) AS snapshot_json FROM subscription_scans" + clause +
             " ORDER BY started_at DESC,rowid DESC LIMIT ? OFFSET ?", (*values, limit, offset),
         ).fetchall()
-    return [dict(row) for row in rows]
+    result = []
+    for row in rows:
+        item = dict(row)
+        item['coverage'] = public_coverage(item.pop('snapshot_json'))
+        result.append(item)
+    return result
 
 
 def recover_scans():

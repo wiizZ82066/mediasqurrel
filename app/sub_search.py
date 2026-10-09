@@ -1,6 +1,6 @@
 """订阅博主搜索：本地存档作者提取 + 线上博主搜索（微博/抖音）。
 
-- local_authors(): 扫描媒体库存档的 context.md，反查 (作者名, platform, blogger_id)
+- local_authors(): 从持久化索引聚合前200名本地作者，不读取原媒体
 - search_weibo(kw): m.weibo.cn 搜索页内 fetch 用户搜索 container API
 - search_douyin(kw): 打开抖音用户搜索页，拦截搜索接口响应
 
@@ -10,10 +10,14 @@ import asyncio
 import json
 import os
 import re
+import threading
+import time
+import weakref
+from urllib.parse import unquote, urlsplit
 
 from playwright.sync_api import sync_playwright
 
-from . import config
+from . import config, db
 
 MOBILE_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
@@ -23,56 +27,106 @@ MOBILE_UA = (
 
 # ---------------------------------------------------------------- 本地作者
 
-_WEIBO_UID_RE = re.compile(r"weibo\.com/(\d+)/")
-_SKIP_DIRS = {
-    ".git", ".ab-profile", "app", "frontend", "scripts_manifest",
-    "app_data", "node_modules", "__pycache__", ".venv", ".idea", ".vscode",
-    ".npm-cache", ".agent-browser", "src-tauri", "backend-dist", "portable", "build",
-}
+_WEIBO_UID_RE = re.compile(r'(?:weibo\.com|m\.weibo\.cn)/(?:u/|profile/)?(\d+)(?:[/?#]|$)')
 
 
 def local_authors() -> list[dict]:
-    """扫描存档，按作者聚合平台身份。
+    """聚合已索引且未缺失的存档，按条目数取最多200个作者。
 
     返回: [{name, platforms: {platform: blogger_id}, entries}]
     """
-    root = config.LIBRARY_ROOT
-    authors: dict[str, dict] = {}
+    with db.connect() as conn:
+        rows = conn.execute("""SELECT author,COUNT(*) AS entries,
+            MAX(CASE WHEN json_valid(meta_json) THEN json_extract(meta_json,'$."作者sec_uid"') END) AS douyin_id,
+            MAX(CASE WHEN platform='weibo' AND json_valid(meta_json)
+                THEN json_extract(meta_json,'$."原文链接"') END) AS weibo_url
+            FROM media_entries WHERE availability='present'
+            GROUP BY author ORDER BY entries DESC,author LIMIT 200""").fetchall()
+    result = []
+    for row in rows:
+        platforms = {}
+        match = _WEIBO_UID_RE.search(str(row['weibo_url'] or ''))
+        if match:
+            platforms['weibo'] = match[1]
+        if row['douyin_id']:
+            platforms['douyin'] = str(row['douyin_id'])
+        result.append({'name': row['author'], 'platforms': platforms, 'entries': row['entries']})
+    return result
+
+
+_SEARCH_SLOTS = threading.BoundedSemaphore(2)
+_PROFILE_SLOT = threading.Lock()
+_SEARCH_CONTEXT = threading.local()
+_ASYNC_SEARCH = weakref.WeakKeyDictionary()
+
+
+def _check_search():
+    cancel = getattr(_SEARCH_CONTEXT, 'cancel', None)
+    if cancel and cancel.is_set():
+        raise SearchCancelled('搜索已取消')
+    if time.monotonic() >= getattr(_SEARCH_CONTEXT, 'deadline', float('inf')):
+        raise TimeoutError('博主搜索超时，请稍后重试')
+
+
+def _timeout_ms(maximum=10000):
+    _check_search()
+    return max(1, min(maximum, int((getattr(_SEARCH_CONTEXT, 'deadline', time.monotonic() + 10) - time.monotonic()) * 1000)))
+
+
+def _wait_search(page, milliseconds):
+    remaining = milliseconds
+    while remaining > 0:
+        _check_search()
+        step = min(250, remaining, _timeout_ms())
+        page.wait_for_timeout(step)
+        remaining -= step
+    _check_search()
+
+
+def _acquire(slot):
+    while not slot.acquire(timeout=.1):
+        _check_search()
     try:
-        names = os.listdir(root)
-    except OSError:
-        return []
+        _check_search()
+    except BaseException:
+        slot.release()
+        raise
 
-    for name in names:
-        author_path = os.path.join(root, name)
-        if not os.path.isdir(author_path) or name in _SKIP_DIRS or name.startswith("."):
-            continue
-        info = authors.setdefault(name, {"name": name, "platforms": {}, "entries": 0})
-        for sub in os.listdir(author_path):
-            ctx = os.path.join(author_path, sub, "context.md")
-            if not os.path.isfile(ctx):
-                continue
-            info["entries"] += 1
-            try:
-                with open(ctx, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read(4096)
-            except OSError:
-                continue
-            # 微博: 原文链接 weibo.com/{uid}/xxx
-            m = _WEIBO_UID_RE.search(content)
-            if m:
-                info["platforms"]["weibo"] = m.group(1)
-                continue
-            # 抖音: 作者sec_uid 字段（新存档）
-            m = re.search(r"作者sec_uid\*\*: (\S+)", content)
-            if m:
-                info["platforms"]["douyin"] = m.group(1)
 
-    return sorted(
-        [a for a in authors.values() if a["platforms"] or a["entries"]],
-        key=lambda a: a["entries"],
-        reverse=True,
-    )
+class SearchCancelled(RuntimeError):
+    pass
+
+
+def parse_identity(platform, keyword):
+    """Recognize explicit identities, without claiming online verification."""
+    value = str(keyword or '').strip()
+    if not value or len(value) > 512:
+        raise ValueError('请输入1至512个字符的昵称、用户ID或主页链接')
+    identity = None
+    if '://' in value:
+        url = urlsplit(value)
+        if url.scheme not in ('http', 'https') or url.username or url.password or url.port not in (None, 80, 443):
+            raise ValueError('主页链接格式不支持')
+        path = unquote(url.path).strip('/')
+        if platform == 'weibo' and url.hostname in ('weibo.com', 'www.weibo.com', 'm.weibo.cn'):
+            match = re.fullmatch(r'(?:(?:u|profile)/)?(\d{1,20})', path)
+            identity = match[1] if match else None
+        elif platform == 'douyin' and url.hostname in ('douyin.com', 'www.douyin.com'):
+            match = re.fullmatch(r'user/([A-Za-z0-9_-]{8,256})', path)
+            identity = match[1] if match else None
+        if not identity:
+            raise ValueError('请填写所选平台的博主主页链接；作品和短链接不能作为订阅主页')
+    elif platform == 'weibo' and re.fullmatch(r'(?i)(?:uid\s*[:：]\s*)?\d{1,20}', value):
+        identity = re.sub(r'(?i)^uid\s*[:：]\s*', '', value)
+    elif platform == 'douyin':
+        match = re.fullmatch(r'(?i)sec_uid\s*[:：]\s*([A-Za-z0-9_-]{8,256})', value)
+        identity = match[1] if match else value if re.fullmatch(r'MS4wLjABAAAA[A-Za-z0-9_-]{8,244}', value) else None
+    if identity:
+        return {'nickname': identity, 'blogger_id': identity, 'platform': platform,
+                'homepage': f'https://weibo.com/u/{identity}' if platform == 'weibo' else f'https://www.douyin.com/user/{identity}',
+                'followers': 0, 'followers_text': '', 'verified': False, 'avatar': '',
+                'direct_identity': True, 'desc': '已识别用户ID；昵称与主页尚未联网核验'}
+    return None
 
 
 # ---------------------------------------------------------------- 微博线上搜索
@@ -108,47 +162,48 @@ def _fmt_followers(n) -> str:
 
 def _weibo_search_sync(kw: str) -> list[dict]:
     """打开 m.weibo.cn 搜索页，域内 fetch 用户搜索 API。"""
-    captured: list = []
-
-    def on_response(resp):
-        try:
-            if "container/getIndex" in resp.url:
-                captured.append(resp.json())
-        except Exception:
-            pass
-
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        ctx = browser.new_context(
-            user_agent=MOBILE_UA, locale="zh-CN",
-            viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
-        )
-        page = ctx.new_page()
-        page.on("response", on_response)
+        browser = p.chromium.launch(headless=True, timeout=_timeout_ms())
         try:
+            _check_search()
+            ctx = browser.new_context(
+                user_agent=MOBILE_UA, locale="zh-CN",
+                viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
+            )
+            page = ctx.new_page()
+            page.set_default_timeout(2000)
             from urllib.parse import quote
             page.goto(
                 f"https://m.weibo.cn/search?weibo={quote(kw)}",
-                wait_until="domcontentloaded", timeout=60000,
+                wait_until="domcontentloaded", timeout=_timeout_ms(),
             )
-            page.wait_for_timeout(5000)
+            _wait_search(page, 5000)
 
             # 域内 fetch 用户搜索（containerid=100103type=3 为用户维度）
             result = page.evaluate(
                 """async (kw) => {
                     const url = 'https://m.weibo.cn/api/container/getIndex?containerid=' +
                         encodeURIComponent('100103type=3&q=' + kw) + '&page_type=searchall';
-                    const r = await fetch(url, { credentials: 'include' });
-                    if (!r.ok) return { http_error: r.status };
-                    return await r.json();
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), 8000);
+                    try {
+                        const r = await fetch(url, { credentials: 'include', signal: controller.signal });
+                        if (!r.ok) return { http_error: r.status };
+                        return await r.json();
+                    } finally { clearTimeout(timer); }
                 }""",
                 kw,
             )
+            _check_search()
         finally:
             browser.close()
 
+    return _parse_weibo_users(result)
+
+
+def _parse_weibo_users(result):
     if not isinstance(result, dict) or result.get("ok") != 1:
-        return []
+        raise RuntimeError('微博未返回有效搜索结果，请检查网络或平台登录/验证状态')
 
     cards = ((result.get("data") or {}).get("cards")) or []
     users = []
@@ -214,23 +269,35 @@ def _dy_open(p, kw: str, headless: bool, use_cookies: bool = False):
     try:
         # 优先系统 Chrome（指纹真实，利于过风控）
         ctx = p.chromium.launch_persistent_context(
-            _DY_PROFILE, channel="chrome", headless=headless, **common,
+            _DY_PROFILE, channel="chrome", headless=headless, timeout=_timeout_ms(), **common,
         )
     except Exception:
+        _check_search()
         # 无系统 Chrome 时退回 Playwright 自带 chromium
         ctx = p.chromium.launch_persistent_context(
-            _DY_PROFILE, headless=headless, **common,
+            _DY_PROFILE, headless=headless, timeout=_timeout_ms(), **common,
         )
-    if use_cookies:
-        douyin_auth.attach_cookies(ctx)
-    page = ctx.pages[0] if ctx.pages else ctx.new_page()
-    hunter = XHRHunter(r"aweme/v1/web/.*(search|discover)").attach(page)
-    page.goto(
-        f"https://www.douyin.com/search/{quote(kw)}?type=general",
-        wait_until="domcontentloaded",
-        timeout=60000,
-    )
-    return ctx, page, hunter
+    try:
+        _check_search()
+        if use_cookies:
+            douyin_auth.attach_cookies(ctx)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        page.set_default_timeout(2000)
+        class SearchHunter(XHRHunter):
+            def _on_response(self, response):
+                if len(self._hits) < 16:
+                    super()._on_response(response)
+                    if self._hits and len(self._hits[-1]['body']) > 2 * 1024 * 1024:
+                        self._hits[-1]['body'] = ''
+        hunter = SearchHunter(r"aweme/v1/web/.*(search|discover)").attach(page)
+        page.goto(
+            f"https://www.douyin.com/search/{quote(kw)}?type=general",
+            wait_until="domcontentloaded", timeout=_timeout_ms(),
+        )
+        return ctx, page, hunter
+    except BaseException:
+        ctx.close()
+        raise
 
 
 def _extract_dom_users(page) -> list[dict]:
@@ -242,7 +309,9 @@ def _extract_dom_users(page) -> list[dict]:
     import time as _t
 
     deadline = _t.time() + 75  # 等用户拖滑块，最长 75 秒
+    rows = []
     while _t.time() < deadline:
+        _check_search()
         try:
             rows = page.evaluate(
                 """() => {
@@ -266,7 +335,7 @@ def _extract_dom_users(page) -> list[dict]:
             rows = []
         if len(rows) >= 2:
             break
-        page.wait_for_timeout(2000)
+        _wait_search(page, 2000)
 
     users, seen_uid = [], set()
     bad_nick = {"认证徽章", "登录", "注册", "首页", "粉丝", "关注", "作品", "点赞"}
@@ -381,12 +450,12 @@ def _douyin_search_sync(kw: str) -> list[dict]:
         # ---- 无头尝试 ----
         ctx, page, hunter = _dy_open(p, kw, headless=True, use_cookies=True)
         try:
-            page.wait_for_timeout(9000)
+            _wait_search(page, 9000)
             has_captcha = page.evaluate(
                 f"() => !!document.querySelector('{_CAPTCHA_SEL}')"
             )
             if not has_captcha:
-                page.wait_for_timeout(3000)
+                _wait_search(page, 3000)
                 users = _parse_dy_users(hunter)
                 if users:
                     return users
@@ -425,7 +494,7 @@ class CaptchaRequiredError(RuntimeError):
     """抖音要求人机验证（需用户在可见浏览器中完成一次滑块）。"""
 
 
-def douyin_login_sync(timeout_s: int = 180) -> dict:
+def _douyin_login(timeout_s: int = 180) -> dict:
     """可见浏览器窗口：用户完成滑块验证 + 扫码登录，导出登录 cookies。
 
     流程（全程用户可见）:
@@ -445,7 +514,7 @@ def douyin_login_sync(timeout_s: int = 180) -> dict:
             deadline = _t.time() + timeout_s
             stage = "等待人机验证与登录"
             while _t.time() < deadline:
-                page.wait_for_timeout(2000)
+                _wait_search(page, 2000)
                 cookies = ctx.cookies()
                 if douyin_auth.has_login_cookie(cookies):
                     logged = douyin_auth.save_cookies(cookies)
@@ -468,20 +537,113 @@ def douyin_login_sync(timeout_s: int = 180) -> dict:
             ctx.close()
 
 
-def search_online(platform: str, kw: str) -> list[dict]:
+def douyin_login_sync(timeout_s: int = 180, *, cancel=None) -> dict:
+    timeout_s = max(1, min(180, int(timeout_s)))
+    _SEARCH_CONTEXT.cancel = cancel
+    _SEARCH_CONTEXT.deadline = time.monotonic() + timeout_s + 20
+    try:
+        _acquire(_PROFILE_SLOT)
+        try:
+            return _douyin_login(timeout_s)
+        finally:
+            _PROFILE_SLOT.release()
+    finally:
+        _SEARCH_CONTEXT.__dict__.clear()
+
+
+def search_online(platform: str, kw: str, *, cancel=None) -> list[dict]:
     """线上搜索入口（同步阻塞）。返回按粉丝数降序的前 5。
 
     抖音遇人机验证时抛 CaptchaRequiredError（调用方转 captcha_required 标记）。
     """
-    if platform == "weibo":
-        users = _weibo_search_sync(kw)
-    elif platform == "douyin":
-        users = _douyin_search_sync(kw)
-    else:
-        return []
-    users.sort(key=lambda u: u.get("followers") or 0, reverse=True)
-    return users[:5]
+    if platform not in ('weibo', 'douyin'):
+        raise ValueError('不支持的平台')
+    kw = str(kw or '').strip()
+    direct = parse_identity(platform, kw)
+    if direct:
+        return [direct]
+    _SEARCH_CONTEXT.cancel = cancel
+    _SEARCH_CONTEXT.deadline = time.monotonic() + 90
+    try:
+        _acquire(_SEARCH_SLOTS)
+        try:
+            if platform == 'weibo':
+                users = _weibo_search_sync(kw)
+            else:
+                _acquire(_PROFILE_SLOT)
+                try:
+                    users = _douyin_search_sync(kw)
+                finally:
+                    _PROFILE_SLOT.release()
+            _check_search()
+            users.sort(key=lambda u: _parse_followers(u.get('followers')), reverse=True)
+            return users[:5]
+        finally:
+            _SEARCH_SLOTS.release()
+    finally:
+        _SEARCH_CONTEXT.__dict__.clear()
 
 
 async def search_online_async(platform: str, kw: str) -> list[dict]:
-    return await asyncio.to_thread(search_online, platform, kw)
+    return await _run_browser_operation(search_online, platform, kw)
+
+
+async def douyin_login_async(timeout_s=180):
+    return await _run_browser_operation(douyin_login_sync, timeout_s)
+
+
+async def _run_browser_operation(function, *args):
+    loop = asyncio.get_running_loop()
+    state = _ASYNC_SEARCH.setdefault(loop, {'slots': asyncio.Semaphore(2), 'requests': 0, 'workers': {}, 'tasks': set(), 'closing': False})
+    if state['closing']:
+        raise RuntimeError('应用正在退出，搜索已停止')
+    if state['requests'] >= 16:
+        raise RuntimeError('搜索请求较多，请取消旧搜索后再试')
+    state['requests'] += 1
+    request = asyncio.current_task()
+    state['tasks'].add(request)
+    try:
+        async with state['slots']:
+            cancel = threading.Event()
+            # Carry exceptions as values: a cancelled shield otherwise reports
+            # the thread's later exception as unhandled on Python 3.14.
+            def invoke():
+                try:
+                    return True, function(*args, cancel=cancel)
+                except Exception as error:
+                    return False, error
+            worker = asyncio.create_task(asyncio.to_thread(invoke))
+            state['workers'][worker] = cancel
+            try:
+                ok, result = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                cancel.set()
+                while not worker.done():
+                    try:
+                        await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        cancel.set()
+                raise
+            finally:
+                state['workers'].pop(worker, None)
+            if not ok:
+                raise result
+            return result
+    finally:
+        state['requests'] -= 1
+        state['tasks'].discard(request)
+
+
+async def stop_searches():
+    """Await browser cleanup before the backend loop closes."""
+    state = _ASYNC_SEARCH.get(asyncio.get_running_loop())
+    if not state:
+        return
+    state['closing'] = True
+    for cancel in list(state['workers'].values()):
+        cancel.set()
+    requests = set(state['tasks']) - {asyncio.current_task()}
+    for task in requests:
+        task.cancel()
+    if requests:
+        await asyncio.gather(*requests, return_exceptions=True)

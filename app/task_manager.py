@@ -40,7 +40,7 @@ def _now():
 
 def update_state(acquire=False):
     global _update_locked_until
-    count = sum(t['status'] in ('queued', 'running') for t in TASKS.values())
+    count = _store.active_count() if _store else sum(t['status'] in ('queued', 'running') for t in TASKS.values())
     if acquire and count == 0:
         _update_locked_until = time.monotonic() + 30
     return {'active': count, 'locked': time.monotonic() < _update_locked_until}
@@ -94,7 +94,7 @@ def public_task(task):
     keys = ('id', 'script_id', 'script_name', 'script_icon', 'params', 'status',
             'progress', 'created_at', 'started_at', 'finished_at', 'exit_code',
             'output_dir', 'output_rel', 'parent_task_id', 'attempt', 'error',
-            'content_key', 'metadata')
+            'content_key', 'metadata', 'hidden')
     result = redact_value({key: task.get(key) for key in keys})
     result['last_log_seq'] = task.get('last_log_seq', task.get('next_log_seq', 1) - 1)
     return result
@@ -207,7 +207,8 @@ async def initialize(store=None, *, resume_queued=True):
             task['error'] = '应用退出时任务未完成；可重新下载，不支持断点续传'
             task['progress'] = {**task['progress'], 'label': '任务已中断，可重试'}
             _store.save(task)
-            _store.append(task['id'], _now(), 'stderr', task['error'])
+            entry = _store.append(task['id'], _now(), 'stderr', task['error'])
+            task['last_log_seq'] = entry['seq']
             _store.flush()
             try:
                 await asyncio.to_thread(_store.archive, task['id'])
@@ -243,7 +244,7 @@ async def _flush_loop():
 
 def _output_params(params):
     values = dict(params)
-    output = str(values.get('out') or config.LIBRARY_ROOT).strip()
+    output = str(values.get('out') or getattr(config, 'DEFAULT_DOWNLOAD_DIR', None) or config.LIBRARY_ROOT).strip()
     resolver = getattr(config, 'resolve_output_dir', None)
     if resolver:
         values['out'] = resolver(output)
@@ -258,6 +259,8 @@ def _output_params(params):
 
 
 async def create(script_id, params, *, metadata=None, content_key=None, parent_task_id=None, attempt=1):
+    if config.MAINTENANCE_ACTIVE:
+        raise ValueError('数据维护正在进行，请完成后再创建任务')
     if _stopping:
         raise ValueError('应用正在退出，请稍后重试')
     if _storage_error:
@@ -384,7 +387,9 @@ async def _run(task_id):
             kwargs = {'creationflags': 0x08000000} if os.name == 'nt' else {'start_new_session': True}
             proc = await asyncio.create_subprocess_exec(*task['command'], stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-                cwd=config.RESOURCE_DIR, env={**os.environ, 'MS_PROGRESS': '1'}, **kwargs)
+                cwd=config.RESOURCE_DIR, env={**os.environ, 'MS_PROGRESS': '1',
+                    'MS_DOWNLOAD_TIMEOUT': str(config.DOWNLOAD_TIMEOUT),
+                    'MS_DOWNLOAD_RETRIES': str(config.DOWNLOAD_RETRIES)}, **kwargs)
             task['proc'] = proc
             if task.get('_cancelling') or _stopping:
                 await _stop_tree(proc)
@@ -489,7 +494,7 @@ async def _run(task_id):
 
 
 async def cancel(task_id):
-    task = TASKS.get(task_id)
+    task = TASKS.get(task_id) or (_store.get(task_id) if _store else None)
     if not task or task['status'] not in ('queued', 'running'):
         return False
     task['_cancelling'] = True
@@ -497,11 +502,13 @@ async def cancel(task_id):
         task['status'], task['finished_at'] = 'cancelled', _now()
         task['progress'] = {'label': '下载已取消', 'percent': 0}
         _save(task)
+        _remember(task)
         await broadcast({'type': 'task_update', 'task': public_task(task)})
         for callback in ON_TASK_FINISHED:
             result = callback(public_task(task))
             if asyncio.iscoroutine(result):
                 await result
+        _pump()
     else:
         entry = append_log(task_id, '[管理器] 用户取消：终止下载进程树', 'stderr')
         await broadcast({'type': 'task_log', 'task_id': task_id, 'log': entry})
@@ -522,9 +529,9 @@ async def retry(task_id):
                         attempt=original.get('attempt', 1) + 1)
 
 
-def list_page(*, limit=50, cursor=None, status=None, q=None):
+def list_page(*, limit=50, cursor=None, status=None, q=None, include_hidden=False):
     if _store:
-        page = _store.list_page(limit=limit, cursor=cursor, status=status, q=q)
+        page = _store.list_page(limit=limit, cursor=cursor, status=status, q=q, include_hidden=include_hidden)
         page['items'] = [public_task(task) for task in page['items']]
         return page
     tasks = list_tasks()
@@ -581,6 +588,12 @@ def delete_logs(task_id):
     _store.delete_logs(task_id)
     if task_id in TASKS:
         TASKS[task_id]['logs'] = []
+
+
+def restore_record(task_id):
+    if not _store:
+        raise ValueError('任务存储尚未初始化')
+    return _store.restore_record(task_id)
 
 
 async def shutdown():

@@ -7,5 +7,6 @@ requests>=2.31
 pystray>=0.19
 Pillow>=10.0
 websockets>=12.0
+tzdata>=2025.2
 # 可选：抖音风控升级导致拦截失效时安装并开启 app/browser.py 的 USE_PATCHRIGHT
 # patchright>=0.5

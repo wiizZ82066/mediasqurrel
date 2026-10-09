@@ -164,6 +164,31 @@ class SubscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["item_id"] for item in result["new_items"]], ["same"])
         self.assertEqual(self.state("text")["status"], "downloaded")
 
+    async def test_indexed_completion_checks_only_candidates_and_deleted_files(self):
+        from app import archive, catalog
+        folder = self.manifest('wanted')
+        self.manifest('unrelated')
+        root = catalog.register_root(str(self.library))
+        catalog.scan_root(root['id'])
+        with patch.object(watcher, '_bounded_legacy_items', side_effect=AssertionError('unexpected legacy walk')), \
+                patch.object(archive, 'entry_status', wraps=archive.entry_status) as verify:
+            self.assertEqual(watcher._local_item_ids([self.item('wanted')], 'weibo'), {'weibo:wanted'})
+            self.assertEqual(verify.call_count, 1)
+        (folder / 'context.md').unlink()
+        self.assertEqual(watcher._local_item_ids([self.item('wanted')], 'weibo'), set())
+
+    async def test_unindexed_compatibility_is_cached_and_bounded(self):
+        from app import archive
+        for number in range(6):
+            self.manifest(str(number))
+        with patch.object(watcher, '_LOCAL_ENTRY_LIMIT', 3), \
+                patch.object(archive, 'read_manifest', wraps=archive.read_manifest) as read:
+            first = watcher._bounded_legacy_items()
+            self.assertEqual(len(first), 3)
+            self.assertEqual(read.call_count, 3)
+            self.assertEqual(watcher._bounded_legacy_items(), first)
+            self.assertEqual(read.call_count, 3)
+
     async def test_cancelled_download_only_retries_explicitly(self):
         await self.discover()
         self.enqueue()
@@ -212,6 +237,20 @@ class SubscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(sensitive, result["error"])
         self.assertNotIn(sensitive, watcher.list_scans()[0]["error"])
         self.assertNotIn(sensitive, watcher.list_subs()[0]["last_error"])
+
+    async def test_history_coverage_survives_restart_without_raw_snapshot(self):
+        response = {'items': [], 'coverage': {'complete': False, 'reason': 'page_limit', 'pages': 5,
+                    'items': 120, 'scope': 'overlap_window', 'private_internal': 'must not return'}}
+        with patch.dict(watcher.SCANNERS, weibo=AsyncMock(return_value=response)):
+            await watcher.scan_sub(self.sub)
+        watcher.init_db()
+        row = watcher.list_scans(self.sub['id'])[0]
+        self.assertEqual(row['coverage']['reason'], 'page_limit')
+        self.assertFalse(row['coverage']['complete'])
+        self.assertNotIn('private_internal', row['coverage'])
+        self.assertNotIn('snapshot_json', row)
+        self.assertEqual(storage.public_coverage('x' * 16385), {})
+        self.assertEqual(storage.public_coverage('[]'), {})
 
     async def test_overlapping_manual_and_interval_share_one_scan(self):
         started, release = asyncio.Event(), asyncio.Event()

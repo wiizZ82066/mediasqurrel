@@ -124,10 +124,20 @@ def extract_ip_region(text: str) -> str:
 
 
 def download_file(url: str, path: str, referer: str = "https://weibo.com/", progress=None) -> bool:
+    attempts = 1 + max(0, min(5, int(os.environ.get('MS_DOWNLOAD_RETRIES', '2'))))
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(min(attempt, 3))
+        if _download_file_once(url, path, referer, progress):
+            return True
+    return False
+
+
+def _download_file_once(url: str, path: str, referer: str = "https://weibo.com/", progress=None) -> bool:
     """带 Referer 下载文件（绕过微博反盗链），返回是否成功。"""
     headers = {"Referer": referer, "User-Agent": UA}
     try:
-        with requests.get(url, headers=headers, timeout=60, stream=True) as r:
+        with requests.get(url, headers=headers, timeout=max(10, min(600, int(os.environ.get('MS_DOWNLOAD_TIMEOUT', '120')))), stream=True) as r:
             if r.status_code != 200:
                 print(f"    [x] HTTP {r.status_code}: {url[:80]}")
                 return False

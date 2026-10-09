@@ -84,7 +84,12 @@ class TaskStoreTests(StoreFixture, unittest.TestCase):
         media.write_bytes(b'original')
         self.store.delete_record('task1')
         self.assertIsNone(self.store.get('task1'))
+        self.assertEqual(self.store.list_page()['items'], [])
+        hidden = self.store.list_page(include_hidden=True)['items'][0]
+        self.assertTrue(hidden['hidden'])
         self.assertEqual(len(self.store.read_logs('task1')['items']), 1)
+        self.assertTrue(self.store.restore_record('task1'))
+        self.assertFalse(self.store.get('task1')['hidden'])
         self.store.delete_logs('task1')
         self.assertEqual(self.store.read_logs('task1')['items'], [])
         self.assertEqual(media.read_bytes(), b'original')
@@ -283,6 +288,9 @@ class TaskRuntimeTests(StoreFixture, unittest.IsolatedAsyncioTestCase):
             tm._fill_queue()
             self.assertEqual(sum(t['status'] == 'queued' for t in tm.TASKS.values()), 2)
             self.assertEqual(self.store.active_count(), 4)
+            outside = next(t for t in self.store.active() if t['id'] not in tm.TASKS)
+            self.assertTrue(await tm.cancel(outside['id']))
+            self.assertEqual(self.store.get(outside['id'])['status'], 'cancelled')
 
     async def test_output_root_and_relative_escape_validation(self):
         with self.assertRaises(ValueError):

@@ -9,6 +9,7 @@
 import argparse
 import os
 import socket
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -49,7 +50,7 @@ import uvicorn
 from app import config
 
 
-def _stdin_watchdog():
+def _stdin_watchdog(on_exit=None):
     """桌面模式看门狗：Electron 主进程被强杀时（before-quit 不触发），
     本进程 stdin 收到 EOF → 自杀，避免后端残留后台。
 
@@ -101,7 +102,10 @@ def _stdin_watchdog():
         except Exception:
             pass
         # EOF：父进程已退出
-        os._exit(0)
+        if on_exit is not None:
+            on_exit()
+        else:
+            os._exit(0)  # Legacy direct watchdog caller without a server handle.
 
     threading.Thread(target=_watch, daemon=True).start()
 
@@ -111,12 +115,17 @@ def _wait_and_open(url: str):
     def _worker():
         for _ in range(60):
             try:
-                with socket.create_connection((config.HOST, config.PORT), timeout=0.5):
-                    break
+                from app.runtime import probe_server, instance_id
+                health = probe_server(config.PORT)
+                if health and health.get('instance_id') == instance_id():
+                    webbrowser.open(url)
+                    return
             except OSError:
                 import time
                 time.sleep(0.5)
-        webbrowser.open(url)
+            import time
+            time.sleep(0.5)
+        print('[!] 服务尚未就绪；修复控制台中的错误后再打开页面。')
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -133,7 +142,17 @@ def _make_tray_icon():
     return img
 
 
-def _run_tray(url: str):
+def _watch_backend(worker, icon, stopped):
+    """Stop the tray after normal shutdown, watchdog shutdown or backend failure."""
+    while not stopped.is_set():
+        worker.join(timeout=.25)
+        if not worker.is_alive():
+            if not stopped.is_set():
+                icon.stop()
+            return
+
+
+def _run_tray(url: str, server, worker):
     """系统托盘常驻：菜单可打开页面 / 退出。"""
     import pystray
     from pystray import Menu, MenuItem
@@ -142,8 +161,8 @@ def _run_tray(url: str):
         webbrowser.open(url)
 
     def quit_app(icon, item):
+        server.should_exit = True
         icon.stop()
-        os._exit(0)  # uvicorn 线程为 daemon，直接退出
 
     icon = pystray.Icon(
         "media_squirrel",
@@ -155,7 +174,22 @@ def _run_tray(url: str):
             MenuItem("退出", quit_app),
         ),
     )
-    icon.run()
+    stopped = threading.Event()
+    monitor = None
+
+    def ready(tray):
+        nonlocal monitor
+        tray.visible = True
+        monitor = threading.Thread(target=_watch_backend, args=(worker, tray, stopped),
+                                   name='media-squirrel-tray-watch', daemon=True)
+        monitor.start()
+
+    try:
+        icon.run(setup=ready)
+    finally:
+        stopped.set()
+        if monitor:
+            monitor.join(timeout=1)
 
 
 def main():
@@ -167,42 +201,59 @@ def main():
     ap.add_argument("--reload", action="store_true", help="开发模式热重载")
     args = ap.parse_args()
 
+    if not 1024 <= args.port <= 65535:
+        ap.error('端口必须在 1024–65535 之间')
     config.PORT = args.port
+    os.environ['MS_PORT'] = str(args.port)
     url = f"http://{config.HOST}:{args.port}"
-    print(f"[*] Media Squirrel 启动中: {url}")
-
-    _stdin_watchdog()
-
+    from app.runtime import ensure_frontend, probe_server, port_in_use, instance_id
+    existing = probe_server(args.port)
+    if existing:
+        if existing.get('instance_id') != instance_id():
+            raise SystemExit('此端口的 Media Squirrel 正在使用另一份数据，请先退出旧实例或选择其他端口。')
+        print(f'[*] Media Squirrel 已在运行：{url}')
+        if not args.no_browser:
+            webbrowser.open(url)
+        return
+    if port_in_use(args.port):
+        raise SystemExit(f'端口 {args.port} 被其他程序占用。可使用 python run.py --port 9000；未终止其他程序。')
+    try:
+        ensure_frontend()
+    except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+        raise SystemExit(str(error))
+    print(f'[*] Media Squirrel 启动中：{url}')
+    print('[*] 关闭网页会继续后台运行；从托盘选择退出或按 Ctrl+C 才会停止扫描。')
     if not args.no_browser:
         _wait_and_open(url)
-
+    if args.reload:
+        uvicorn.run('app.main:app', host=config.HOST, port=args.port, reload=True, log_level='info', timeout_graceful_shutdown=10)
+        return
+    service = uvicorn.Server(uvicorn.Config('app.main:app', host=config.HOST, port=args.port, log_level='info', timeout_graceful_shutdown=10))
+    if os.environ.get('MS_DESKTOP_TOKEN') or getattr(sys, 'frozen', False):
+        _stdin_watchdog(lambda: setattr(service, 'should_exit', True))
     if args.no_tray:
-        uvicorn.run(
-            "app.main:app",
-            host=config.HOST,
-            port=args.port,
-            reload=args.reload,
-            log_level="info",
-        )
-    else:
-        # uvicorn 在后台线程，托盘占据主线程（Windows 要求）
-        server = threading.Thread(
-            target=lambda: uvicorn.run(
-                "app.main:app",
-                host=config.HOST,
-                port=args.port,
-                reload=False,
-                log_level="info",
-            ),
-            daemon=True,
-        )
-        server.start()
+        service.run()
+        return
+    worker = threading.Thread(target=service.run, name='media-squirrel-server')
+    worker.start()
+    try:
+        import time
+        for _ in range(200):
+            if service.started or not worker.is_alive():
+                break
+            time.sleep(.1)
+        if not worker.is_alive():
+            raise SystemExit('本地服务启动失败，请检查上方错误。')
         try:
-            _run_tray(url)
-        except Exception as e:
-            # 无显示环境等托盘不可用时，退回控制台模式
-            print(f"[!] 托盘不可用({e})，回退控制台模式，Ctrl+C 退出")
-            server.join()
+            _run_tray(url, service, worker)
+        except Exception as error:
+            print(f'[!] 托盘不可用({error})，当前使用控制台模式，Ctrl+C 退出。')
+            worker.join()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        service.should_exit = True
+        worker.join()
 
 
 if __name__ == "__main__":

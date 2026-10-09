@@ -54,6 +54,13 @@ class LocalOnlyMiddleware:
             else:
                 await JSONResponse({"detail": "仅允许本机应用页面访问"}, 403)(scope, receive, send)
             return
+        if (scope['type'] == 'http' and config.MAINTENANCE_ACTIVE
+                and scope.get('method') in {'POST', 'PUT', 'PATCH', 'DELETE'}):
+            path = scope.get('path', '')
+            can_cancel = path.startswith(('/api/maintenance/plans/', '/api/library/scans/')) and path.endswith('/cancel')
+            if not can_cancel:
+                await JSONResponse({'detail': '数据维护或目录切换待重启期间暂停修改，请完成维护或退出重启'}, 409)(scope, receive, send)
+                return
         if (scope["type"] == "http" and scope.get("method") in {"POST", "PUT", "PATCH"}
                 and headers.get("content-length", "0") not in {"", "0"}
                 and not headers.get("content-type", "").split(";", 1)[0].strip() == "application/json"):

@@ -158,7 +158,7 @@ def _fetch_aweme_detail_once(url: str) -> dict | None:
 def fetch_aweme_detail(url: str) -> dict:
     """拦截 aweme/v1/web/aweme/detail 响应（偶发风控自动重试，共 3 次尝试）。"""
     last_err = None
-    for attempt in range(3):
+    for attempt in range(1 + max(0, min(5, int(os.environ.get('MS_DOWNLOAD_RETRIES', '2'))))):
         if attempt:
             time.sleep(3)  # 风控退避
             print(f"[*] 第 {attempt + 1} 次尝试（{url.split('/')[-1][:24]}）…")
@@ -174,12 +174,23 @@ def fetch_aweme_detail(url: str) -> dict:
 
 
 def download(url: str, dest: str, progress=None) -> int:
+    attempts = 1 + max(0, min(5, int(os.environ.get('MS_DOWNLOAD_RETRIES', '2'))))
+    for attempt in range(attempts):
+        try:
+            return _download_once(url, dest, progress)
+        except Exception:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(min(attempt + 1, 3))
+
+
+def _download_once(url: str, dest: str, progress=None) -> int:
     req = urllib.request.Request(
         url,
         headers={"User-Agent": _ua(), "Referer": "https://www.douyin.com/"},
     )
     with atomic_output(dest) as temporary:
-        with urllib.request.urlopen(req, timeout=120) as resp, open(temporary, "wb") as f:
+        with urllib.request.urlopen(req, timeout=max(10, min(600, int(os.environ.get('MS_DOWNLOAD_TIMEOUT', '120'))))) as resp, open(temporary, "wb") as f:
             if progress:
                 progress.start_file(resp.headers.get("Content-Length"))
             written = 0

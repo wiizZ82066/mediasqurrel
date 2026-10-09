@@ -102,7 +102,7 @@ class TaskStore:
         item["params"] = json.loads(item.pop("params_json"))
         item["progress"] = json.loads(item.pop("progress_json"))
         item["metadata"] = json.loads(item.pop("metadata_json"))
-        item.pop("deleted", None)
+        item['hidden'] = bool(item.pop("deleted", 0))
         item['last_log_seq'] = item['next_log_seq'] - 1
         return item
 
@@ -124,9 +124,9 @@ class TaskStore:
                                (task_id,)).fetchone()
             return self._decode(row)
 
-    def list_page(self, *, limit=50, cursor=None, status=None, q=None):
+    def list_page(self, *, limit=50, cursor=None, status=None, q=None, include_hidden=False):
         limit = max(1, min(100, int(limit)))
-        clauses, args = ["deleted=0"], []
+        clauses, args = ["1=1" if include_hidden else "deleted=0"], []
         if status:
             clauses.append("status=?")
             args.append(status)
@@ -302,6 +302,10 @@ class TaskStore:
         with self._lock, self._db() as conn:
             return bool(conn.execute("UPDATE tasks SET deleted=1 WHERE id=? AND status NOT IN ('queued','running')",
                                      (task_id,)).rowcount)
+
+    def restore_record(self, task_id):
+        with self._lock, self._db() as conn:
+            return bool(conn.execute('UPDATE tasks SET deleted=0 WHERE id=? AND deleted=1', (task_id,)).rowcount)
 
     def delete_logs(self, task_id):
         with self._task_log_lock(task_id):
