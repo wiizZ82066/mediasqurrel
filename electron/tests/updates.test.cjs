@@ -74,7 +74,8 @@ test('provider/download failures stay visible and permit retry', async () => {
   const f = fixture();
   f.updater.checkForUpdates = async () => { throw new Error('missing latest.yml'); };
   await f.controller.check();
-  assert.match(f.controller.getState().message, /missing latest.yml/);
+  assert.match(f.controller.getState().message, /应用可继续使用/);
+  assert.doesNotMatch(f.controller.getState().message, /latest.yml/);
   f.updater.checkForUpdates = async () => { f.calls.push('retry'); };
   await f.controller.check();
   assert.deepEqual(f.calls, ['retry']);

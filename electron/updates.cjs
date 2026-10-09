@@ -8,7 +8,9 @@ function createUpdates({ updater, app, dialog, backend, stopBackend, resumeBacke
   let busy = false;
   let installing = false;
   const set = patch => { state = { ...state, ...patch }; };
-  const failure = error => set({ status: 'error', message: `更新失败，应用可继续使用：${error.message || error}` });
+  const failure = error => set({ status: 'error', message: /sha512|checksum|hash/i.test(String(error.message || error))
+    ? '更新文件校验失败，应用可继续使用，请稍后重试。'
+    : '暂时无法完成更新，应用可继续使用，请稍后重试。' });
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
   updater.allowPrerelease = false;
