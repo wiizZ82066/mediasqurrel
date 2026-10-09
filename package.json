@@ -1,7 +1,7 @@
 {
   "name": "media-squirrel",
   "productName": "Media Squirrel",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
   "description": "本地媒体下载管理平台（微博/抖音 下载·订阅·媒体库）",
   "main": "electron/main.cjs",
