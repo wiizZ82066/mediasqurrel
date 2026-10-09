@@ -38,7 +38,12 @@ function createUpdates({ updater, app, dialog, backend, stopBackend, resumeBacke
   async function check() {
     if (busy || installing || ['checking', 'downloading'].includes(state.status) || ready) return getState();
     busy = true;
-    try { await updater.checkForUpdates(); } catch (error) { failure(error); }
+    try {
+      const result = await updater.checkForUpdates();
+      // checkForUpdates resolves before an automatic download finishes.
+      // Consume its separate rejection as well as the updater error event.
+      if (result?.downloadPromise) void result.downloadPromise.catch(failure);
+    } catch (error) { failure(error); }
     finally { busy = false; }
     return getState();
   }

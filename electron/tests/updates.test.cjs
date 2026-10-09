@@ -80,3 +80,14 @@ test('provider/download failures stay visible and permit retry', async () => {
   await f.controller.check();
   assert.deepEqual(f.calls, ['retry']);
 });
+test('automatic download rejection is handled after update discovery resolves', async () => {
+  const f = fixture();
+  let rejectDownload;
+  f.updater.checkForUpdates = async () => ({ downloadPromise: new Promise((_resolve, reject) => { rejectDownload = reject; }) });
+  await f.controller.check();
+  rejectDownload(new Error('sha512 checksum mismatch'));
+  await new Promise(setImmediate);
+  assert.equal(f.controller.getState().status, 'error');
+  assert.equal(f.controller.getState().canInstall, false);
+  assert.match(f.controller.getState().message, /校验失败/);
+});
