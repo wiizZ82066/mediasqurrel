@@ -17,11 +17,8 @@ import hashlib
 import json
 import os
 import re
-import hashlib
-import json
-import os
-import re
 from typing import Optional
+import threading
 
 from . import config
 
@@ -34,7 +31,7 @@ _SKIP_DIRS = {
 
 _DATE_RE = re.compile(r"^\d{2,4}-\d{1,2}-\d{1,2}")
 
-_COVER_CACHE_PATH = os.path.join(config.BASE_DIR, "app_data", "cover_cache.json")
+_COVER_CACHE_PATH = os.path.join(config.CACHE_DIR, "cover_cache.json")
 
 
 def _load_cover_cache() -> dict:
@@ -55,9 +52,15 @@ def _save_cover_cache(cache: dict):
 
 
 _FACE_DETECTOR = None
+_FACE_LOCK = threading.RLock()
 
 
 def _get_face_detector():
+    with _FACE_LOCK:
+        return _load_face_detector()
+
+
+def _load_face_detector():
     """惰性加载 YuNet 人脸检测器（OpenCV 5.x FaceDetectorYN，模型 232KB 本地）。
 
     模型查找: config.FACE_MODEL_PATH（随包资源）→ 用户数据目录（手动放置）。
@@ -68,7 +71,7 @@ def _get_face_detector():
             import cv2
             candidates = [
                 getattr(config, "FACE_MODEL_PATH", ""),
-                os.path.join(config.BASE_DIR, "app_data", "models", "face_detection_yunet.onnx"),
+                os.path.join(config.DATA_DIR, "models", "face_detection_yunet.onnx"),
             ]
             for model in candidates:
                 if model and os.path.isfile(model):
@@ -86,8 +89,9 @@ def _get_face_detector():
 def _detect_face(img_bgr, detector) -> tuple[float, Optional[dict]]:
     """在 BGR 图上检测最大人脸，返回 (人脸面积占比, 人脸中心或None)。"""
     h, w = img_bgr.shape[:2]
-    detector.setInputSize((w, h))
-    _, faces = detector.detect(img_bgr)
+    with _FACE_LOCK:
+        detector.setInputSize((w, h))
+        _, faces = detector.detect(img_bgr)
     if faces is None or len(faces) == 0:
         return 0.0, None
     # faces 每行: x,y,w,h, 5个关键点x/y…, score(末列)；取置信度最高的
@@ -419,7 +423,7 @@ def _scan_root_nocache() -> list[dict]:
 
 # ---------------------------------------------------------------- 库级缓存
 
-_LIB_CACHE_PATH = os.path.join(config.BASE_DIR, "app_data", "library_cache.json")
+_LIB_CACHE_PATH = os.path.join(config.CACHE_DIR, "library_cache.json")
 _lib_cache_mem: Optional[list] = None  # 进程内存缓存（文件缓存的热路径）
 
 

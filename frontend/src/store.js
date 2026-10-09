@@ -10,10 +10,48 @@ export const store = reactive({
   toasts: [],
   notifications: [],   // 通知中心（最近 50 条）
   unread: 0,
+  taskListState: { items: [], cursor: '', nextCursor: null, previous: [], status: '', q: '', scrollTop: 0, loaded: false },
 })
 
 let ws = null
 let reconnectTimer = null
+let taskRevision = 0
+let refreshSequence = 0
+const taskRevisions = new Map()
+const taskListeners = new Set()
+
+export function onTaskEvent(listener) {
+  taskListeners.add(listener)
+  return () => taskListeners.delete(listener)
+}
+
+function emitTaskEvent(message) {
+  for (const listener of taskListeners) listener(message)
+}
+
+function trimTaskSummaries() {
+  let completed = 0
+  store.tasks = store.tasks.filter((task) =>
+    ['queued', 'running'].includes(task.status) || completed++ < 100,
+  )
+  const retained = new Set(store.tasks.map((task) => task.id))
+  for (const id of taskRevisions.keys()) if (!retained.has(id)) taskRevisions.delete(id)
+}
+
+export function upsertTaskSummary(task) {
+  // Log payloads belong only to an explicitly opened task panel.
+  const { logs, ...summary } = task
+  taskRevisions.set(task.id, ++taskRevision)
+  const index = store.tasks.findIndex((item) => item.id === task.id)
+  if (index >= 0) store.tasks.splice(index, 1, summary)
+  else store.tasks.unshift(summary)
+  trimTaskSummaries()
+}
+
+export function removeTaskSummary(id) {
+  store.tasks = store.tasks.filter((task) => task.id !== id)
+  taskRevisions.delete(id)
+}
 
 export function pushNotification(n) {
   store.notifications.unshift(n)
@@ -32,10 +70,11 @@ export function connectWS() {
 
   ws.onopen = () => {
     store.wsConnected = true
-    // A restarted backend starts a new in-memory scan history.
+    // REST restores durable snapshots; discard stale connection revisions.
     store.subScans = {}
     refreshTasks()
     refreshSubs().catch(() => {})
+    emitTaskEvent({ type: 'reconnect' })
   }
   ws.onclose = () => {
     store.wsConnected = false
@@ -46,9 +85,7 @@ export function connectWS() {
     let msg
     try { msg = JSON.parse(ev.data) } catch { return }
     if (msg.type === 'task_update') {
-      const i = store.tasks.findIndex((t) => t.id === msg.task.id)
-      if (i >= 0) store.tasks.splice(i, 1, msg.task)
-      else store.tasks.unshift(msg.task)
+      upsertTaskSummary(msg.task)
       if (['success', 'failed'].includes(msg.task.status)) {
         toast(
           msg.task.status === 'success'
@@ -65,28 +102,42 @@ export function connectWS() {
       }
     } else if (msg.type === 'task_progress') {
       const task = store.tasks.find((t) => t.id === msg.task_id)
-      if (task) task.progress = msg.progress
+      if (task) {
+        task.progress = msg.progress
+        taskRevisions.set(task.id, ++taskRevision)
+      }
     } else if (msg.type === 'sub_scan') {
       store.subScans[msg.sub_id] = msg.scan
       const sub = store.subs.find((s) => s.id === msg.sub_id)
       if (sub) applyScan(sub, msg.scan)
     } else if (msg.type === 'task_log') {
-      const t = store.tasks.find((x) => x.id === msg.task_id)
-      if (t) {
-        t.logs = t.logs || []
-        t.logs.push(msg.log)
-        t._scroll = true
-      }
+      // No global log retention. Open panels consume bounded, sequenced events.
     } else if (msg.type === 'notification') {
       pushNotification(msg)
       toast(`🔔 ${msg.title}: ${msg.text}`, 'info')
     }
+    emitTaskEvent(msg)
   }
 }
 
 export async function refreshTasks() {
+  const sequence = ++refreshSequence
+  const before = taskRevision
   try {
-    store.tasks = await api.tasks()
+    const tasks = await api.tasks()
+    if (sequence !== refreshSequence) return
+    const live = new Map(store.tasks.map((task) => [task.id, task]))
+    const incoming = new Set(tasks.map((task) => task.id))
+    const merged = tasks.map(({ logs, ...task }) =>
+      (taskRevisions.get(task.id) || 0) > before ? live.get(task.id) || task : task,
+    )
+    for (const task of store.tasks) {
+      if (!incoming.has(task.id) && (['queued', 'running'].includes(task.status) || (taskRevisions.get(task.id) || 0) > before)) {
+        merged.push(task)
+      }
+    }
+    store.tasks = merged.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+    trimTaskSummaries()
   } catch { /* 静默 */ }
 }
 

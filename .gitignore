@@ -34,6 +34,9 @@
 !/frontend/**
 !/electron/
 !/electron/**
+!/tests/
+/tests/*
+!/tests/*.py
 # ---------- 放行区结束 ----------
 
 # 放行目录内部的常规排除
@@ -93,3 +96,4 @@ CURRENT_BASELINE.md
 **/test-results/
 *.dmp
 *.bak
+.mediasquirrel.local.json

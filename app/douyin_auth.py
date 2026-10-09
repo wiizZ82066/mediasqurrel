@@ -10,12 +10,13 @@ import os
 
 try:
     from . import config as _config
-    _BASE = _config.BASE_DIR
+    _DATA = _config.DATA_DIR
 except ImportError:  # 脚本独立运行时被 importlib 加载
-    _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    from app import config as _config
+    _DATA = _config.DATA_DIR
 
-COOKIE_PATH = os.path.join(_BASE, "app_data", "douyin_cookies.json")
-STATUS_PATH = os.path.join(_BASE, "app_data", "douyin_auth.json")
+COOKIE_PATH = os.path.join(_DATA, "douyin_cookies.json")
+STATUS_PATH = os.path.join(_DATA, "douyin_auth.json")
 
 # 登录态标志 cookie（存在即视为已登录）
 _LOGIN_COOKIE = "sessionid"

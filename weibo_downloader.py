@@ -5,7 +5,7 @@
 
 功能：
   1. 打开微博帖子页面，提取正文文本、发布时间、作者用户名、图片信息
-  2. 按 用户名/yy-mm-dd 格式创建文件夹
+  2. 按 用户名/yy-mm-dd_weibo_内容ID 格式创建独立文件夹
   3. 下载普通图片（原图）到 <用户名>/<日期>/photo/
   4. 下载 Live 图（.mov 视频 + .jpg 封面）到 <用户名>/<日期>/live/
   5. 保存文本内容到 <用户名>/<日期>/context.md
@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import time
+from urllib.parse import urlsplit
 
 # Windows 控制台默认 GBK，强制用 UTF-8 输出避免中文/emoji 报错
 try:
@@ -36,6 +37,8 @@ import cv2
 import requests
 from playwright.sync_api import sync_playwright
 from app.progress import DownloadProgress
+from app import config
+from app.archive import atomic_output, atomic_write_text, begin_entry
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
@@ -131,11 +134,17 @@ def download_file(url: str, path: str, referer: str = "https://weibo.com/", prog
             if progress:
                 progress.start_file(r.headers.get("Content-Length")
                                     if not r.headers.get("Content-Encoding") else None)
-            with open(path, "wb") as f:
-                for chunk in r.iter_content(65536):
-                    f.write(chunk)
-                    if progress:
-                        progress.advance(len(chunk))
+            with atomic_output(path) as temporary:
+                written = 0
+                with open(temporary, "wb") as f:
+                    for chunk in r.iter_content(65536):
+                        f.write(chunk)
+                        written += len(chunk)
+                        if progress:
+                            progress.advance(len(chunk))
+                length = r.headers.get("Content-Length") if not r.headers.get("Content-Encoding") else None
+                if not written or (length and length.isdigit() and written != int(length)):
+                    raise ValueError("下载内容为空或长度不完整")
             if progress:
                 progress.finish_file()
         return True
@@ -163,6 +172,8 @@ def orj360_to_large(url: str) -> str:
 
 def extract_cover_from_mov(mov_path: str, jpg_path: str) -> bool:
     """用 OpenCV 从 .mov 提取第一帧作为 .jpg 封面。"""
+    if not os.path.isdir(os.path.dirname(os.path.abspath(jpg_path))):
+        return False
     try:
         cap = cv2.VideoCapture(mov_path)
         if not cap.isOpened():
@@ -176,8 +187,9 @@ def extract_cover_from_mov(mov_path: str, jpg_path: str) -> bool:
         encoded, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
         if not encoded:
             return False
-        with open(jpg_path, 'wb') as output:
-            output.write(jpeg.tobytes())
+        with atomic_output(jpg_path) as temporary:
+            with open(temporary, 'wb') as output:
+                output.write(jpeg.tobytes())
         return True
     except Exception as e:
         print(f"    [x] 提取封面失败 {mov_path}: {e}")
@@ -316,6 +328,7 @@ def extract_post(page, url: str) -> dict:
             "normal_imgs": normal_imgs,
             "live_videos": live_videos,
             "mblogid": api_data.get("mblogid") or "",
+            "item_id": str(api_data.get("mblogid") or api_data.get("idstr") or api_data.get("id") or ""),
             "api": True,
         }
 
@@ -455,11 +468,29 @@ def extract_post(page, url: str) -> dict:
 
 # ---------------------------------------------------------------- 保存
 
+def _post_identity(data: dict) -> str:
+    identity = data.get("item_id") or data.get("mblogid")
+    if identity:
+        return str(identity)
+    url = urlsplit(data.get("url", ""))
+    if url.hostname in ("weibo.com", "www.weibo.com", "m.weibo.cn", "weibo.cn"):
+        parts = url.path.strip("/").split("/")
+        if len(parts) == 2 and (parts[0].isdigit() or parts[0] in ("detail", "status")):
+            return parts[1]
+    raise ValueError("无法确认微博内容 ID，未写入存档")
+
+
 def save_content(data: dict, out_root: str) -> str:
+    archive = begin_entry(out_root, data["username"], data["publish_time"],
+                          "weibo", _post_identity(data), data.get("url", ""))
+    folder = archive.folder
+    print(f"[*] 保存目录: {folder}")
+    if archive.existing_complete:
+        print("[*] 此内容已有完整存档，已校验文件清单")
+        return folder
     progress = DownloadProgress(len(data["normal_imgs"]) + len(data["live_videos"]))
     failed = 0
-    # 保存结构: <out_root>/<用户名>/<yy-mm-dd>/
-    folder = os.path.join(out_root, data["username"], data["publish_time"])
+    files = ["context.md"]
     # 只有存在对应内容时才创建 photo/ 或 live/ 文件夹
     has_photos = bool(data["normal_imgs"])
     has_lives = bool(data["live_videos"])
@@ -470,7 +501,6 @@ def save_content(data: dict, out_root: str) -> str:
         os.makedirs(photo_dir, exist_ok=True)
     if live_dir:
         os.makedirs(live_dir, exist_ok=True)
-    print(f"[*] 保存目录: {folder}")
 
     # 1. 下载普通图片
     if photo_dir:
@@ -480,6 +510,7 @@ def save_content(data: dict, out_root: str) -> str:
             path = os.path.join(photo_dir, f"img{idx:02d}.jpg")
             if download_file(large, path, progress=progress):
                 print(f"    [+] img{idx:02d}.jpg  <- {large.split('/')[-1][:40]}")
+                files.append(f"photo/img{idx:02d}.jpg")
             else:
                 failed += 1
     else:
@@ -496,6 +527,9 @@ def save_content(data: dict, out_root: str) -> str:
                 print(f"    [+] {name}.mov")
                 if extract_cover_from_mov(mov_path, jpg_path):
                     print(f"    [+] {name}.jpg (封面)")
+                    files.extend((f"live/{name}.mov", f"live/{name}.jpg"))
+                else:
+                    failed += 1
             else:
                 failed += 1
     else:
@@ -523,11 +557,11 @@ def save_content(data: dict, out_root: str) -> str:
     md.append(text)
     md.append("```\n")
     md_path = os.path.join(folder, "context.md")
-    with open(md_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(md))
+    atomic_write_text(md_path, "\n".join(md))
     print(f"[*] 已保存: {md_path}")
     if failed:
         raise RuntimeError(f"{failed} 个媒体文件下载失败，请查看日志后重试")
+    archive.complete(files)
     return folder
 
 
@@ -536,7 +570,7 @@ def save_content(data: dict, out_root: str) -> str:
 def main():
     ap = argparse.ArgumentParser(description="微博内容下载器：文本 + 图片 + Live 图(mov+jpg)")
     ap.add_argument("-url", required=True, help="微博帖子链接，如 https://weibo.com/1234567890/AbCdEfGh")
-    ap.add_argument("--out", default=".", help="输出根目录（默认当前目录），脚本会创建 <用户名>/<yy-mm-dd>/ 子目录")
+    ap.add_argument("--out", default=config.LIBRARY_ROOT, help="输出根目录（默认配置的媒体库），创建 <用户名>/<日期_weibo_内容ID>/ 子目录")
     ap.add_argument("--headed", action="store_true", help="显示浏览器窗口（默认无头）")
     ap.add_argument("--timeout", type=int, default=60000, help="页面加载超时毫秒（默认 60000）")
     args = ap.parse_args()

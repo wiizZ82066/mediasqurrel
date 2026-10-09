@@ -189,7 +189,7 @@ def _weibo_search_sync(kw: str) -> list[dict]:
 
 # 抖音搜索的持久化浏览器 Profile：完成一次人机验证后，信任态留存，
 # 后续无头搜索不再触发验证码。
-_DY_PROFILE = os.path.join(config.BASE_DIR, "app_data", "douyin_profile")
+_DY_PROFILE = os.path.join(config.DATA_DIR, "douyin_profile")
 
 _CAPTCHA_SEL = (
     '[class*=captcha], [id*=captcha], [class*=verify], iframe[src*=captcha]'

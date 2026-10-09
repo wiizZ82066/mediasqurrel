@@ -12,6 +12,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, media_library, script_registry, task_manager, watcher
+from .security import LocalOnlyMiddleware, media_path
+from .redaction import redact_text
 from . import scanners  # noqa: F401  (import 即注册各平台扫描器)
 
 
@@ -28,9 +30,7 @@ def _app_version() -> str:
     return "dev"
 
 
-_DEV_MODE = os.environ.get("MS_DEV") == "1" or not getattr(
-    __import__("sys"), "frozen", False
-)
+_DEV_MODE = os.environ.get("MS_DEV") == "1"
 
 app = FastAPI(title="Media Squirrel", docs_url=None, redoc_url=None)
 
@@ -43,30 +43,57 @@ if _DEV_MODE:
         allow_headers=["*"],
     )
 
+app.add_middleware(LocalOnlyMiddleware)
+
 
 async def _dispatch_new_items(items):
     """扫描发现新内容的统一处理：页面内通知 + 自动创建下载任务。"""
+    queued, failed = 0, 0
     for it in items:
-        await task_manager.broadcast({
-            "type": "notification",
-            "level": "info",
-            "title": "发现新内容",
-            "text": f"{it.get('title', '')[:60]}，已自动开始下载",
-            "time": _dt.datetime.now().strftime("%H:%M:%S"),
-        })
-        await task_manager.create(it["script_id"], it["params"])
+        identity = (it["platform"], it["blogger_id"], str(it["item_id"]))
+        claim = watcher.claim_item(*identity)
+        if not claim:
+            continue
+        try:
+            task = await task_manager.create(
+                it["script_id"], it["params"],
+                content_key=f"{identity[0]}:{identity[2]}",
+                metadata={"subscription": dict(platform=identity[0], blogger_id=identity[1],
+                    item_id=identity[2], sub_id=it.get("sub_id"), claim_token=claim)},
+            )
+            watcher.mark_enqueued(*identity, task["id"], claim)
+            _record_task_result(task_manager.get_task(task["id"]) or task)
+            queued += 1
+        except Exception as error:
+            watcher.mark_dispatch_failed(*identity, str(error), claim)
+            failed += 1
+    if queued or failed:
+        await task_manager.broadcast({"type": "notification", "level": "error" if failed else "info",
+            "title": "订阅扫描结果", "text": f"已入队 {queued} 条，入队失败 {failed} 条",
+            "time": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")})
+
+
+def _record_task_result(task):
+    watcher.record_task_result(task["id"], task["status"], task.get("error") or "",
+                               complete_verified=task["status"] == "success" and watcher.task_complete(task))
+
+
+def _invalidate_library(task):
+    media_library.invalidate()
 
 
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
     # ---- startup ----
+    config.ensure_runtime_dirs()
     watcher.init_db()
+    await task_manager.initialize()
+    watcher.reconcile_tasks(task_manager.iter_subscription_tasks())
+    task_manager.ON_TASK_FINISHED.append(_record_task_result)
+    task_manager.ON_TASK_DONE.append(_invalidate_library)
     watcher.start_scheduler(_dispatch_new_items)
 
-    # 下载任务成功 -> 媒体库缓存自动失效（下次访问即为新数据）
-    task_manager.ON_TASK_DONE.append(lambda task: media_library.invalidate())
-
-    # 启动预热：后台线程扫描一次媒体库写缓存，用户首次访问毫秒级出数据
+    # Legacy warm-up runs off the event loop until the persistent index takes over.
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, _warmup)
 
@@ -75,7 +102,12 @@ async def lifespan(_app: FastAPI):
     # ---- shutdown ----
     watcher_stop = getattr(watcher, "stop_scheduler", None)
     if watcher_stop:
-        watcher_stop()
+        result = watcher_stop()
+        if asyncio.iscoroutine(result):
+            await result
+    await task_manager.shutdown()
+    task_manager.ON_TASK_FINISHED.remove(_record_task_result)
+    task_manager.ON_TASK_DONE.remove(_invalidate_library)
 
 
 def _warmup():
@@ -86,9 +118,6 @@ def _warmup():
         print(f"[startup] 媒体库预热失败: {e}")
 
 
-app = FastAPI(title="Media Squirrel", lifespan=lifespan,
-              docs_url=None, redoc_url=None) if False else app
-
 # 将 lifespan 附加到已创建的 app（保持中间件顺序）
 app.router.lifespan_context = lifespan
 
@@ -97,8 +126,8 @@ app.router.lifespan_context = lifespan
 
 @app.get("/api/health")
 def api_health():
-    """Electron 健康检查端点（200 + status=ok 即就绪）。"""
-    return {"status": "ok", "version": _app_version()}
+    """Local launcher identity and readiness check."""
+    return {"status": "ok", "application": "media-squirrel", "version": _app_version()}
 
 
 # ---------------------------------------------------------------- 脚本清单
@@ -142,7 +171,15 @@ async def api_create_task(body: dict):
 
 @app.get("/api/tasks")
 def api_list_tasks():
-    return task_manager.list_tasks()
+    return task_manager.list_page(limit=50)["items"]
+
+
+@app.get("/api/tasks/page")
+def api_task_page(limit: int = 50, cursor: str | None = None, status: str | None = None, q: str | None = None):
+    try:
+        return task_manager.list_page(limit=limit, cursor=cursor, status=status, q=q)
+    except ValueError as error:
+        raise HTTPException(400, str(error))
 
 
 @app.get("/api/tasks/{task_id}")
@@ -159,6 +196,41 @@ async def api_cancel_task(task_id: str):
     if not ok:
         raise HTTPException(status_code=400, detail="任务无法取消（可能已结束）")
     return {"ok": True}
+
+
+@app.get("/api/tasks/{task_id}/logs")
+def api_task_logs(task_id: str, after: int = 0, limit: int = 200, tail: bool = False):
+    if not task_manager.get_task(task_id):
+        raise HTTPException(404, "任务不存在")
+    return task_manager.read_logs(task_id, after=after, limit=limit, tail=tail)
+
+
+@app.post("/api/tasks/{task_id}/retry")
+async def api_retry_task(task_id: str):
+    try:
+        task = await task_manager.retry(task_id)
+        watcher.link_retry(task_id, task["id"])
+        _record_task_result(task_manager.get_task(task["id"]) or task)
+        return task
+    except ValueError as error:
+        raise HTTPException(400, str(error))
+
+
+@app.delete("/api/tasks/{task_id}")
+def api_delete_task(task_id: str):
+    try:
+        return {"ok": task_manager.delete_record(task_id)}
+    except ValueError as error:
+        raise HTTPException(400, str(error))
+
+
+@app.delete("/api/tasks/{task_id}/logs")
+def api_delete_task_logs(task_id: str):
+    try:
+        task_manager.delete_logs(task_id)
+        return {"ok": True}
+    except ValueError as error:
+        raise HTTPException(400, str(error))
 
 
 # ---------------------------------------------------------------- WebSocket
@@ -224,18 +296,10 @@ def api_thumb(p: str, w: int = 480):
     """缩略图：p = 相对 LIBRARY_ROOT 的路径（图片直接缩，视频抽首帧）。"""
     from . import thumbs
 
-    rel = (p or "").replace("\\", "/").lstrip("/")
-    abs_path = os.path.abspath(os.path.join(config.LIBRARY_ROOT, rel))
-    # 防目录穿越
-    if not os.path.normcase(abs_path).startswith(
-        os.path.normcase(os.path.abspath(config.LIBRARY_ROOT) + os.sep)
-    ):
-        raise HTTPException(status_code=403, detail="非法路径")
-    if not os.path.isfile(abs_path):
-        raise HTTPException(status_code=404, detail="文件不存在")
+    rel = (p or "").replace("\\", "/")
+    abs_path = media_path(rel, file_only=True)
 
-    thumbs.THUMB_WIDTH = max(120, min(1280, w))
-    thumb = thumbs.get_thumb(abs_path, rel)
+    thumb = thumbs.get_thumb(abs_path, rel, width=w)
     if not thumb:
         raise HTTPException(status_code=500, detail="缩略图生成失败")
     return FileResponse(thumb, media_type="image/jpeg", headers={
@@ -245,13 +309,7 @@ def api_thumb(p: str, w: int = 480):
 
 def _safe_join(rel: str) -> str:
     """相对路径 -> 绝对路径，带穿越防护。"""
-    rel = (rel or "").replace("\\", "/").strip("/")
-    abs_path = os.path.abspath(os.path.join(config.LIBRARY_ROOT, rel))
-    if not os.path.normcase(abs_path).startswith(
-        os.path.normcase(os.path.abspath(config.LIBRARY_ROOT) + os.sep)
-    ):
-        raise HTTPException(status_code=403, detail="非法路径")
-    return abs_path
+    return media_path(rel)
 
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -271,6 +329,10 @@ def api_browse(path: str = ""):
         for name in sorted(os.listdir(abs_path)):
             full = os.path.join(abs_path, name)
             if not os.path.isdir(full):
+                continue
+            try:
+                media_path(os.path.relpath(full, config.LIBRARY_ROOT))
+            except HTTPException:
                 continue
             if name in ml._SKIP_DIRS or name.startswith("."):
                 continue
@@ -293,11 +355,16 @@ def api_preview(dir: str):
         raise HTTPException(status_code=404, detail="目录不存在")
 
     images, videos = [], []
-    for root, _dirs, files in os.walk(abs_path):
+    for root, _dirs, files in os.walk(abs_path, followlinks=False):
+        _dirs[:] = [name for name in _dirs if not name.startswith(".") and not os.path.islink(os.path.join(root, name))]
         for f in sorted(files):
             ext = os.path.splitext(f)[1].lower()
             full = os.path.join(root, f)
             rel = os.path.relpath(full, config.LIBRARY_ROOT).replace("\\", "/")
+            try:
+                media_path(rel, file_only=True)
+            except HTTPException:
+                continue
             if f.endswith("_cover.jpg"):
                 # 官方封面是元数据（视频已自带画面），预览不单独展示
                 continue
@@ -313,6 +380,11 @@ def api_preview(dir: str):
 @app.get("/api/subs")
 def api_list_subs():
     return watcher.list_subs()
+
+
+@app.get("/api/subs/scans")
+def api_scan_history(sub_id: int | None = None, limit: int = 50, offset: int = 0):
+    return {"items": watcher.list_scans(sub_id, limit=limit, offset=offset)}
 
 
 @app.get("/api/subs/local-authors")
@@ -339,7 +411,7 @@ async def api_search_blogger(platform: str, q: str):
     except sub_search.CaptchaRequiredError:
         return {"results": [], "captcha_required": True}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"搜索失败: {e}")
+        raise HTTPException(status_code=502, detail=f"搜索失败: {redact_text(str(e))}")
     return {"results": results}
 
 
@@ -409,8 +481,10 @@ async def api_scan_sub(sub_id: int):
 
 # ---------------------------------------------------------------- 静态资源
 
-# 媒体文件直读（仅本地使用；目录遍历由 StaticFiles 保护）
-app.mount("/media", StaticFiles(directory=config.LIBRARY_ROOT), name="media")
+# Never expose the entire directory: credentials, databases and source are not media.
+@app.get("/media/{path:path}")
+def api_media_file(path: str):
+    return FileResponse(media_path(path, file_only=True), headers={"X-Content-Type-Options": "nosniff"})
 
 # 前端构建产物（存在才挂载）
 _DIST = config.FRONTEND_DIST

@@ -17,11 +17,11 @@ const percent = computed(() => {
 const indeterminate = computed(() => active.value && percent.value == null)
 const message = computed(() => props.progress?.label || {
   queued: '等待开始', running: '正在处理…', success: '已完成',
-  failed: '处理失败', cancelled: '已取消',
+  failed: '处理失败', cancelled: '已取消', interrupted: '运行已中断',
 }[props.status] || '等待开始')
 const valueText = computed(() => {
   if (percent.value != null) return `${Math.floor(percent.value)}%`
-  return active.value ? '进行中' : { failed: '失败', cancelled: '已取消' }[props.status] || '等待中'
+  return active.value ? '进行中' : { failed: '失败', cancelled: '已取消', interrupted: '已中断' }[props.status] || '等待中'
 })
 
 function formatBytes(value) {
@@ -79,7 +79,7 @@ const detail = computed(() => {
 .is-failed .progress-fill { background: var(--red); }
 .is-failed .progress-track { background: rgba(255, 59, 48, .1); }
 .is-failed .progress-message { color: #c52a20; }
-.is-cancelled .progress-fill, .is-queued .progress-fill { background: #a1a1a6; }
+.is-cancelled .progress-fill, .is-queued .progress-fill, .is-interrupted .progress-fill { background: #a1a1a6; }
 @keyframes progress-slide { from { transform: translateX(-100%); } to { transform: translateX(386%); } }
 @media (prefers-reduced-motion: reduce) {
   .progress-fill { transition: none; }

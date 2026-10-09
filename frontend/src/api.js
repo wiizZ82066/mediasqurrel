@@ -25,7 +25,15 @@ export const api = {
       body: JSON.stringify({ script_id: scriptId, params }),
     }),
   tasks: () => req('/api/tasks'),
+  task: (id, signal) => req(`/api/tasks/${encodeURIComponent(id)}`, { signal }),
+  taskPage: ({ limit = 50, cursor = '', status = '', q = '', signal } = {}) =>
+    req('/api/tasks/page?' + new URLSearchParams({ limit, cursor, status, q }), { signal }),
+  taskLogs: (id, { after = 0, limit = 200, tail = false, signal } = {}) =>
+    req(`/api/tasks/${encodeURIComponent(id)}/logs?` + new URLSearchParams({ after, limit, tail: tail ? 1 : 0 }), { signal }),
   cancelTask: (id) => req(`/api/tasks/${id}/cancel`, { method: 'POST' }),
+  retryTask: (id) => req(`/api/tasks/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
+  deleteTask: (id) => req(`/api/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  deleteTaskLogs: (id) => req(`/api/tasks/${encodeURIComponent(id)}/logs`, { method: 'DELETE' }),
   library: (refresh = false) => req(`/api/library${refresh ? '?refresh=1' : ''}`),
   browse: (path = '') => req(`/api/browse?path=${encodeURIComponent(path)}`),
   preview: (dir) => req(`/api/preview?dir=${encodeURIComponent(dir)}`),

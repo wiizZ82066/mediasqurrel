@@ -6,10 +6,10 @@
 流程:
     1. 用系统 Chrome 打开视频页，拦截详情接口 aweme/v1/web/aweme/detail
     2. 从返回里取作者昵称、视频 id、无水印 h264 直链
-    3. 下载 mp4 到 <输出根目录>/作者昵称/YYYY-MM-DD-HH-MM/视频id.mp4
+    3. 下载 mp4 到 <输出根目录>/作者昵称/YYYY-MM-DD-HH-MM_douyin_视频id/视频id.mp4
     4. 在同目录生成 context.md（作者/链接/发布时间/标题/文件名/UID/sec_uid）
 
--o/--out 不传时沿用旧行为：输出根目录 = 本脚本所在目录。
+-o/--out 不传时使用配置中的独立媒体库根目录。
 """
 import json
 import os
@@ -18,10 +18,15 @@ import sys
 import time
 import urllib.request
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError, ValueError):
+    pass
 
 import requests
 from app.progress import DownloadProgress
+from app import config
+from app.archive import atomic_output, atomic_write_text, begin_entry
 
 # 统一浏览器引擎（app/browser.py；脚本独立运行时按相对路径加载）
 try:
@@ -38,15 +43,8 @@ except ImportError:
     )
     get_ua = _mod.get_ua
 
-# 输出根目录基准：
-#   源码运行 = 脚本所在目录；frozen(桌面打包) = 用户可写数据目录
-#   （__file__ 在 frozen 下指向 PyInstaller 临时解压目录，不可作为输出位置）
-if getattr(sys, "frozen", False):
-    _env = os.environ.get("MS_DATA_DIR")
-    _local = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    BASE = os.path.abspath(_env) if _env else os.path.join(_local, "Media Squirrel", "library")
-else:
-    BASE = os.path.dirname(os.path.abspath(__file__))
+# 保留 BASE 供旧调用者读取；实际 CLI 默认值每次从配置获取。
+BASE = config.LIBRARY_ROOT
 
 # UA 按需惰性生成（browserforge 随机真实 Chrome UA），不再写死
 _UA_CACHE = None
@@ -117,7 +115,7 @@ def _attach_dy_cookies(ctx):
         except ImportError:
             import importlib.util as ilu
             # 源码运行在脚本目录；frozen 后端在 PyInstaller 资源目录
-            for base in (BASE, getattr(sys, "_MEIPASS", "")):
+            for base in (config.RESOURCE_DIR, getattr(sys, "_MEIPASS", "")):
                 if not base:
                     continue
                 p = os.path.join(base, "app", "douyin_auth.py")
@@ -180,16 +178,22 @@ def download(url: str, dest: str, progress=None) -> int:
         url,
         headers={"User-Agent": _ua(), "Referer": "https://www.douyin.com/"},
     )
-    with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as f:
-        if progress:
-            progress.start_file(resp.headers.get("Content-Length"))
-        while True:
-            chunk = resp.read(1 << 16)
-            if not chunk:
-                break
-            f.write(chunk)
+    with atomic_output(dest) as temporary:
+        with urllib.request.urlopen(req, timeout=120) as resp, open(temporary, "wb") as f:
             if progress:
-                progress.advance(len(chunk))
+                progress.start_file(resp.headers.get("Content-Length"))
+            written = 0
+            while True:
+                chunk = resp.read(1 << 16)
+                if not chunk:
+                    break
+                f.write(chunk)
+                written += len(chunk)
+                if progress:
+                    progress.advance(len(chunk))
+            length = resp.headers.get("Content-Length")
+            if not written or (length and length.isdigit() and written != int(length)):
+                raise ValueError("下载内容为空或长度不完整")
     if progress:
         progress.finish_file()
     return os.path.getsize(dest)
@@ -199,10 +203,10 @@ def parse_args(argv: list[str]) -> tuple[str, str]:
     """拆出 (分享文案/链接, 输出根目录)。
 
     分享文案里可能有空格、& 等字符，所以除 -o/--out 及其取值之外的参数一律原样拼回文案；
-    不传 -o 时输出根目录仍是脚本所在目录（保持旧行为，AstrBot/手动调用都不受影响）。
+    不传 -o 时使用配置的媒体库根；显式输出目录保持兼容。
     """
     text_parts: list[str] = []
-    out_root = BASE
+    out_root = config.LIBRARY_ROOT
     index = 0
     while index < len(argv):
         item = argv[index]
@@ -235,6 +239,11 @@ def main() -> None:
     print("解析到:", url, flush=True)
 
     ad = fetch_aweme_detail(url)
+    save_content(ad, out_root)
+
+
+def save_content(ad: dict, out_root: str) -> str:
+    """Save a single resolved post; separate from network extraction for testing."""
     nickname = ad["author"]["nickname"]
     aweme_id = str(ad["aweme_id"])
     desc = (ad.get("desc") or "").strip()
@@ -244,16 +253,22 @@ def main() -> None:
 
     if not urls:
         print("没有可用的视频直链")
-        sys.exit(1)
+        raise RuntimeError("没有可用的视频直链")
 
     title_field = re.sub(r"\s+", " ", desc).strip() if desc else "（无文案）"
     t = time.localtime(create_time) if create_time else time.localtime()
     pub_time = time.strftime("%y-%m-%d %H:%M", t) if create_time else "未知"
     ts = time.strftime("%Y-%m-%d-%H-%M", t)
 
-    out_dir = os.path.join(out_root, sanitize(nickname), ts)
-    os.makedirs(out_dir, exist_ok=True)
+    archive = begin_entry(out_root, sanitize(nickname), ts, "douyin", aweme_id,
+                          f"https://www.douyin.com/video/{aweme_id}")
+    out_dir = archive.folder
+    print("保存目录:", out_dir)
+    if archive.existing_complete:
+        print("此内容已有完整存档，已校验文件清单")
+        return out_dir
     out_path = os.path.join(out_dir, aweme_id + ".mp4")
+    files = ["context.md", aweme_id + ".mp4"]
 
     last_err = None
     cover_urls = ((video.get("origin_cover") or video.get("cover") or {})
@@ -269,16 +284,22 @@ def main() -> None:
             print("下载失败，尝试下一个:", e)
     else:
         print("全部直链失败:", last_err)
-        sys.exit(1)
+        raise RuntimeError("全部视频直链下载失败") from last_err
 
     # 下载官方封面（origin_cover 优先，比抽帧质量高；供媒体库卡片使用）
     if cover_urls:
         cover_path = os.path.join(out_dir, aweme_id + "_cover.jpg")
-        try:
-            download(cover_urls[0], cover_path, progress=progress)
-            print("官方封面已保存:", cover_path)
-        except Exception as e:  # noqa: BLE001
-            print("封面下载失败(不影响视频):", e)
+        for cover_url in cover_urls:
+            try:
+                download(cover_url, cover_path, progress=progress)
+                print("官方封面已保存:", cover_path)
+                files.append(aweme_id + "_cover.jpg")
+                break
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                print("封面下载失败，尝试下一个:", e)
+        else:
+            raise RuntimeError("官方封面下载失败，存档保持未完成，可重试") from last_err
 
     progress.stage("正在保存正文与整理文件…")
     context = (
@@ -293,9 +314,10 @@ def main() -> None:
         + (f"- **封面文件**: {aweme_id}_cover.jpg\n" if cover_urls else "")
     )
     ctx_path = os.path.join(out_dir, "context.md")
-    with open(ctx_path, "w", encoding="utf-8") as f:
-        f.write(context)
+    atomic_write_text(ctx_path, context)
     print("context.md 已生成:", ctx_path)
+    archive.complete(files)
+    return out_dir
 
 
 if __name__ == "__main__":
