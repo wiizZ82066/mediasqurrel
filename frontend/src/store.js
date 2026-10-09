@@ -4,6 +4,8 @@ import { api } from './api.js'
 
 export const store = reactive({
   tasks: [],
+  subs: [],
+  subScans: {},
   wsConnected: false,
   toasts: [],
   notifications: [],   // 通知中心（最近 50 条）
@@ -30,7 +32,10 @@ export function connectWS() {
 
   ws.onopen = () => {
     store.wsConnected = true
+    // A restarted backend starts a new in-memory scan history.
+    store.subScans = {}
     refreshTasks()
+    refreshSubs().catch(() => {})
   }
   ws.onclose = () => {
     store.wsConnected = false
@@ -58,6 +63,13 @@ export function connectWS() {
           time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
         })
       }
+    } else if (msg.type === 'task_progress') {
+      const task = store.tasks.find((t) => t.id === msg.task_id)
+      if (task) task.progress = msg.progress
+    } else if (msg.type === 'sub_scan') {
+      store.subScans[msg.sub_id] = msg.scan
+      const sub = store.subs.find((s) => s.id === msg.sub_id)
+      if (sub) applyScan(sub, msg.scan)
     } else if (msg.type === 'task_log') {
       const t = store.tasks.find((x) => x.id === msg.task_id)
       if (t) {
@@ -76,6 +88,25 @@ export async function refreshTasks() {
   try {
     store.tasks = await api.tasks()
   } catch { /* 静默 */ }
+}
+
+function applyScan(sub, scan) {
+  sub.scan = scan
+  for (const field of ['last_scan_at', 'last_status', 'last_error']) {
+    if (scan?.[field] != null) sub[field] = scan[field]
+  }
+}
+
+export async function refreshSubs() {
+  const subs = await api.subs()
+  for (const sub of subs) {
+    const live = store.subScans[sub.id]
+    // A REST response in flight must not overwrite a newer WebSocket event.
+    const scan = live && live.revision > (sub.scan?.revision || 0) ? live : sub.scan
+    if (scan) store.subScans[sub.id] = scan
+    applyScan(sub, scan)
+  }
+  store.subs = subs
 }
 
 let toastSeq = 0

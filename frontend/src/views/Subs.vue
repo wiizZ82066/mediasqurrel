@@ -2,9 +2,10 @@
 // 订阅页：博主搜索（本地存档 + 线上搜索前5粉丝降序）+ CRUD + 手动扫描
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api.js'
-import { toast } from '../store.js'
+import { store, refreshSubs, toast } from '../store.js'
+import ActivityProgress from '../components/ActivityProgress.vue'
 
-const subs = ref([])
+const subs = computed(() => store.subs)
 const loading = ref(true)
 const scanning = ref({})
 const adding = ref(false)
@@ -87,7 +88,7 @@ function onSearchKeydown(evt) {
 
 async function refresh() {
   try {
-    subs.value = await api.subs()
+    await refreshSubs()
   } catch (e) {
     toast('订阅加载失败: ' + e.message, 'error')
   } finally {
@@ -231,10 +232,13 @@ async function remove(s) {
 }
 
 async function scanNow(s) {
+  if (isScanning(s)) return
   scanning.value[s.id] = true
   try {
     const r = await api.scanSub(s.id)
-    if (r.error) toast(`扫描失败: ${r.error}`, 'error')
+    if (r.already_running) toast('该订阅正在扫描中', 'info')
+    else if (r.error) toast(`扫描失败: ${r.error}`, 'error')
+    else if (r.baseline != null) toast(`已建立基线，共 ${r.baseline} 条内容`, 'success')
     else if (r.new_items?.length) toast(`发现 ${r.new_items.length} 条新内容，已入队`, 'success')
     else toast('暂无新内容', 'info')
   } catch (e) {
@@ -243,6 +247,17 @@ async function scanNow(s) {
     scanning.value[s.id] = false
     refresh()
   }
+}
+
+function isScanning(sub) {
+  return scanning.value[sub.id] || sub.scan?.status === 'running'
+}
+
+function scanState(sub) {
+  if (scanning.value[sub.id] && sub.scan?.status !== 'running') {
+    return { status: 'running', progress: { label: '正在准备扫描…', percent: null } }
+  }
+  return sub.scan
 }
 
 const platformName = { douyin: '抖音', weibo: '微博' }
@@ -428,11 +443,18 @@ const platformName = { douyin: '抖音', weibo: '微博' }
             <span class="track"><span class="thumb"></span></span>
           </label>
         </div>
+        <ActivityProgress
+          v-if="scanState(s)"
+          :progress="scanState(s).progress"
+          :status="scanState(s).status"
+          :label="`${s.nickname || s.blogger_id}订阅扫描进度`"
+        />
+        <p v-if="s.scan?.status === 'failed' && s.last_error" class="scan-error">{{ s.last_error }}</p>
         <div class="sub-actions">
-          <button class="btn btn-ghost btn-sm" :disabled="scanning[s.id]" @click="scanNow(s)">
-            {{ scanning[s.id] ? '扫描中…' : '⚡ 立即扫描' }}
+          <button class="btn btn-ghost btn-sm" :disabled="isScanning(s)" @click="scanNow(s)">
+            {{ isScanning(s) ? '扫描中…' : '⚡ 立即扫描' }}
           </button>
-          <button class="btn btn-danger-ghost btn-sm" @click="remove(s)">删除</button>
+          <button class="btn btn-danger-ghost btn-sm" :disabled="isScanning(s)" @click="remove(s)">删除</button>
         </div>
       </div>
     </div>
@@ -440,6 +462,7 @@ const platformName = { douyin: '抖音', weibo: '微博' }
 </template>
 
 <style scoped>
+.scan-error { margin-top: 8px; color: #c52a20; font-size: 12px; overflow-wrap: anywhere; }
 .add-grid {
   display: grid;
   grid-template-columns: 130px 1.4fr 1fr 160px;

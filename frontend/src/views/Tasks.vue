@@ -4,6 +4,7 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api.js'
 import { store, refreshTasks, toast } from '../store.js'
+import ActivityProgress from '../components/ActivityProgress.vue'
 
 const router = useRouter()
 const expanded = ref({})
@@ -124,6 +125,8 @@ defineExpose({ ensureExpanded })
         </span>
         <span class="chevron" :class="{ open: expanded[t.id] }">›</span>
       </div>
+
+      <ActivityProgress :progress="t.progress" :status="t.status" :label="`${t.script_name}下载进度`" />
 
       <div class="task-actions" v-if="['queued', 'running'].includes(t.status)">
         <button class="btn btn-danger-ghost btn-sm" @click.stop="cancel(t)">取消任务</button>
