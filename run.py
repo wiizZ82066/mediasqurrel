@@ -14,6 +14,14 @@ import threading
 import webbrowser
 
 
+# Electron and the task manager consume UTF-8 pipes. Frozen Python ignores
+# PYTHONIOENCODING/PYTHONUTF8, so configure output before any Chinese log line,
+# including the --internal-run downloader path on non-Chinese Windows.
+for _output in (sys.stdout, sys.stderr):
+    if hasattr(_output, "reconfigure"):
+        _output.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
+
 def _handle_internal_run() -> bool:
     """PyInstaller frozen 模式的子进程路由。
 
@@ -45,8 +53,8 @@ def _stdin_watchdog():
     """桌面模式看门狗：Electron 主进程被强杀时（before-quit 不触发），
     本进程 stdin 收到 EOF → 自杀，避免后端残留后台。
 
-    仅当 stdin 是管道（被 Electron spawn）时启用；终端直跑时 stdin
-    阻塞在 read，不影响。--no-watchdog 可显式关闭。
+    stdin 连接父进程管道时启用；终端直跑时不启用。
+    --no-watchdog 可显式关闭。
     """
     if "--no-watchdog" in sys.argv or not sys.stdin or sys.stdin.isatty():
         return

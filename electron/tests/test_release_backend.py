@@ -13,6 +13,21 @@ import numpy as np
 from weibo_downloader import extract_cover_from_mov
 
 
+class OutputEncodingTests(unittest.TestCase):
+    def test_downloader_entry_uses_utf8_even_with_ascii_process_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'output.py'
+            script.write_text('print("\\u542f\\u52a8")\n', encoding='ascii')
+            result = subprocess.run(
+                [sys.executable, 'run.py', '--internal-run', str(script)],
+                cwd=Path(__file__).resolve().parents[2],
+                env=dict(os.environ, PYTHONIOENCODING='ascii', PYTHONUTF8='0'),
+                capture_output=True, timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+            self.assertEqual(result.stdout.decode('utf-8').strip(), '\u542f\u52a8')
+
+
 @unittest.skipUnless(os.name == 'nt', 'Windows pipe and native-library regression')
 class ParentWatchdogTests(unittest.TestCase):
     def test_idle_parent_pipe_allows_native_import_and_eof_stops_backend(self):
