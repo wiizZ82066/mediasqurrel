@@ -179,6 +179,8 @@ Windows x64 安装包通过本仓库的 GitHub Releases 分发。当前采用未
 
 仓库仅保存代码与公开使用说明；本地验收报告、Cookie、浏览器登录档案、数据库和私钥不应提交。提交前运行 `python .github/scripts/check-repository.py`，CI 也会检查；该检查不能代替人工审查。
 
+`.gitignore` 不会移除已跟踪文件或清除历史提交。提交作者邮箱也属于公开 Git 元数据；需要隐藏个人邮箱时，应在本仓库配置自己 GitHub 账号的 `users.noreply.github.com` 邮箱。切换邮箱只影响后续提交。
+
 ## License
 
 MIT
