@@ -21,6 +21,7 @@ import urllib.request
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import requests
+from app.progress import DownloadProgress
 
 # 统一浏览器引擎（app/browser.py；脚本独立运行时按相对路径加载）
 try:
@@ -174,17 +175,23 @@ def fetch_aweme_detail(url: str) -> dict:
     raise last_err
 
 
-def download(url: str, dest: str) -> int:
+def download(url: str, dest: str, progress=None) -> int:
     req = urllib.request.Request(
         url,
         headers={"User-Agent": _ua(), "Referer": "https://www.douyin.com/"},
     )
     with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as f:
+        if progress:
+            progress.start_file(resp.headers.get("Content-Length"))
         while True:
             chunk = resp.read(1 << 16)
             if not chunk:
                 break
             f.write(chunk)
+            if progress:
+                progress.advance(len(chunk))
+    if progress:
+        progress.finish_file()
     return os.path.getsize(dest)
 
 
@@ -249,9 +256,12 @@ def main() -> None:
     out_path = os.path.join(out_dir, aweme_id + ".mp4")
 
     last_err = None
+    cover_urls = ((video.get("origin_cover") or video.get("cover") or {})
+                  .get("url_list") or [])
+    progress = DownloadProgress(1 + bool(cover_urls))
     for u in urls:
         try:
-            size = download(u, out_path)
+            size = download(u, out_path, progress=progress)
             print("下载完成:", out_path, f"({size} bytes)")
             break
         except Exception as e:  # noqa: BLE001
@@ -262,16 +272,15 @@ def main() -> None:
         sys.exit(1)
 
     # 下载官方封面（origin_cover 优先，比抽帧质量高；供媒体库卡片使用）
-    cover_urls = ((video.get("origin_cover") or video.get("cover") or {})
-                  .get("url_list") or [])
     if cover_urls:
         cover_path = os.path.join(out_dir, aweme_id + "_cover.jpg")
         try:
-            download(cover_urls[0], cover_path)
+            download(cover_urls[0], cover_path, progress=progress)
             print("官方封面已保存:", cover_path)
         except Exception as e:  # noqa: BLE001
             print("封面下载失败(不影响视频):", e)
 
+    progress.stage("正在保存正文与整理文件…")
     context = (
         "# 抖音内容\n\n"
         f"- **作者**: {nickname}\n"

@@ -35,6 +35,7 @@ except Exception:
 import cv2
 import requests
 from playwright.sync_api import sync_playwright
+from app.progress import DownloadProgress
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
@@ -119,7 +120,7 @@ def extract_ip_region(text: str) -> str:
     return ""
 
 
-def download_file(url: str, path: str, referer: str = "https://weibo.com/") -> bool:
+def download_file(url: str, path: str, referer: str = "https://weibo.com/", progress=None) -> bool:
     """带 Referer 下载文件（绕过微博反盗链），返回是否成功。"""
     headers = {"Referer": referer, "User-Agent": UA}
     try:
@@ -127,9 +128,16 @@ def download_file(url: str, path: str, referer: str = "https://weibo.com/") -> b
             if r.status_code != 200:
                 print(f"    [x] HTTP {r.status_code}: {url[:80]}")
                 return False
+            if progress:
+                progress.start_file(r.headers.get("Content-Length")
+                                    if not r.headers.get("Content-Encoding") else None)
             with open(path, "wb") as f:
                 for chunk in r.iter_content(65536):
                     f.write(chunk)
+                    if progress:
+                        progress.advance(len(chunk))
+            if progress:
+                progress.finish_file()
         return True
     except Exception as e:
         print(f"    [x] 下载失败 {url[:60]}: {e}")
@@ -448,6 +456,8 @@ def extract_post(page, url: str) -> dict:
 # ---------------------------------------------------------------- 保存
 
 def save_content(data: dict, out_root: str) -> str:
+    progress = DownloadProgress(len(data["normal_imgs"]) + len(data["live_videos"]))
+    failed = 0
     # 保存结构: <out_root>/<用户名>/<yy-mm-dd>/
     folder = os.path.join(out_root, data["username"], data["publish_time"])
     # 只有存在对应内容时才创建 photo/ 或 live/ 文件夹
@@ -468,8 +478,10 @@ def save_content(data: dict, out_root: str) -> str:
         for idx, url in enumerate(data["normal_imgs"], 1):
             large = orj360_to_large(url)
             path = os.path.join(photo_dir, f"img{idx:02d}.jpg")
-            if download_file(large, path):
+            if download_file(large, path, progress=progress):
                 print(f"    [+] img{idx:02d}.jpg  <- {large.split('/')[-1][:40]}")
+            else:
+                failed += 1
     else:
         print("[*] 无普通图片，跳过 photo/")
 
@@ -480,14 +492,17 @@ def save_content(data: dict, out_root: str) -> str:
             name = f"live{idx:02d}"
             mov_path = os.path.join(live_dir, f"{name}.mov")
             jpg_path = os.path.join(live_dir, f"{name}.jpg")
-            if download_file(url, mov_path):
+            if download_file(url, mov_path, progress=progress):
                 print(f"    [+] {name}.mov")
                 if extract_cover_from_mov(mov_path, jpg_path):
                     print(f"    [+] {name}.jpg (封面)")
+            else:
+                failed += 1
     else:
         print("[*] 无 Live 图，跳过 live/")
 
     # 3. 写 context.md
+    progress.stage("正在保存正文与整理文件…")
     text = data["text"]
     md = []
     md.append("# 微博内容\n")
@@ -511,6 +526,8 @@ def save_content(data: dict, out_root: str) -> str:
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(md))
     print(f"[*] 已保存: {md_path}")
+    if failed:
+        raise RuntimeError(f"{failed} 个媒体文件下载失败，请查看日志后重试")
     return folder
 
 

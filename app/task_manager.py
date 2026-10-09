@@ -14,6 +14,7 @@ from typing import Optional
 from fastapi import WebSocket
 
 from . import config, script_registry
+from .progress import parse_progress
 
 # 全部任务（内存保存，含日志；进程重启后清空）
 TASKS: dict[str, dict] = {}
@@ -66,7 +67,7 @@ async def broadcast(message: dict):
 
 
 def append_log(task_id: str, line: str, stream: str = "stdout") -> dict:
-    entry = {"time": _now(), "stream": stream, "text": line.rstrip("\n")}
+    entry = {"time": _now(), "stream": stream, "text": line.rstrip("\r\n")}
     TASKS[task_id]["logs"].append(entry)
     return entry
 
@@ -101,6 +102,7 @@ async def create(script_id: str, params: dict) -> dict:
         "params": params,
         "command": script_registry.build_command(script_id, params),
         "status": "queued",
+        "progress": {"label": "等待下载", "percent": 0},
         "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "started_at": None,
         "finished_at": None,
@@ -174,6 +176,7 @@ async def _run(task_id: str):
         if task["status"] != "queued":
             return
         task["status"] = "running"
+        task["progress"] = {"label": "正在解析链接与获取内容…", "percent": None}
         task["started_at"] = _dt.datetime.now().isoformat(timespec="seconds")
         await broadcast({"type": "task_update", "task": public_task(task)})
 
@@ -191,6 +194,7 @@ async def _run(task_id: str):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=config.BASE_DIR,
+                env={**os.environ, "MS_PROGRESS": "1"},
             )
             task["proc"] = proc
 
@@ -200,6 +204,12 @@ async def _run(task_id: str):
                 if not raw:
                     break
                 line = raw.decode("utf-8", errors="replace")
+                progress = parse_progress(line)
+                if progress is not None:
+                    task["progress"] = progress
+                    await broadcast({"type": "task_progress", "task_id": task_id,
+                                     "progress": progress})
+                    continue
                 entry = append_log(task_id, line)
                 _detect_output_dir(task, line)
                 await broadcast({"type": "task_log", "task_id": task_id, "log": entry})
@@ -222,6 +232,11 @@ async def _run(task_id: str):
             task["finished_at"] = _dt.datetime.now().isoformat(timespec="seconds")
             if task["status"] == "running":  # 子进程被 kill 的场景
                 task["status"] = "cancelled" if task.get("_cancelling") else "failed"
+            labels = {"success": "下载完成", "failed": "下载失败，请查看日志",
+                      "cancelled": "下载已取消"}
+            task["progress"] = {**task["progress"], "label": labels[task["status"]]}
+            if task["status"] == "success":
+                task["progress"]["percent"] = 100
             await broadcast({"type": "task_update", "task": public_task(task)})
             # 完成回调（媒体库缓存失效等）
             if task["status"] == "success":
@@ -241,6 +256,7 @@ async def cancel(task_id: str) -> bool:
     if task["status"] == "queued":
         task["_cancelling"] = True
         task["status"] = "cancelled"
+        task["progress"] = {"label": "下载已取消", "percent": 0}
         task["finished_at"] = _dt.datetime.now().isoformat(timespec="seconds")
         await broadcast({"type": "task_update", "task": public_task(task)})
         return True
