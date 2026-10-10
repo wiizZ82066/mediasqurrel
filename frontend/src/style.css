@@ -19,7 +19,7 @@
   --shadow-card-hover: 0 14px 44px rgba(0, 0, 0, 0.14);
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --font: -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC",
-    "Segoe UI", "Microsoft YaHei", sans-serif;
+    "Segoe UI", "Microsoft YaHei", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }

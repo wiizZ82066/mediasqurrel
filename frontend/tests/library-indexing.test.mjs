@@ -51,7 +51,7 @@ function component(name, t) {
     Image: class { set src(value) {} },
     setTimeout: timer, clearTimeout: id => timers.delete(id),
     setInterval: timer, clearInterval: id => timers.delete(id),
-    AppIcon: {}, PlatformLogo: {}, ActivityProgress: {}, MediaThumbnail: {},
+    ContentText: {}, AppIcon: {}, PlatformLogo: {}, ActivityProgress: {}, MediaThumbnail: {},
   }
   const source = script.content.replace(/^import .*$/gm, '').replace('export default', 'return')
   const setup = new Function(...Object.keys(env), source)(...Object.values(env)).setup

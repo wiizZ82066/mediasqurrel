@@ -164,6 +164,21 @@ def api_health():
 
 # ---------------------------------------------------------------- 脚本清单
 
+@app.get('/api/emoticons/weibo')
+def api_weibo_emoticons():
+    from .emoticons import get_names
+    return {"names": get_names()}
+
+
+@app.get('/api/emoticons/weibo/{name}')
+def api_weibo_emoticon(name: str):
+    from .emoticons import get_emoticon
+    path = get_emoticon(name)
+    if not path:
+        raise HTTPException(404, '暂无可用表情', headers={'Cache-Control': 'no-store'})
+    return FileResponse(path, media_type='image/png', headers={
+        'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff'})
+
 @app.post('/api/desktop/update-lock')
 async def api_update_lock(request: Request, body: dict):
     # Only the owning Electron main process receives this per-launch token.

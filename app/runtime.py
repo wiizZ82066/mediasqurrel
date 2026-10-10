@@ -27,7 +27,7 @@ def runtime_identity(source=None):
     root = Path(source or config.SOURCE_DIR).resolve()
     files = {root / name for name in (
         'run.py', 'weibo_downloader.py', 'douyin_downloader.py',
-        'package.json', 'requirements.txt',
+        'package.json', 'requirements.txt', 'app/weibo_emoticons.json',
     )}
     for directory, pattern in (('app', '*.py'), ('scripts_manifest', '*.json')):
         files.update(path for path in (root / directory).rglob(pattern)

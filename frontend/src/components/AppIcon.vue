@@ -13,7 +13,10 @@ defineProps({ name: { type: String, required: true }, size: { type: [Number, Str
     </g>
     <g v-else-if="name === 'download'" stroke="#2779c9" stroke-width="3.5"><path d="M7 29v10h34V29" fill="#d9eaf8"/><path d="M24 7v24m-9-9 9 9 9-9"/></g>
     <g v-else-if="name === 'tasks'" stroke="#9070bc" stroke-width="3"><rect x="9" y="9" width="30" height="33" rx="5" fill="#eee5f8"/><rect x="17" y="5" width="14" height="8" rx="3" fill="#d2bce9"/><path d="m16 23 3 3 5-6m3 4h5m-16 9h16"/></g>
-    <g v-else-if="name === 'library'" stroke="#438f73" stroke-width="3"><rect x="6" y="8" width="36" height="32" rx="5" fill="#def0e4"/><circle cx="16" cy="19" r="4" fill="#f6cc73" stroke="none"/><path d="m7 35 11-10 8 6 7-11 8 14" fill="#94c8af"/></g>
+    <g v-else-if="name === 'library' || name === 'image'" stroke="#438f73" stroke-width="3"><rect x="6" y="8" width="36" height="32" rx="5" fill="#def0e4"/><circle cx="16" cy="19" r="4" fill="#f6cc73" stroke="none"/><path d="m7 35 11-10 8 6 7-11 8 14" fill="#94c8af"/></g>
+    <g v-else-if="name === 'video'" stroke="#638ec0" stroke-width="3"><rect x="5" y="9" width="38" height="30" rx="6" fill="#e1edfa"/><path d="m20 17 12 7-12 7Z" fill="#527aa8" stroke="#527aa8"/></g>
+    <g v-else-if="name === 'live'" stroke-width="3"><circle cx="24" cy="24" r="19" fill="#def0e4" stroke="#64a58c" stroke-dasharray="2 4"/><circle cx="24" cy="24" r="12" fill="#f4dfaa" stroke="#4d8a75"/><circle cx="24" cy="24" r="5" fill="#6fab91"/></g>
+    <g v-else-if="name === 'text'" stroke="#638ec0" stroke-width="3"><path d="M10 5h20l8 8v30H10Z" fill="#e1edfa"/><path d="M30 5v9h8M17 22h14M17 29h14M17 36h9"/></g>
     <g v-else-if="name === 'subs'" stroke="#cf8a38" stroke-width="3"><path d="M13 30V20a11 11 0 0 1 22 0v10l5 6H8Z" fill="#f8e8cc"/><path d="M19 41h10M24 5v4"/></g>
     <g v-else-if="name === 'settings'" stroke="#758394" stroke-width="3"><path d="m20 5-2 6-6 1-5 8 4 5-1 6 7 7 6-2 6 2 8-7-1-6 4-5-5-8-6-1-2-6Z" fill="#e3e9ef"/><circle cx="24" cy="23" r="7" fill="#fff"/></g>
     <g v-else-if="name === 'folder'" stroke="#c99136" stroke-width="3"><path d="M5 13h15l4 5h19v21H5Z" fill="#f7dba4"/><path d="M5 24h38"/></g>
@@ -22,6 +25,8 @@ defineProps({ name: { type: String, required: true }, size: { type: [Number, Str
     <g v-else-if="name === 'scan'" stroke-width="4"><path d="M16 6H8C6.89543 6 6 6.89543 6 8V16M16 42H8C6.89543 42 6 41.1046 6 40V32M32 42H40C41.1046 42 42 41.1046 42 40V32M32 6H40C41.1046 6 42 6.89543 42 8V16" stroke="#648cca"/><path d="M34 24H14M27 16H21M27 32H21" stroke="#60a98a"/></g>
     <g v-else-if="name === 'search'" stroke="#647da6" stroke-width="4"><circle cx="21" cy="21" r="12" fill="#e1eaf7"/><path d="m30 30 10 10"/></g>
     <g v-else-if="name === 'play'" stroke="#438f73" stroke-width="3"><circle cx="24" cy="24" r="19" fill="#e0efe5"/><path d="m20 15 13 9-13 9Z" fill="#438f73"/></g>
+    <g v-else-if="name === 'chevron-left'" stroke="currentColor" stroke-width="4"><path d="m30 12-12 12 12 12"/></g>
+    <g v-else-if="name === 'chevron-right'" stroke="currentColor" stroke-width="4"><path d="m18 12 12 12-12 12"/></g>
     <g v-else-if="name === 'up'" stroke="#647da6" stroke-width="4"><path d="m12 27 12-12 12 12M24 16v24"/></g>
     <g v-else-if="name === 'close'" stroke="#758394" stroke-width="4"><path d="m14 14 20 20m0-20-20 20"/></g>
     <g v-else-if="name === 'person'" stroke="#9070bc" stroke-width="3"><circle cx="24" cy="15" r="8" fill="#eee5f8"/><path d="M8 41c0-18 32-18 32 0Z" fill="#d2bce9"/></g>

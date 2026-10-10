@@ -39,6 +39,7 @@ from playwright.sync_api import sync_playwright
 from app.progress import DownloadProgress
 from app import config
 from app.archive import atomic_output, atomic_write_text, begin_entry
+from app.content_text import html_to_text, weibo_post_text
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
@@ -309,9 +310,7 @@ def extract_post(page, url: str) -> dict:
                 normal_imgs.append(orig)
 
         # 文本/用户名/时间从 API 提取（比 innerText 更干净）
-        full_text = api_data.get("text_raw") or api_data.get("text") or ""
-        # 清理 HTML 标签
-        full_text = re.sub(r"<[^>]+>", "", full_text)
+        full_text = weibo_post_text(api_data)
         page_title = page.title()
         username = sanitize_filename((api_data.get("user") or {}).get("screen_name") or "")
         created = api_data.get("created_at") or ""
@@ -369,7 +368,10 @@ def extract_post(page, url: str) -> dict:
     if not art:
         raise RuntimeError("未找到帖子内容，可能被微博反爬拦截，请重试或使用 --headed 观察")
 
-    full_text = art.inner_text()
+    # innerText omits inline emoji images. Parse their alt text from the HTML,
+    # while keeping the original visible layout for the existing metadata rules.
+    visible_text = art.inner_text()
+    full_text = html_to_text(art.inner_html())
     page_title = page.title()
 
     normal_imgs = []
@@ -465,11 +467,11 @@ def extract_post(page, url: str) -> dict:
     return {
         "title": page_title,
         "text": full_text,
-        "username": extract_username(full_text),
+        "username": extract_username(visible_text),
         "created_at": "",
-        "ip_region": extract_ip_region(full_text),
-        "publish_time": parse_publish_time(full_text),
-        "publish_datetime": parse_publish_time(full_text),
+        "ip_region": extract_ip_region(visible_text),
+        "publish_time": parse_publish_time(visible_text),
+        "publish_datetime": parse_publish_time(visible_text),
         "normal_imgs": normal_imgs,
         "live_videos": live_video_urls,
         "api": False,
