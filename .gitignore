@@ -22,6 +22,7 @@
 !/weibo_downloader.py
 !/douyin_downloader.py
 !/run.py
+!/start.bat
 !/make_icon.py
 !/build_backend.ps1
 !/package.json

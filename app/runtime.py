@@ -18,6 +18,48 @@ def instance_id():
     return hashlib.sha256(os.path.normcase(os.path.realpath(config.DATA_DIR)).encode()).hexdigest()[:20]
 
 
+def runtime_identity(source=None):
+    """Fingerprint only runtime inputs, separate from the data-directory lock.
+
+    The server captures this once while importing its application. Calling it
+    from a health request would wrongly identify old loaded code as new code.
+    """
+    root = Path(source or config.SOURCE_DIR).resolve()
+    files = {root / name for name in (
+        'run.py', 'weibo_downloader.py', 'douyin_downloader.py',
+        'package.json', 'requirements.txt',
+    )}
+    for directory, pattern in (('app', '*.py'), ('scripts_manifest', '*.json')):
+        files.update(path for path in (root / directory).rglob(pattern)
+                     if not any(part.startswith('.') or part in ('tests', '__pycache__')
+                                for part in path.relative_to(root / directory).parts))
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        if path.is_file():
+            if path.is_symlink() or not path.resolve().is_relative_to(root):
+                raise RuntimeError('运行源码不能引用源码目录外的文件')
+            digest.update(path.relative_to(root).as_posix().encode('utf-8') + b'\0')
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+    digest.update(b'frontend\0' + frontend_signature(root / 'frontend').encode('ascii'))
+    source_id = hashlib.sha256(os.path.normcase(str(root)).encode('utf-8')).hexdigest()[:20]
+    return {'instance_id': instance_id(), 'source_id': source_id, 'code_signature': digest.hexdigest()}
+
+
+def existing_instance_problem(existing, expected):
+    """None means safe reuse; missing legacy identity is explicitly unknown."""
+    if existing.get('instance_id') != expected['instance_id']:
+        return '此端口的 Media Squirrel 正在使用另一份数据，请先退出旧实例或选择其他端口。'
+    if not existing.get('source_id') or not existing.get('code_signature'):
+        reason = '正在运行的旧实例未提供启动代码标识，无法确认它是否包含本次修改。'
+    elif existing['source_id'] != expected['source_id']:
+        reason = '正在运行的 Media Squirrel 来自另一份源码目录。'
+    elif existing['code_signature'] != expected['code_signature']:
+        reason = '当前源码已更新，但后台仍在运行启动时的旧代码。'
+    else:
+        return None
+    return reason + '请等待任务结束，从系统托盘选择“退出”（控制台模式按 Ctrl+C），再重新运行启动器。关闭网页不会停止服务。'
+
+
 def probe_server(port):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:

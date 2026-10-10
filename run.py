@@ -110,14 +110,19 @@ def _stdin_watchdog(on_exit=None):
     threading.Thread(target=_watch, daemon=True).start()
 
 
-def _wait_and_open(url: str):
-    """等服务端口就绪后打开浏览器。"""
+def _wait_and_open(url: str, expected_identity=None):
+    """等本次代码与数据对应的服务就绪后打开浏览器。"""
+    from app.runtime import existing_instance_problem, probe_server, runtime_identity
+    expected = dict(expected_identity or runtime_identity())
     def _worker():
         for _ in range(60):
             try:
-                from app.runtime import probe_server, instance_id
                 health = probe_server(config.PORT)
-                if health and health.get('instance_id') == instance_id():
+                if health:
+                    problem = existing_instance_problem(health, expected)
+                    if problem:
+                        print('[!] ' + problem)
+                        return
                     webbrowser.open(url)
                     return
             except OSError:
@@ -206,12 +211,24 @@ def main():
     config.PORT = args.port
     os.environ['MS_PORT'] = str(args.port)
     url = f"http://{config.HOST}:{args.port}"
-    from app.runtime import ensure_frontend, probe_server, port_in_use, instance_id
+    from app.runtime import ensure_frontend, probe_server, port_in_use, runtime_identity, existing_instance_problem
+    try:
+        expected = runtime_identity()
+    except (RuntimeError, OSError) as error:
+        raise SystemExit(str(error))
     existing = probe_server(args.port)
     if existing:
-        if existing.get('instance_id') != instance_id():
-            raise SystemExit('此端口的 Media Squirrel 正在使用另一份数据，请先退出旧实例或选择其他端口。')
-        print(f'[*] Media Squirrel 已在运行：{url}')
+        problem = existing_instance_problem(existing, expected)
+        if problem:
+            raise SystemExit(problem)
+        try:
+            build_state = ensure_frontend(build=False)
+        except (RuntimeError, OSError) as error:
+            raise SystemExit(str(error))
+        if build_state not in ('current', 'external'):
+            raise SystemExit('当前前端构建缺失、损坏或与源码不一致。请等待任务结束，从系统托盘选择“退出”'
+                             '（控制台模式按 Ctrl+C），再重新运行启动器完成构建。关闭网页不会停止服务。')
+        print(f'[*] Media Squirrel 已在运行，启动代码与当前源码一致：{url}')
         if not args.no_browser:
             webbrowser.open(url)
         return
@@ -224,7 +241,7 @@ def main():
     print(f'[*] Media Squirrel 启动中：{url}')
     print('[*] 关闭网页会继续后台运行；从托盘选择退出或按 Ctrl+C 才会停止扫描。')
     if not args.no_browser:
-        _wait_and_open(url)
+        _wait_and_open(url, expected_identity=expected)
     if args.reload:
         uvicorn.run('app.main:app', host=config.HOST, port=args.port, reload=True, log_level='info', timeout_graceful_shutdown=10)
         return
@@ -233,6 +250,8 @@ def main():
         _stdin_watchdog(lambda: setattr(service, 'should_exit', True))
     if args.no_tray:
         service.run()
+        if not service.started:
+            raise SystemExit('本地服务启动失败，请检查上方错误。')
         return
     worker = threading.Thread(target=service.run, name='media-squirrel-server')
     worker.start()

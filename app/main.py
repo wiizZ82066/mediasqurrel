@@ -16,7 +16,7 @@ from . import config, media_library, script_registry, task_manager, watcher, lib
 from .library_api import router as library_router
 from .security import LocalOnlyMiddleware, media_path
 from .redaction import redact_text
-from .runtime import InstanceLock, instance_id
+from .runtime import InstanceLock, runtime_identity
 from . import settings
 from . import settings_api, maintenance, db
 from . import scanners  # noqa: F401  (import 即注册各平台扫描器)
@@ -34,6 +34,11 @@ def _app_version() -> str:
                 continue
     return "dev"
 
+
+# Freeze the identity of the loaded application, not whatever source files a
+# later health request happens to find after git pull or a directory copy.
+_STARTUP_HEALTH = {"status": "ok", "application": "media-squirrel",
+                   "version": _app_version(), **runtime_identity()}
 
 _DEV_MODE = os.environ.get("MS_DEV") == "1"
 
@@ -154,7 +159,7 @@ app.include_router(settings_api.router)
 @app.get("/api/health")
 def api_health():
     """Local launcher identity and readiness check."""
-    return {"status": "ok", "application": "media-squirrel", "version": _app_version(), "instance_id": instance_id()}
+    return dict(_STARTUP_HEALTH)
 
 
 # ---------------------------------------------------------------- 脚本清单
@@ -529,7 +534,7 @@ if os.path.isfile(os.path.join(_DIST, 'index.html')) and os.path.isdir(os.path.j
 
     @app.get("/")
     async def serve_index():
-        return FileResponse(os.path.join(_DIST, "index.html"))
+        return FileResponse(os.path.join(_DIST, "index.html"), headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"})
 
     # SPA fallback：未知路径（非 API/媒体）返回 index.html，交给前端路由
     @app.exception_handler(404)
@@ -540,7 +545,7 @@ if os.path.isfile(os.path.join(_DIST, 'index.html')) and os.path.isdir(os.path.j
             and not path.startswith("/docs")
             and "text/html" in request.headers.get("accept", "")
         ):
-            return FileResponse(os.path.join(_DIST, "index.html"))
+            return FileResponse(os.path.join(_DIST, "index.html"), headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"})
         return JSONResponse({"detail": "Not Found"}, status_code=404)
 else:
     @app.get("/")
