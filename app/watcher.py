@@ -361,9 +361,25 @@ async def _perform_scan(sub: dict, trigger: str = 'manual') -> dict:
             if isinstance(response, dict):
                 items = response.get('items')
                 result['coverage'] = response.get('coverage') or {}
-                if response.get('avatar_source'):
+                SCAN_STATES[sub['id']]['coverage'] = result['coverage']
+                profile = response.get('profile')
+                if isinstance(profile, dict) and str(profile.get('blogger_id')) == str(sub['blogger_id']):
+                    nickname = str(profile.get('nickname') or '').strip()[:120]
+                    if nickname and nickname != str(sub['blogger_id']):
+                        with _connect() as conn:
+                            conn.execute('UPDATE subscriptions SET nickname=? WHERE id=? AND platform=? AND blogger_id=?',
+                                         (nickname, sub['id'], platform, str(sub['blogger_id'])))
+                        sub['nickname'] = nickname
+                        SCAN_STATES[sub['id']]['nickname'] = nickname
+                    avatar_source = profile.get('avatar_source') or response.get('avatar_source')
+                else:
+                    avatar_source = response.get('avatar_source')
+                if avatar_source:
                     from .avatars import update_source
-                    update_source(sub['id'], response['avatar_source'])
+                    if update_source(sub['id'], avatar_source):
+                        SCAN_STATES[sub['id']]['avatar_url'] = f"/api/subs/{sub['id']}/avatar"
+                if response.get('error'):
+                    raise ValueError(str(response['error']))
                 if not isinstance(items, list):
                     raise ValueError('扫描器未返回有效内容列表')
             else:

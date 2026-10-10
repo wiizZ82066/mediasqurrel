@@ -439,11 +439,34 @@ def _page(page, page_size):
     return max(1, int(page)), max(1, min(200, int(page_size)))
 
 
+def live_for_cover(assets, cover):
+    """Return only the Live video paired with this exact cover, never any Live."""
+    if not cover:
+        return None
+    return min((asset["rel_path"] for asset in assets
+                if asset["kind"] == "live" and asset["poster_rel"] == cover), default=None)
+
+
+def _cover_live_paths(connection, rows):
+    # One bounded query for this page; retain the covers read in the page
+    # snapshot instead of racing a second read of media_entries.cover_rel.
+    covers = [(row["id"], row["cover_rel"]) for row in rows if row["cover_rel"]]
+    if not covers:
+        return {}
+    placeholders = ",".join("(?,?)" for _ in covers)
+    query = (f"WITH cover_page(id,cover_rel) AS (VALUES {placeholders}) "
+             "SELECT p.id,MIN(a.rel_path) AS live_rel FROM cover_page p "
+             "JOIN media_assets a ON a.entry_id=p.id AND a.kind='live' AND a.poster_rel=p.cover_rel "
+             "GROUP BY p.id")
+    return {row["id"]: row["live_rel"] for row in connection.execute(query, [value for pair in covers for value in pair])}
+
+
 def _summary(row):
     result = dict(row)
     for key in ("search_text", "meta_json", "scan_generation", "cover_face_json"):
         result.pop(key, None)
     result["cover"] = row["cover_rel"]
+    result["cover_live_rel"] = None
     result["cover_face"] = json.loads(row["cover_face_json"]) if row["cover_face_json"] else None
     result["media_count"] = row["photo_count"] + row["video_count"] + row["live_count"]
     result["counts"] = {"photos": row["photo_count"], "videos": row["video_count"], "lives": row["live_count"]}
@@ -499,7 +522,9 @@ def list_entries(*, root_id=None, author=None, q="", date_from=None, date_to=Non
         total = connection.execute(f"SELECT count(*) FROM media_entries WHERE {where}", params).fetchone()[0]
         rows = connection.execute(f"SELECT {_SUMMARY_COLUMNS} FROM media_entries WHERE {where} ORDER BY sort_at {direction},id {direction} LIMIT ? OFFSET ?",
                                   [*params, page_size, (page - 1) * page_size]).fetchall()
-    return {"items": [_summary(row) for row in rows], "total": total, "page": page, "page_size": page_size}
+        live_paths = _cover_live_paths(connection, rows)
+    items = [_summary(row) | {"cover_live_rel": live_paths.get(row["id"])} for row in rows]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 def date_groups(*, root_id=None, author=None, q="", group="month", limit=240, database=None):
@@ -562,6 +587,7 @@ def get_entry(entry_id, *, database=None):
         except (OSError, ValueError):
             pass
     result["assets"] = assets
+    result["cover_live_rel"] = live_for_cover(assets, result["cover"])
     result["photos"] = [a["rel_path"] for a in assets if a["kind"] == "image"]
     result["videos"] = [a["rel_path"] for a in assets if a["kind"] == "video"]
     result["lives"] = [a["rel_path"] for a in assets if a["kind"] == "live"]

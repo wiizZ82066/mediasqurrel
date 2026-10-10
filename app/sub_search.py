@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlsplit
 from playwright.sync_api import sync_playwright
 
 from . import config, db
+from .weibo_client import BrowserSession, checked_payload, clean_text, fetch_profile, parse_profile
 
 MOBILE_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
@@ -161,54 +162,28 @@ def _fmt_followers(n) -> str:
 
 
 def _weibo_search_sync(kw: str) -> list[dict]:
-    """打开 m.weibo.cn 搜索页，域内 fetch 用户搜索 API。"""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, timeout=_timeout_ms())
-        try:
-            _check_search()
-            ctx = browser.new_context(
-                user_agent=MOBILE_UA, locale="zh-CN",
-                viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
-            )
-            page = ctx.new_page()
-            page.set_default_timeout(2000)
-            from urllib.parse import quote
-            page.goto(
-                f"https://m.weibo.cn/search?weibo={quote(kw)}",
-                wait_until="domcontentloaded", timeout=_timeout_ms(),
-            )
-            _wait_search(page, 5000)
-
-            # 域内 fetch 用户搜索（containerid=100103type=3 为用户维度）
-            result = page.evaluate(
-                """async (kw) => {
-                    const url = 'https://m.weibo.cn/api/container/getIndex?containerid=' +
-                        encodeURIComponent('100103type=3&q=' + kw) + '&page_type=searchall';
-                    const controller = new AbortController();
-                    const timer = setTimeout(() => controller.abort(), 8000);
-                    try {
-                        const r = await fetch(url, { credentials: 'include', signal: controller.signal });
-                        if (!r.ok) return { http_error: r.status };
-                        return await r.json();
-                    } finally { clearTimeout(timer); }
-                }""",
-                kw,
-            )
-            _check_search()
-        finally:
-            browser.close()
-
+    """Complete visitor/SSO navigation before requesting the user-search API."""
+    from urllib.parse import urlencode
+    with BrowserSession(cancel=getattr(_SEARCH_CONTEXT, 'cancel', None), timeout=40,
+                        check=_check_search) as client:
+        client.open()
+        query = urlencode({'containerid': '100103type=3&q=' + kw, 'page_type': 'searchall'})
+        result = client.request('/api/container/getIndex?' + query, '用户搜索')
     return _parse_weibo_users(result)
 
 
 def _parse_weibo_users(result):
     if not isinstance(result, dict) or result.get("ok") != 1:
         raise RuntimeError('微博未返回有效搜索结果，请检查网络或平台登录/验证状态')
-
-    cards = ((result.get("data") or {}).get("cards")) or []
+    data = checked_payload(result, '用户搜索')
+    cards = data.get('cards')
+    if not isinstance(cards, list):
+        raise RuntimeError('微博用户搜索结构发生变化，未将响应当作空结果')
     users = []
     seen = set()
     for card in cards:
+        if not isinstance(card, dict):
+            continue
         # 用户卡片: card_group 里多个 user，或 card 直接带 user
         cands = []
         if card.get("card_group"):
@@ -216,26 +191,30 @@ def _parse_weibo_users(result):
         if card.get("user"):
             cands.append(card)
         for c in cands:
+            if not isinstance(c, dict):
+                continue
             u = c.get("user")
-            if not u or not u.get("id"):
+            if not isinstance(u, dict) or not str(u.get("id") or '').isdigit():
                 continue
             uid = str(u["id"])
             if uid in seen:
                 continue
             seen.add(uid)
+            profile = parse_profile({'ok': 1, 'data': {'userInfo': u}}, uid)
             raw_followers = u.get("followers_count") or (
                 # 兜底：卡片描述 "粉丝：1109.1万"
                 str(c.get("desc2") or "").replace("粉丝：", "").replace("粉丝:", "") or None
             )
             users.append({
-                "nickname": u.get("screen_name") or "",
+                "nickname": profile['nickname'],
                 "blogger_id": uid,
                 "platform": "weibo",
                 "followers": _parse_followers(raw_followers),
                 "followers_text": _fmt_followers(raw_followers),
                 "verified": bool(u.get("verified")),
-                "avatar": (u.get("avatar_hd") or u.get("profile_image_url") or "").replace("http://", "https://"),
-                "desc": (c.get("desc1") or u.get("description") or "")[:40],
+                "avatar": profile['avatar_source'],
+                "homepage": profile['homepage'],
+                "desc": clean_text(c.get("desc1") or u.get("description"), 40),
             })
     return users
 
@@ -560,7 +539,7 @@ def search_online(platform: str, kw: str, *, cancel=None) -> list[dict]:
         raise ValueError('不支持的平台')
     kw = str(kw or '').strip()
     direct = parse_identity(platform, kw)
-    if direct:
+    if direct and platform != 'weibo':
         return [direct]
     _SEARCH_CONTEXT.cancel = cancel
     _SEARCH_CONTEXT.deadline = time.monotonic() + 90
@@ -568,7 +547,15 @@ def search_online(platform: str, kw: str, *, cancel=None) -> list[dict]:
         _acquire(_SEARCH_SLOTS)
         try:
             if platform == 'weibo':
-                users = _weibo_search_sync(kw)
+                if direct:
+                    profile = fetch_profile(direct['blogger_id'], cancel=cancel, check=_check_search)
+                    users = [{**direct, 'nickname': profile['nickname'] or direct['nickname'],
+                              'avatar': profile['avatar_source'], 'homepage': profile['homepage'],
+                              'followers': _parse_followers(profile['followers']),
+                              'followers_text': _fmt_followers(profile['followers']),
+                              'verified': profile['verified'], 'profile_verified': True, 'desc': profile['desc']}]
+                else:
+                    users = _weibo_search_sync(kw)
             else:
                 _acquire(_PROFILE_SLOT)
                 try:

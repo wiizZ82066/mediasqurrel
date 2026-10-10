@@ -238,6 +238,29 @@ class SubscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(sensitive, watcher.list_scans()[0]["error"])
         self.assertNotIn(sensitive, watcher.list_subs()[0]["last_error"])
 
+    async def test_weibo_profile_refresh_survives_list_failure_without_baseline(self):
+        response = {'items': [], 'profile': {'blogger_id': 'sample', 'nickname': 'Platform Name',
+                    'avatar_source': 'https://tvax1.sinaimg.cn/avatar.jpg'},
+                    'error': '微博内容列表需要登录', 'coverage': {'complete': False, 'reason': 'login_required'}}
+        with patch.dict(watcher.SCANNERS, weibo=AsyncMock(return_value=response)):
+            result = await watcher.scan_sub(self.sub)
+        self.assertIn('需要登录', result['error'])
+        self.assertNotIn('baseline', result)
+        with db.connect() as connection:
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM subscription_state').fetchone()[0], 0)
+        actual = watcher.list_subs()[0]
+        self.assertEqual(actual['nickname'], 'Platform Name')
+        self.assertEqual(actual['avatar_url'], f"/api/subs/{self.sub['id']}/avatar")
+        self.assertEqual(watcher.list_scans(self.sub['id'])[0]['coverage']['reason'], 'login_required')
+
+    async def test_wrong_profile_identity_or_placeholder_never_overwrites_name(self):
+        for profile in ({'blogger_id': 'different', 'nickname': 'Wrong'},
+                        {'blogger_id': 'sample', 'nickname': 'sample'},
+                        {'blogger_id': 'sample', 'nickname': ''}):
+            with patch.dict(watcher.SCANNERS, weibo=AsyncMock(return_value={'items': [], 'profile': profile})):
+                await watcher.scan_sub(self.sub)
+            self.assertEqual(watcher.list_subs()[0]['nickname'], 'Example')
+
     async def test_history_coverage_survives_restart_without_raw_snapshot(self):
         response = {'items': [], 'coverage': {'complete': False, 'reason': 'page_limit', 'pages': 5,
                     'items': 120, 'scope': 'overlap_window', 'private_internal': 'must not return'}}

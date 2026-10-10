@@ -21,7 +21,7 @@ const message = computed(() => props.progress?.label || {
 }[props.status] || '等待开始')
 const valueText = computed(() => {
   if (percent.value != null) return `${Math.floor(percent.value)}%`
-  return active.value ? '进行中' : { failed: '失败', cancelled: '已取消', interrupted: '已中断' }[props.status] || '等待中'
+  return active.value ? '总量未知' : { failed: '失败', cancelled: '已取消', interrupted: '已中断' }[props.status] || '等待中'
 })
 
 function formatBytes(value) {
@@ -60,7 +60,9 @@ const detail = computed(() => {
       :aria-valuetext="`${message}，${valueText}${detail ? '，' + detail : ''}`"
       :aria-busy="active"
     >
-      <span class="progress-fill" :class="{ indeterminate }" :style="{ width: indeterminate ? '35%' : `${percent ?? 0}%` }"></span>
+      <!-- Unknown activity has no measured width and never grows into a percentage. -->
+      <span v-if="indeterminate" class="progress-indeterminate" aria-hidden="true"></span>
+      <span v-else class="progress-fill" :style="{ width: `${percent ?? 0}%` }" aria-hidden="true"></span>
     </div>
     <div v-if="detail" class="progress-detail">{{ detail }}</div>
   </div>
@@ -71,18 +73,16 @@ const detail = computed(() => {
 .progress-caption { display: flex; align-items: baseline; gap: 12px; margin-bottom: 7px; font-size: 12px; color: var(--text-2); }
 .progress-message { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .progress-value { flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.progress-track { height: 6px; overflow: hidden; border-radius: 999px; background: rgba(0, 113, 227, .09); }
-.progress-fill { display: block; height: 100%; border-radius: inherit; background: var(--blue); transition: width 250ms var(--ease), background 250ms var(--ease); }
-.progress-fill.indeterminate { animation: progress-slide 1.4s ease-in-out infinite; }
+.progress-track { position: relative; height: 6px; overflow: hidden; border-radius: 999px; background: rgba(0, 113, 227, .09); }
+.progress-fill { display: block; height: 100%; border-radius: inherit; background: var(--blue); transition: width 250ms var(--ease), background 250ms var(--ease) !important; }
+/* Explicit user preference: progress alone animates independently of OS motion settings. */
+.progress-indeterminate { position: absolute; inset: 0; }
+.progress-indeterminate::before { content: ''; display: block; width: 30%; height: 100%; border-radius: 999px; background: var(--blue); animation: progress-slide 1.4s linear infinite !important; }
 .progress-detail { margin-top: 6px; font-size: 11.5px; line-height: 1.5; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .is-success .progress-fill { background: var(--green); }
 .is-failed .progress-fill { background: var(--red); }
 .is-failed .progress-track { background: rgba(255, 59, 48, .1); }
 .is-failed .progress-message { color: #c52a20; }
 .is-cancelled .progress-fill, .is-queued .progress-fill, .is-interrupted .progress-fill { background: #a1a1a6; }
-@keyframes progress-slide { from { transform: translateX(-100%); } to { transform: translateX(386%); } }
-@media (prefers-reduced-motion: reduce) {
-  .progress-fill { transition: none; }
-  .progress-fill.indeterminate { animation: none; transform: translateX(93%); }
-}
+@keyframes progress-slide { from { transform: translateX(-100%); } to { transform: translateX(333.334%); } }
 </style>

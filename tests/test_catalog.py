@@ -78,6 +78,77 @@ class CatalogTests(unittest.TestCase):
         self.assertNotEqual(a['id'], b['id'])
         self.assertEqual(a['item_id'], 'PostA')
 
+    def test_cover_live_path_tracks_exact_poster_and_clears_for_regular_cover(self):
+        folder = self.fixture()
+        (folder / "live").mkdir()
+        for name in ("live01", "live02"):
+            (folder / "live" / (name + ".mov")).write_bytes(b"movie")
+            (folder / "live" / (name + ".jpg")).write_bytes(b"poster")
+        (folder / "video.mp4").write_bytes(b"video")
+        (folder / "video_cover.jpg").write_bytes(b"video poster")
+        self.scan()
+        item = self.entries()["items"][0]
+        for cover, kind, expected in (("live/live01.jpg", "live", "live/live01.mov"),
+                                      ("live/live02.jpg", "live", "live/live02.mov"),
+                                      ("photo/img01.jpg", "image", None),
+                                      ("video_cover.jpg", "video", None), (None, None, None)):
+            catalog.update_cover(item["id"], cover, kind, database=self.database)
+            summary = self.entries()["items"][0]
+            detail = catalog.get_entry(item["id"], database=self.database)
+            self.assertEqual(summary["cover_live_rel"], expected)
+            self.assertEqual(detail["cover_live_rel"], expected)
+            self.assertNotIn("gallery", summary)
+            self.assertNotIn("assets", summary)
+
+    def test_live_cover_page_uses_one_bounded_batch_query_not_per_entry_details(self):
+        for number in range(4):
+            folder = self.fixture(f"26-10-0{number + 1}", item=f"Item{number}")
+            (folder / "live").mkdir()
+            (folder / "live" / "live01.mov").write_bytes(b"movie")
+            (folder / "live" / "live01.jpg").write_bytes(b"poster")
+        self.scan()
+        for item in self.entries()["items"]:
+            catalog.update_cover(item["id"], "live/live01.jpg", "live", database=self.database)
+        queries = []
+        connect = catalog.db.connect
+        @contextlib.contextmanager
+        def traced(database=None):
+            with connect(database) as connection:
+                connection.set_trace_callback(queries.append)
+                yield connection
+        with patch.object(catalog.db, "connect", traced), patch.object(catalog, "get_entry", side_effect=AssertionError("details are not list data")):
+            for size in (1, 3):
+                queries.clear()
+                page = self.entries(page_size=size)
+                reads = [query for query in queries if query.lstrip().upper().startswith(("SELECT", "WITH"))]
+                self.assertEqual(len(reads), 3)  # count, bounded page, bounded Live pairing
+                self.assertEqual(len(page["items"]), size)
+                self.assertTrue(all(item["cover_live_rel"] == "live/live01.mov" for item in page["items"]))
+                self.assertEqual(sum("WITH cover_page" in query for query in reads), 1)
+
+    def test_cover_analysis_event_pairing_matches_persisted_cover_and_discards_stale_work(self):
+        import numpy as np
+        from app import config, library_service, media_library, thumbs
+        folder = self.fixture()
+        (folder / "live").mkdir()
+        (folder / "live" / "live01.mov").write_bytes(b"movie")
+        (folder / "live" / "live01.jpg").write_bytes(b"poster")
+        self.scan()
+        item = self.entries()["items"][0]
+        detail = catalog.get_entry(item["id"], database=self.database)
+        with patch.object(config, "DB_PATH", str(self.database)), patch.object(config, "MAINTENANCE_ACTIVE", False), \
+                patch.object(library_service, "_stopping", False), patch.object(catalog, "get_entry", return_value=detail), \
+                patch.object(thumbs, "get_thumb", return_value="fixture-thumb"), \
+                patch.object(thumbs, "_imread_unicode", return_value=np.zeros((10, 10, 3), dtype=np.uint8)), \
+                patch.object(media_library, "_get_face_detector", return_value=None):
+            for cover, kind, expected in (("live/live01.jpg", "live", "live/live01.mov"), ("photo/img01.jpg", "image", None)):
+                detail["cover_candidates"] = [{"rel": cover, "kind": kind}]
+                event = library_service._analyze(item["id"], item["signature"])
+                self.assertEqual(event["cover_live_rel"], expected)
+                self.assertEqual(self.entries()["items"][0]["cover_live_rel"], expected)
+            with patch.object(catalog, "update_cover", return_value=False):
+                self.assertIsNone(library_service._analyze(item["id"], item["signature"]))
+
     def test_marked_partial_and_complete_text_only_preserve_identity(self):
         partial = archive.begin_entry(str(self.root), "Example", "26-10-09", "weibo", "Ab123")
         (Path(partial.folder) / "context.md").write_text("# text only", encoding="utf-8")

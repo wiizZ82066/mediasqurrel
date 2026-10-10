@@ -140,10 +140,12 @@ def _analyze(entry_id, signature):
         if score > best_score:
             best, best_score, best_face, best_kind = relative, score, face, kind
     if best and not _stopping and not config.MAINTENANCE_ACTIVE:
-        catalog.update_cover(entry_id, best, 'video' if best_kind.startswith('video') else best_kind,
-                             best_face, signature=signature)
+        if not catalog.update_cover(entry_id, best, 'video' if best_kind.startswith('video') else best_kind,
+                                    best_face, signature=signature):
+            return  # A newer index revision superseded this analysis.
         return {'id': entry_id, 'cover': best, 'cover_type': 'video' if best_kind.startswith('video') else best_kind,
-                'cover_face': best_face, 'cover_signature': signature}
+                'cover_face': best_face, 'cover_signature': signature,
+                'cover_live_rel': catalog.live_for_cover(entry.get('assets', ()), best)}
 
 
 def enrich_page(items):

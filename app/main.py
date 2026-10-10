@@ -410,6 +410,25 @@ def api_douyin_auth_status():
     return douyin_auth.auth_status()
 
 
+@app.get("/api/subs/weibo-auth")
+def api_weibo_auth_status():
+    """Only local login metadata; never expose saved credentials."""
+    from . import weibo_auth
+    return weibo_auth.auth_status()
+
+
+@app.post("/api/subs/login-weibo")
+async def api_login_weibo():
+    """A visible login window opens only after the user's explicit click."""
+    from . import weibo_auth
+    try:
+        return await weibo_auth.login_async()
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        raise HTTPException(502, redact_text(str(error))) from error
+
+
 @app.get('/api/subs/{sub_id}/avatar')
 def api_avatar(sub_id: int):
     from .avatars import get_avatar

@@ -11,13 +11,13 @@ from app import sub_search as search
 
 
 class SearchParsingTests(unittest.TestCase):
-    def test_explicit_identity_and_homepage_do_not_launch_browser(self):
+    def test_explicit_identity_parser_does_not_launch_browser(self):
         cases = [('weibo', 'UID: 123456', '123456'),
                  ('weibo', 'https://weibo.com/u/123456?from=profile', '123456'),
                  ('douyin', 'https://www.douyin.com/user/MS4wLjABAAAAfixture123?token=private', 'MS4wLjABAAAAfixture123')]
         with patch.object(search, 'sync_playwright', side_effect=AssertionError('browser not needed')):
             for platform, value, identity in cases:
-                result = search.search_online(platform, value)[0]
+                result = search.parse_identity(platform, value)
                 self.assertEqual(result['blogger_id'], identity)
                 self.assertTrue(result['direct_identity'])
                 self.assertFalse(result['verified'])
@@ -28,6 +28,16 @@ class SearchParsingTests(unittest.TestCase):
                       'https://user:pass@weibo.com/u/123', 'https://weibo.com/u/123/extra'):
             with self.assertRaises(ValueError):
                 search.parse_identity('weibo', value)
+
+    def test_direct_weibo_online_search_resolves_profile(self):
+        profile = {'nickname': 'Platform Name', 'avatar_source': 'https://tvax1.sinaimg.cn/avatar.jpg',
+                   'homepage': 'https://weibo.com/u/123456', 'followers': 42, 'verified': False, 'desc': 'Example'}
+        with patch.object(search, 'fetch_profile', return_value=profile) as fetch:
+            result = search.search_online('weibo', 'UID: 123456')[0]
+        self.assertEqual(fetch.call_args.args, ('123456',))
+        self.assertEqual(result['nickname'], 'Platform Name')
+        self.assertEqual(result['avatar'], profile['avatar_source'])
+        self.assertTrue(result['profile_verified'])
 
     def test_local_authors_use_only_index_with_200_author_cap(self):
         connection = sqlite3.connect(':memory:')

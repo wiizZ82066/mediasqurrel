@@ -53,7 +53,7 @@ class ParserTests(unittest.TestCase):
 
     def test_weibo_nested_cards_retweets_and_timestamp(self):
         payload = {'ok': 1, 'data': {'cards': [{'card_group': [
-            {'mblog': {'bid': 'pinned', 'isTop': 1, 'text': '<p>Test</p>', 'created_at': 'Wed Oct 01 08:00:00 +0800 2025'}},
+            {'mblog': {'bid': 'pinned', 'user': {'id': 123}, 'isTop': 1, 'text': '<p>Test</p>', 'created_at': 'Wed Oct 01 08:00:00 +0800 2025'}},
             {'mblog': {'bid': 'repost', 'retweeted_status': {'id': 'source'}}}]}]}}
         items, _more = weibo.parse_page(payload, '123')
         self.assertEqual([item['item_id'] for item in items], ['pinned'])

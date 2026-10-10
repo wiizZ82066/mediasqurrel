@@ -151,7 +151,9 @@ def diagnostics():
     from . import douyin_auth
     saved = douyin_auth.load_cookies()
     add('douyin_login', '抖音登录态', 'unverified', '有本地登录信息，平台是否仍接受尚未联网验证' if saved else '未保存登录信息', '需要时在订阅页打开登录窗口')
-    add('weibo_login', '微博登录态', 'unverified', '当前下载器使用浏览器页面访问；未验证平台访问状态', '用你确认的公开内容链接进行独立下载检测')
+    from . import weibo_auth
+    weibo_saved = weibo_auth.load_cookies()
+    add('weibo_login', '微博登录态', 'unverified', '有本地登录信息，平台是否仍接受尚未联网验证' if weibo_saved else '未保存登录信息；公开主页可能允许访客访问', '订阅扫描提示需要登录时，在订阅页点击登录微博；下载可用性另做独立检测')
     add('network_download', '真实联网下载', 'not_run', '不会自动访问平台或使用历史链接', '输入测试链接并确认后，结果保存在独立检测目录')
     return {'checks': checks, 'versions': versions()}
 
