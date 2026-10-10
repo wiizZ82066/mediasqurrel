@@ -23,7 +23,11 @@ const task = ref(saved.task)
 const entry = ref(null)
 const previewError = ref('')
 const previewLoading = ref(false)
+const previewMessage = ref('')
+let previewController = null
+let previewTaskId = null
 let previewSequence = 0
+let trackedRevision = 0
 let inputRevision = 0
 let pollTimer = null
 let disposed = false
@@ -36,6 +40,7 @@ let browseSequence = 0
 const statusLabels = { queued:'排队中', running:'下载中', success:'下载完成', failed:'下载失败', cancelled:'已取消', interrupted:'运行中断' }
 function defaults(script) { return Object.fromEntries((script?.params || []).map(p => [p.name, p.default ?? (p.kind === 'switch' ? false : '')])) }
 function select(id) {
+  if (selectedId.value !== id) cancelPreview()
   if (selectedId.value) saved.drafts[selectedId.value] = { ...form.value }
   selectedId.value = id; saved.selectedId = id
   form.value = { ...defaults(scripts.value.find(s => s.id === id)), ...(saved.drafts[id] || {}) }
@@ -106,40 +111,64 @@ async function submit() {
     if (selectedId.value === 'weibo') params.url = String(params.url || '').match(/https?:\/\/[^\s<>"，。！？）)]+/i)?.[0] || params.url
     const created = await api.createTask(selectedId.value, params)
     task.value = created; saved.task = created; upsertTaskSummary(created)
-    previewSequence++; entry.value = null; previewError.value = ''; previewLoading.value = false
+    cancelPreview(); entry.value = null; previewError.value = ''; previewMessage.value = ''
     toast('已创建下载任务', 'success')
     if (created.status === 'success') loadPreview()
   } catch(e) { toast(e.message, 'error') }
   finally { submitting.value = false }
 }
+function cancelPreview() {
+  ++previewSequence
+  previewController?.abort(); previewController = null; previewTaskId = null
+  previewLoading.value = false; previewMessage.value = ''
+}
 async function loadPreview() {
   const current = task.value
-  if (current?.status !== 'success') return
-  const sequence = ++previewSequence
-  previewLoading.value = true; previewError.value = ''
+  if (disposed || current?.status !== 'success' || (previewController && previewTaskId === current.id)) return
+  cancelPreview()
+  const controller = new AbortController()
+  previewController = controller; previewTaskId = current.id
+  const sequence = previewSequence
+  const active = () => !disposed && sequence === previewSequence && task.value?.id === current.id
+  previewLoading.value = true; previewError.value = ''; previewMessage.value = '正在读取媒体索引…'
   try {
-    const located = await api.libraryLocate({ task_id: current.id })
-    const detail = await api.libraryEntry(located.entry_id)
-    if (disposed || sequence !== previewSequence || task.value?.id !== current.id) return
-    entry.value = detail
-  } catch(e) { if (sequence === previewSequence) previewError.value = '媒体索引尚不可用，可查看任务记录或稍后重试。' }
-  finally { if (sequence === previewSequence) previewLoading.value = false }
+    const located = await api.libraryLocate({ task_id: current.id }, controller.signal, {
+      onIndexing: message => { if (active()) previewMessage.value = message },
+    })
+    if (!active()) return
+    const detail = await api.libraryEntry(located.entry_id, controller.signal)
+    if (!active()) return
+    entry.value = detail; previewMessage.value = ''
+  } catch(e) {
+    if (!active() || e.name === 'AbortError') return
+    if (e.code === 'LIBRARY_INDEXING') previewMessage.value = e.message
+    else { previewError.value = '无法读取本次内容：' + e.message; previewMessage.value = '' }
+  } finally {
+    if (active()) { previewLoading.value = false; previewController = null; previewTaskId = null }
+  }
+}
+function resumePreview() {
+  if (task.value?.status === 'success' && task.value.script_id === selectedId.value && !entry.value && !previewController) loadPreview()
 }
 function updateTask(summary) {
   if (summary?.id !== task.value?.id) return
   const becameSuccess = summary.status === 'success' && task.value?.status !== 'success'
+  ++trackedRevision
   task.value = { ...task.value, ...summary }; saved.task = task.value
-  if (becameSuccess) loadPreview()
+  if (task.value.status !== 'success') cancelPreview()
+  else if (becameSuccess) resumePreview()
 }
 const unsubscribe = onTaskEvent(msg => {
   if (msg.type === 'task_update') updateTask(msg.task)
   if (msg.type === 'library_cover' && entry.value?.id === msg.entry.id) Object.assign(entry.value, msg.entry)
   if (msg.type === 'task_progress' && msg.task_id === task.value?.id) updateTask({ id: msg.task_id, progress: msg.progress })
-  if (msg.type === 'reconnect') refreshTrackedTask()
+  if (msg.type === 'library_indexed' && msg.task_id === task.value?.id) resumePreview()
+  if (msg.type === 'reconnect') refreshTrackedTask().then(resumePreview)
 })
 async function refreshTrackedTask() {
   if (!task.value?.id) return
-  try { const summary = await api.task(task.value.id); if (!disposed) updateTask(summary) } catch { /* Task page remains available. */ }
+  const id = task.value.id; const revision = trackedRevision
+  try { const summary = await api.task(id); if (!disposed && task.value?.id === id && revision === trackedRevision) updateTask(summary) } catch { /* Task page remains available. */ }
 }
 const coverUrl = computed(() => entry.value?.cover ? '/api/thumb?' + new URLSearchParams({ p: `${entry.value.rel_dir}/${entry.value.cover}`, root_id:entry.value.root_id, w:720 }) : '')
 function openLibrary() { if (entry.value?.id) router.push({ path:'/library', query:{ entry_id:entry.value.id } }) }
@@ -161,10 +190,10 @@ onMounted(async () => {
   catch(e) { loadError.value=e.message }
   api.libraryRoots().then(r=>{rootPath.value=r.items?.find(i=>i.id===r.default_root_id)?.path || ''}).catch(()=>{})
   api.settings().then(result=>{defaultOutput.value=result.paths?.default_download_dir || result.paths?.library_root || ''}).catch(()=>{})
-  await refreshTrackedTask(); if(task.value?.status==='success') loadPreview()
+  await refreshTrackedTask(); if(disposed)return; resumePreview()
   pollTimer=setInterval(()=>{if(!store.wsConnected || ['queued','running'].includes(task.value?.status)) refreshTrackedTask()},5000)
 })
-onBeforeUnmount(()=>{disposed=true; previewSequence++; clearInterval(pollTimer); unsubscribe(); window.removeEventListener('keydown',onKey)})
+onBeforeUnmount(()=>{disposed=true; cancelPreview(); clearInterval(pollTimer); unsubscribe(); window.removeEventListener('keydown',onKey)})
 </script>
 <template>
   <div class="download-view">
@@ -206,7 +235,7 @@ onBeforeUnmount(()=>{disposed=true; previewSequence++; clearInterval(pollTimer);
           <div v-if="task.status==='success'" class="completed-preview">
             <button v-if="entry" class="cover-button" aria-label="在媒体库打开本次下载" @click="openLibrary"><img v-if="coverUrl" :src="coverUrl" alt="本次下载的内容封面" :style="entry.cover_face?{objectPosition:`${entry.cover_face.x*100}% ${entry.cover_face.y*100}%`}:{}"><span v-else class="text-cover"><AppIcon name="library" :size="60"/>文字内容已保存</span></button>
             <p v-if="entry" class="result-caption">{{ entry.author }} · {{ entry.sort_at || entry.date_dir }}<span>{{ entry.text_preview || entry.text?.slice(0,140) }}</span></p>
-            <p v-if="previewLoading" class="muted">正在读取媒体索引…</p><p v-if="previewError" class="muted">{{ previewError }} <button class="text-button" @click="loadPreview">重试</button></p>
+            <p v-if="previewMessage" class="muted" role="status">{{ previewMessage }} <button v-if="!previewLoading" class="text-button" @click="loadPreview">继续查看</button></p><p v-if="previewError" class="muted" role="alert">{{ previewError }} <button class="text-button" @click="loadPreview">重试</button></p><p v-if="!entry && !previewLoading && !previewError && !previewMessage" class="muted">可继续加载此任务的内容。<button class="text-button" @click="loadPreview">加载预览</button></p>
           </div>
           <div v-else class="result-empty pending"><AppIcon :name="task.status==='running'?'download':'tasks'" :size="58"/><p>{{ ['running','queued'].includes(task.status)?'完成后在这里显示本次内容的封面。':'此次任务尚未完成，可在任务记录中查看原因或重试。' }}</p></div>
           <div class="form-actions"><button class="btn btn-ghost btn-sm" @click="openTask">定位任务</button><button v-if="entry" class="btn btn-primary btn-sm" @click="openLibrary">打开媒体库</button><button v-if="['queued','running'].includes(task.status)" class="btn btn-danger-ghost btn-sm" @click="api.cancelTask(task.id).then(updateTask).catch(e=>toast(e.message,'error'))">取消下载</button></div>

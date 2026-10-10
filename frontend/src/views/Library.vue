@@ -14,6 +14,8 @@ const dateFrom=ref(saved.dateFrom || ''), dateTo=ref(saved.dateTo || ''), groupB
 const authors=ref([]), authorQuery=ref(''), authorPage=ref(1), authorTotal=ref(0)
 const loading=ref(false), error=ref(''), scan=ref(null), scanBusy=ref(false), changed=ref(false)
 const gallery=ref(null), galleryIndex=ref(0), detailBusy=ref(false), detailError=ref(''), livePlaying=ref(false), mediaError=ref('')
+const locateBusy=ref(false), locateMessage=ref(''), detailNotice=ref('')
+let locateController=null, locateSequence=0
 const viewerEl=ref(null), closeButton=ref(null), liveVideo=ref(null), filtersOpen=ref(false), cardLiveId=ref(null), cardLiveVideo=ref(null)
 let livePlaybackSequence=0, cardLiveSequence=0
 const pageSize=60
@@ -23,7 +25,10 @@ const activeScan=computed(()=>['queued','running'].includes(scan.value?.status))
 const currentItem=computed(()=>gallery.value?.gallery?.[galleryIndex.value] || null)
 const visibleThumbnails=computed(()=>{const items=gallery.value?.gallery || []; const start=Math.max(0,Math.min(galleryIndex.value-4,items.length-9));return items.slice(start,start+9).map((item,i)=>({...item,index:start+i}))})
 const selectedRoot=computed(()=>roots.value.find(root=>root.id===rootId.value))
-const unsubscribe=onTaskEvent(message=>{if(message.type!=='library_cover')return;const update=message.entry;for(const item of [...entries.value,...(gallery.value?[gallery.value]:[])])if(item.id===update.id && (!item.signature || !update.cover_signature || item.signature===update.cover_signature))Object.assign(item,update)})
+const unsubscribe=onTaskEvent(message=>{
+  if(message.type==='library_cover'){const update=message.entry;for(const item of [...entries.value,...(gallery.value?[gallery.value]:[])])if(item.id===update.id && (!item.signature || !update.cover_signature || item.signature===update.cover_signature))Object.assign(item,update)}
+  if(ready && route.query.task_id && !gallery.value && !locateBusy.value && !detailBusy.value && (message.type==='reconnect' || (message.type==='library_indexed' && message.task_id===String(route.query.task_id))))locateRoute()
+})
 const datesLabel={published:'发布时间',directory:'目录日期',downloaded:'下载时间',imported:'导入时间'}
 const filterSummary=computed(()=>{
   const parts=[selectedRoot.value?.label || '媒体目录']
@@ -83,8 +88,9 @@ async function pollScan() {
 async function startScan() {scanBusy.value=true;try{await api.libraryScan(rootId.value);await pollScan();toast('已开始建立索引，原文件保持原位','info')}catch(e){toast(e.message,'error')}finally{scanBusy.value=false}}
 async function cancelScan(){try{await api.cancelLibraryScan(scan.value.id);await pollScan()}catch(e){toast(e.message,'error')}}
 async function openEntry(id) {
+  cancelLocate()
   stopCardLive()
-  detailController?.abort();detailController=new AbortController();const sequence=++detailSequence;detailBusy.value=true;detailError.value='';restoreFocus=document.activeElement
+  detailController?.abort();detailController=new AbortController();const sequence=++detailSequence;detailBusy.value=true;detailError.value='';detailNotice.value='';restoreFocus=document.activeElement
   try{const result=await api.libraryEntry(id,detailController.signal);if(disposed || sequence!==detailSequence)return;stopLive();gallery.value=result;document.querySelector('.layout')?.setAttribute('inert','');galleryIndex.value=0;livePlaying.value=false;mediaError.value='';await nextTick();closeButton.value?.focus();preloadNeighbors()}
   catch(e){if(sequence===detailSequence && e.name!=='AbortError')detailError.value=e.message}
   finally{if(sequence===detailSequence)detailBusy.value=false}
@@ -133,12 +139,28 @@ function toggleLive(){if(livePlaying.value)stopLive();else startLive()}
 function liveError(event){if(event.target!==liveVideo.value)return;stopLive();mediaError.value='Live 图无法读取或浏览器不支持此格式，请检查原文件。'}
 function navigateMedia(delta){const next=galleryIndex.value+delta;if(next<0 || next>=(gallery.value?.gallery?.length || 0))return;galleryIndex.value=next}
 watch(galleryIndex,()=>{stopLive();mediaError.value='';preloadNeighbors()},{flush:'sync'})
-function closeGallery(){stopLive();document.querySelector('.layout')?.removeAttribute('inert');gallery.value=null;clearPreloads();restoreFocus?.focus?.({preventScroll:true});if(route.query.entry_id || route.query.task_id || route.query.entry)router.replace({path:'/library',query:{}})}
+function closeGallery(){cancelLocate();++detailSequence;detailController?.abort();detailBusy.value=false;stopLive();document.querySelector('.layout')?.removeAttribute('inert');gallery.value=null;clearPreloads();restoreFocus?.focus?.({preventScroll:true});if(route.query.entry_id || route.query.task_id || route.query.entry)router.replace({path:'/library',query:{}})}
 function onKey(event){if(!gallery.value)return;if(event.key==='Escape'){event.preventDefault();closeGallery()}else if(event.key==='ArrowRight'){event.preventDefault();navigateMedia(1)}else if(event.key==='ArrowLeft'){event.preventDefault();navigateMedia(-1)}else if(event.key==='Tab'){const controls=[...viewerEl.value.querySelectorAll('button:not(:disabled),[href],video[controls],summary,[tabindex]:not([tabindex="-1"])')];const first=controls[0],last=controls.at(-1);if(event.shiftKey && document.activeElement===first){event.preventDefault();last?.focus()}else if(!event.shiftKey && document.activeElement===last){event.preventDefault();first?.focus()}}}
-async function locateRoute(){try{if(route.query.entry_id)return await openEntry(String(route.query.entry_id));if(route.query.task_id){const located=await api.libraryLocate({task_id:String(route.query.task_id)});return await openEntry(located.entry_id)}if(route.query.author && route.query.entry){const located=await api.libraryLocate({rel_dir:`${route.query.author}/${route.query.entry}`,root_id:rootId.value});await openEntry(located.entry_id)}}catch(e){detailError.value='无法定位该内容：'+e.message}}
-watch(()=>route.fullPath,()=>{if(ready)locateRoute()})
-onMounted(async()=>{contentEl=document.querySelector('.content');window.addEventListener('keydown',onKey);try{const result=await api.libraryRoots();roots.value=result.items;if(!roots.value.some(item=>item.id===rootId.value))rootId.value=result.default_root_id || roots.value[0]?.id || '';await loadEntries({restore:!!saved.entries});await loadAuxiliary();ready=true;await locateRoute();await pollScan();scanTimer=setInterval(()=>{if(activeScan.value)pollScan()},2000)}catch(e){error.value=e.message;ready=true}})
-onBeforeUnmount(()=>{stopCardLive();stopLive();unsubscribe();document.querySelector('.layout')?.removeAttribute('inert');remember();disposed=true;listController?.abort();detailController?.abort();auxController?.abort();clearTimeout(debounceTimer);clearTimeout(authorTimer);clearInterval(scanTimer);clearPreloads();window.removeEventListener('keydown',onKey)})
+function cancelLocate(){++locateSequence;locateController?.abort();locateController=null;locateBusy.value=false;locateMessage.value=''}
+async function locateRoute(){
+  cancelLocate();++detailSequence;detailController?.abort();detailBusy.value=false;detailError.value='';detailNotice.value=''
+  const target={...route.query}
+  if(target.entry_id)return openEntry(String(target.entry_id))
+  const params=target.task_id?{task_id:String(target.task_id)}:target.author && target.entry?{rel_dir:String(target.author)+'/'+String(target.entry),root_id:rootId.value}:null
+  if(!params || disposed)return
+  const controller=new AbortController();locateController=controller
+  const sequence=locateSequence, path=route.fullPath
+  const active=()=>!disposed && sequence===locateSequence && route.fullPath===path
+  locateBusy.value=true;locateMessage.value='正在定位媒体内容…'
+  try{
+    const located=await api.libraryLocate(params,controller.signal,{onIndexing:message=>{if(active())locateMessage.value=message}})
+    if(active())await openEntry(located.entry_id)
+  }catch(e){if(active() && e.name!=='AbortError'){if(e.code==='LIBRARY_INDEXING')detailNotice.value=e.message;else detailError.value='无法定位该内容：'+e.message}}
+  finally{if(active()){locateBusy.value=false;locateMessage.value='';locateController=null}}
+}
+watch(()=>route.fullPath,()=>{if(ready)locateRoute()},{flush:'sync'})
+onMounted(async()=>{contentEl=document.querySelector('.content');window.addEventListener('keydown',onKey);try{const result=await api.libraryRoots();roots.value=result.items;if(!roots.value.some(item=>item.id===rootId.value))rootId.value=result.default_root_id || roots.value[0]?.id || '';await loadEntries({restore:!!saved.entries});await loadAuxiliary();ready=true;await locateRoute();if(disposed)return;await pollScan();if(disposed)return;scanTimer=setInterval(()=>{if(activeScan.value)pollScan()},2000)}catch(e){error.value=e.message;ready=true}})
+onBeforeUnmount(()=>{stopCardLive();stopLive();unsubscribe();document.querySelector('.layout')?.removeAttribute('inert');remember();disposed=true;cancelLocate();++detailSequence;listController?.abort();detailController?.abort();auxController?.abort();clearTimeout(debounceTimer);clearTimeout(authorTimer);clearInterval(scanTimer);clearPreloads();window.removeEventListener('keydown',onKey)})
 </script>
 <template>
   <div class="library-view">
@@ -152,6 +174,7 @@ onBeforeUnmount(()=>{stopCardLive();stopLive();unsubscribe();document.querySelec
     </div>
     <div v-if="viewMode==='author' && roots.length" v-show="filtersOpen" class="author-panel"><label><span class="sr-only">筛选作者</span><input v-model="authorQuery" class="input" type="search" placeholder="筛选作者昵称"></label><div class="author-chips"><button :class="{selected:!author}" @click="author=''">全部作者</button><button v-for="item in authors" :key="item.name" :class="{selected:author===item.name}" @click="author=item.name">{{ item.name }} <span>{{ item.count }}</span></button></div><div v-if="authorTotal>30" class="author-pager"><button class="text-button" :disabled="authorPage===1" @click="authorPage--">上一组作者</button><span>{{ authorPage }} / {{ Math.ceil(authorTotal/30) }}</span><button class="text-button" :disabled="authorPage*30>=authorTotal" @click="authorPage++">下一组作者</button></div></div>
     <div v-if="scan" class="scan-note"><div><AppIcon name="scan" :size="20"/>索引扫描：{{ {running:'进行中',queued:'排队中',success:'完成',failed:'失败',cancelled:'已取消',interrupted:'已中断'}[scan.status] || scan.status }} · 已检查 {{ scan.processed || 0 }} 个目录，更新 {{ scan.changed || 0 }} 条<span v-if="scan.error" class="error-text"> · {{ scan.error }}</span><button v-if="activeScan" class="text-button" @click="cancelScan">取消</button></div><ActivityProgress v-if="activeScan" :status="scan.status" :progress="{completed:scan.processed,total:scan.total,unit:'个目录',label:'后台建立媒体索引'}" label="媒体索引进度"/></div>
+    <p v-if="locateBusy" class="list-note" role="status">{{ locateMessage }}</p><p v-if="detailNotice" class="list-note" role="status">{{ detailNotice }} <button class="text-button" @click="locateRoute">继续查看</button></p>
     <p v-if="detailBusy" class="list-note" role="status">正在读取内容详情…</p><p v-if="detailError" class="error-text" role="alert">{{ detailError }}</p>
     <div v-if="error" class="card error-text" role="alert">{{ error }} <button class="text-button" @click="loadEntries()">重新加载</button></div>
     <p v-if="loading" class="list-note" role="status">正在读取媒体索引…</p>

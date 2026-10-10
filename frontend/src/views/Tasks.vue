@@ -20,6 +20,10 @@ const loading = ref(false)
 const error = ref('')
 const changed = ref(false)
 const busy = reactive({})
+const locatingTaskId = ref(null)
+const locateNotice = ref('')
+let locateController = null
+let locateSequence = 0
 const logs = reactive({})
 const logElements = new Map()
 const logRequests = new Map()
@@ -310,11 +314,26 @@ async function act(task, action) {
 }
 
 async function gotoLibrary(task) {
+  if (disposed || (locateController && locatingTaskId.value === task.id)) return
   rememberList()
+  locateController?.abort()
+  const controller = new AbortController()
+  locateController = controller
+  const sequence = ++locateSequence
+  locatingTaskId.value = task.id; locateNotice.value = '正在定位媒体内容…'
   try {
-    const located = await api.libraryLocate({ task_id: task.id })
+    const located = await api.libraryLocate({ task_id: task.id }, controller.signal, {
+      onIndexing: message => { if (!disposed && sequence === locateSequence) locateNotice.value = message },
+    })
+    if (disposed || sequence !== locateSequence) return
     router.push({ path: '/library', query: { entry_id: located.entry_id } })
-  } catch (error) { toast('此任务尚未关联媒体索引：' + error.message, 'info') }
+  } catch (error) {
+    if (!disposed && sequence === locateSequence && error.name !== 'AbortError') {
+      toast(error.code === 'LIBRARY_INDEXING' ? '媒体库索引仍在同步，可稍后再次查看。' : '无法定位此任务的内容：' + error.message, 'info')
+    }
+  } finally {
+    if (sequence === locateSequence) { locateController = null; locatingTaskId.value = null; locateNotice.value = '' }
+  }
 }
 
 onMounted(async () => {
@@ -331,6 +350,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   rememberList()
   disposed = true
+  ++locateSequence; locateController?.abort()
   unsubscribe()
   clearTimeout(debounceTimer)
   pageRequest?.abort()
@@ -376,12 +396,13 @@ onBeforeUnmount(() => {
           <button v-if="isActive(task)" class="btn btn-danger-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'cancel')">取消任务</button>
           <template v-else-if="!task.hidden">
             <button v-if="['failed', 'cancelled', 'interrupted'].includes(task.status)" class="btn btn-primary btn-sm" :disabled="busy[task.id]" @click="act(task, 'retry')">创建重试任务</button>
-            <button v-if="task.output_rel" class="btn btn-ghost btn-sm" @click="gotoLibrary(task)">在媒体库查看</button>
+            <button v-if="task.output_rel" class="btn btn-ghost btn-sm" :disabled="locatingTaskId === task.id" @click="gotoLibrary(task)">{{ locatingTaskId === task.id ? '正在同步索引…' : '在媒体库查看' }}</button>
             <button class="btn btn-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'hide')">隐藏任务记录</button>
             <button class="btn btn-danger-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'deleteLogs')">删除详细日志</button>
           </template>
           <button v-if="task.hidden" class="btn btn-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'restore')">恢复任务记录</button>
         </div>
+        <p v-if="locatingTaskId === task.id" class="task-outdir" role="status">{{ locateNotice }}</p>
         <p v-if="task.output_rel || task.output_dir" class="task-outdir">输出：{{ task.output_rel || task.output_dir }}</p>
         <section v-if="logs[task.id]" :id="`logs-${task.id}`" class="log-panel" aria-label="任务详细日志">
           <div class="log-tools">

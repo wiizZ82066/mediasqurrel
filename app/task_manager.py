@@ -472,7 +472,8 @@ async def _run(task_id):
                     _save(task)
                 except Exception:
                     pass
-            await broadcast({'type': 'task_update', 'task': public_task(task)})
+            # Start completion side effects (including background indexing)
+            # before clients react to success. Do not wait for the full scan.
             callbacks = [*ON_TASK_FINISHED, *(ON_TASK_DONE if task['status'] == 'success' else [])]
             for callback in callbacks:
                 try:
@@ -481,6 +482,7 @@ async def _run(task_id):
                         await result
                 except Exception as error:
                     print('[tasks] 完成回调异常: ' + redact_text(str(error)))
+            await broadcast({'type': 'task_update', 'task': public_task(task)})
             if _store and not _storage_error and not _stopping:
                 try:
                     archiving = asyncio.create_task(asyncio.to_thread(_store.archive, task_id))

@@ -3,7 +3,7 @@ import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from . import catalog, config, library_service as service, media_jobs, task_manager
 from .security import media_path
@@ -45,15 +45,30 @@ def dates(root_id: str | None = None, author: str | None = None, q: str = '', gr
 
 
 @router.get('/api/library/locate')
-def locate(task_id: str | None = None, rel_dir: str | None = None, root_id: str | None = None):
+async def locate(task_id: str | None = None, rel_dir: str | None = None, root_id: str | None = None):
     if task_id:
-        entry = service.task_entry(task_manager.get_task(task_id))
+        task = await asyncio.to_thread(task_manager.get_task, task_id)
+        if not task:
+            raise HTTPException(404, '任务记录不存在')
+        entry = await asyncio.to_thread(service.task_entry, task)
+        if not entry and service.task_indexing(task):
+            return JSONResponse({'status': 'indexing', 'message': '下载已完成，正在同步媒体库索引…',
+                                 'retry_after': 1}, status_code=202,
+                                headers={'Retry-After': '1', 'Cache-Control': 'no-store'})
+        if not entry:
+            # The scan may commit after the first lookup, then leave _scans
+            # before the pending check. Re-read after observing it is finished.
+            entry = await asyncio.to_thread(service.task_entry, task)
+        if not entry and (task.get('metadata') or {}).get('diagnostic'):
+            raise HTTPException(404, '下载检测文件保存在独立目录，不会加入正常媒体库')
+        if not entry and task.get('output_dir') and not service.task_root_id(task):
+            raise HTTPException(404, '任务输出目录未登记为媒体库；请先在设置中为该目录建立索引')
     elif rel_dir:
-        entry = catalog.find_entry(root_id or service.default_root_id(), rel_dir)
+        entry = await asyncio.to_thread(catalog.find_entry, root_id or service.default_root_id(), rel_dir)
     else:
         raise HTTPException(400, '需要任务 ID 或条目路径')
     if not entry:
-        raise HTTPException(404, '此内容尚未建立索引，请稍后重试或扫描媒体库')
+        raise HTTPException(404, '此内容未建立索引；请查看媒体库扫描记录，处理失败或取消后重新扫描')
     return {'entry_id': entry['id'], 'root_id': entry['root_id'], 'author': entry['author'], 'rel_dir': entry['rel_dir']}
 
 

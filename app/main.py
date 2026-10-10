@@ -87,19 +87,24 @@ def _invalidate_library(task):
     if (task.get('metadata') or {}).get('diagnostic'):
         return
     media_library.invalidate()
-    from . import catalog
-    output = os.path.realpath(task.get('output_dir') or config.LIBRARY_ROOT)
-    selected = None
-    for root in catalog.list_roots():
-        if Path(output).is_relative_to(Path(root['path']).resolve()):
-            selected = root['id']
-            break
+    selected = library_service.task_root_id(task)
+    if not selected:
+        return  # External and diagnostic outputs are not the default library.
     scan = library_service.start_scan(selected, force_followup=True)
     state = library_service._scans.get(scan['id'])
     if state:
         def link(finished):
-            if not finished.cancelled() and finished.exception() is None:
-                library_service.task_entry(task)
+            if finished.cancelled() or finished.exception() is not None:
+                return
+            try:
+                entry = library_service.task_entry(task)
+                if entry:
+                    # A scan can return failed/cancelled without raising. Only an
+                    # actual linked entry proves this task can now be opened.
+                    asyncio.create_task(task_manager.broadcast({'type': 'library_indexed',
+                        'task_id': task['id'], 'entry_id': entry['id'], 'root_id': entry['root_id']}))
+            except Exception as error:
+                print('[catalog] 任务媒体关联失败: ' + redact_text(str(error)))
         state['task'].add_done_callback(link)
 
 

@@ -1,7 +1,7 @@
 // API 封装：REST + WebSocket
 const base = ''
 
-async function req(path, options = {}) {
+async function request(path, options = {}) {
   const res = await fetch(base + path, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
@@ -12,9 +12,62 @@ async function req(path, options = {}) {
       const j = await res.json()
       detail = j.detail || detail
     } catch { /* ignore */ }
-    throw new Error(detail)
+    const error = new Error(detail)
+    error.status = res.status
+    throw error
   }
-  return res.json()
+  return res
+}
+
+async function req(path, options = {}) {
+  return (await request(path, options)).json()
+}
+
+function waitForIndex(delay, signal) {
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted()
+    const abort = () => { clearTimeout(timer); reject(signal.reason) }
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, delay)
+    signal.addEventListener('abort', abort, { once: true })
+  })
+}
+
+// Only an explicit HTTP 202 is pending; missing entries and network failures are not retried.
+async function locateLibrary(params, signal, { onIndexing, timeoutMs = 30000 } = {}) {
+  const controller = new AbortController()
+  const abort = () => controller.abort(signal.reason)
+  signal?.throwIfAborted()
+  signal?.addEventListener('abort', abort, { once: true })
+  let indexing = false
+  const timer = setTimeout(() => {
+    const error = new Error(indexing
+      ? '媒体库索引仍在同步，完成后会自动显示，也可到任务页查看。'
+      : '读取媒体索引超时，请稍后重试。')
+    error.code = indexing ? 'LIBRARY_INDEXING' : 'LIBRARY_LOOKUP_TIMEOUT'
+    controller.abort(error)
+  }, timeoutMs)
+  try {
+    const path = '/api/library/locate?' + new URLSearchParams(params)
+    while (true) {
+      controller.signal.throwIfAborted()
+      const response = await request(path, { signal: controller.signal })
+      const data = await response.json()
+      controller.signal.throwIfAborted()
+      if (response.status !== 202) return data
+      if (data.status !== 'indexing') throw new Error('媒体索引返回了无法识别的状态，请稍后重试。')
+      indexing = true
+      onIndexing?.(data.message || '下载已完成，正在同步媒体库索引…')
+      const seconds = Number(data.retry_after)
+      const delay = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 1000
+      await waitForIndex(Math.min(5000, Math.max(250, delay)), controller.signal)
+    }
+  } catch (error) {
+    if (controller.signal.aborted) throw controller.signal.reason
+    throw error
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', abort)
+  }
 }
 
 export const api = {
@@ -39,7 +92,7 @@ export const api = {
   libraryRoots: () => req('/api/library/roots'),
   libraryEntries: ({ signal, ...params } = {}) => req('/api/library/entries?' + new URLSearchParams(params), { signal }),
   libraryEntry: (id, signal) => req('/api/library/entries/' + encodeURIComponent(id), { signal }),
-  libraryLocate: (params, signal) => req('/api/library/locate?' + new URLSearchParams(params), { signal }),
+  libraryLocate: locateLibrary,
   libraryAuthors: ({ signal, ...params } = {}) => req('/api/library/authors?' + new URLSearchParams(params), { signal }),
   libraryDates: ({ signal, ...params } = {}) => req('/api/library/dates?' + new URLSearchParams(params), { signal }),
   libraryScan: (rootId) => req('/api/library/scan', { method: 'POST', body: JSON.stringify({ root_id: rootId }) }),

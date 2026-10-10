@@ -186,6 +186,31 @@ async def thumbnail(relative, width=480, root_id=None):
     return await asyncio.wait_for(asyncio.shield(future), 30)
 
 
+def task_root_id(task):
+    """Resolve only registered output roots; never map an external path by default."""
+    if not task or (task.get('metadata') or {}).get('diagnostic'):
+        return None
+    try:
+        output = task.get('output_dir')
+        if not output:
+            output = Path(config.LIBRARY_ROOT) / (task.get('output_rel') or '')
+        output = Path(output).resolve()
+        matches = [root for root in catalog.list_roots()
+                   if output.is_relative_to(Path(root['path']).resolve())]
+        return max(matches, key=lambda root: len(Path(root['path']).parts))['id'] if matches else None
+    except (OSError, ValueError):
+        return None
+
+
+def task_indexing(task):
+    """Called on the event loop: pending is independent of download success."""
+    if not task or task.get('status') != 'success':
+        return False
+    root_id = task_root_id(task)
+    return bool(root_id and any(state['root_id'] == root_id and not state['task'].done()
+                               for state in _scans.values()))
+
+
 def task_entry(task):
     if not task:
         return None
