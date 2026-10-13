@@ -15,7 +15,7 @@ import re
 import threading
 import uuid
 
-from . import archive, db
+from . import archive, config, db
 
 
 SCHEMA = """
@@ -373,14 +373,38 @@ def list_scans(root_id=None, *, limit=20, database=None):
     return [dict(row) for row in rows]
 
 
-def scan_root(root_id, *, cancel=None, progress=None, database=None, batch_size=100, scan_id=None):
-    """Checkpoint batches; only a complete successful scan can mark files absent."""
-    lock_key = (str(database), root_id)
+def _scan_lock(root_id, database):
+    # Explicit/default database arguments must share the same root lock.
+    lock_key = (_key(database or config.DB_PATH), root_id)
     with _locks_guard:
-        lock = _scan_locks.setdefault(lock_key, threading.Lock())
-    if not lock.acquire(blocking=False):
-        raise RuntimeError("该媒体根正在建立索引")
+        return _scan_locks.setdefault(lock_key, threading.Lock())
+
+
+def _acquire_scan_lock(lock, *, wait, cancel):
+    if not wait:
+        return lock.acquire(blocking=False)
+    while not _cancelled(cancel):
+        if lock.acquire(timeout=.1):
+            return True
+    return False
+
+
+def _cancelled_scan(root_id, scan_id, *, database=None):
+    now = db.utc_now()
+    with db.connect(database) as connection:
+        connection.execute("INSERT INTO media_scans(id,root_id,status,started_at,finished_at) VALUES(?,?,'cancelled',?,?)",
+                           (scan_id, root_id, now, now))
+    return get_scan(scan_id, database=database)
+
+
+def scan_root(root_id, *, cancel=None, progress=None, database=None, batch_size=100, scan_id=None, wait=False):
+    """Checkpoint batches; only a complete successful scan can mark files absent."""
+    lock = _scan_lock(root_id, database)
     scan_id, processed, changed = scan_id or str(uuid.uuid4()), 0, 0
+    if not _acquire_scan_lock(lock, wait=wait, cancel=cancel):
+        if wait and _cancelled(cancel):
+            return _cancelled_scan(root_id, scan_id, database=database)
+        raise RuntimeError("该媒体根正在建立索引")
     try:
         root = get_root(root_id, database=database)
         folder = Path(root["path"]).resolve()
@@ -428,6 +452,73 @@ def scan_root(root_id, *, cancel=None, progress=None, database=None, batch_size=
                 connection.execute("UPDATE media_roots SET last_scan_at=? WHERE id=?", (db.utc_now(), root_id))
             connection.execute("UPDATE media_scans SET status=?,processed=?,changed=?,total=?,error=?,finished_at=? WHERE id=?",
                                (status, processed, changed, processed if status == "success" else None, error, db.utc_now(), scan_id))
+        result = get_scan(scan_id, database=database)
+        if progress:
+            progress(result)
+        return result
+    finally:
+        lock.release()
+
+
+def entry_folder(root, relative):
+    """Resolve one leaf that the full scanner would also recognize."""
+    from .security import PRIVATE_SEGMENTS
+    excluded = PRIVATE_SEGMENTS | {'build', 'dist', 'release', 'portable', 'src-tauri', 'backend-dist'}
+    root = Path(root).resolve()
+    parts = Path(relative).parts
+    if (len(parts) < 2 or not _DATE.match(parts[-1]) or
+            any(part in {'.', '..'} or part.startswith('.') or part.casefold() in excluded for part in parts) or
+            any(_DATE.match(part) for part in parts[1:-1])):
+        raise ValueError('下载输出不是可索引的媒体条目目录')
+    folder = _safe(root, relative)
+    current = root
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError('媒体条目不能通过目录链接索引')
+    if not folder.is_dir():
+        raise FileNotFoundError('下载输出目录不可用；旧索引已保留')
+    return folder
+
+
+def scan_entry(root_id, relative, *, cancel=None, progress=None, database=None, scan_id=None):
+    """Index one download; never enumerate siblings or mark other rows missing.
+
+    Full and targeted scans serialize on the same root lock. In particular, a
+    full pass which enumerated an author before a download finished must commit
+    its missing-file check before this entry is published as ready.
+    """
+    root = get_root(root_id, database=database)
+    entry_folder(root['path'], relative)
+    scan_id = scan_id or str(uuid.uuid4())
+    lock = _scan_lock(root_id, database)
+    if not _acquire_scan_lock(lock, wait=True, cancel=cancel):
+        return _cancelled_scan(root_id, scan_id, database=database)
+    try:
+        with db.connect(database) as connection:
+            connection.execute("INSERT INTO media_scans(id,root_id,status,started_at) VALUES(?,?,'running',?)",
+                               (scan_id, root_id, db.utc_now()))
+        status, error, processed, changed = 'success', None, 0, 0
+        try:
+            root = get_root(root_id, database=database)
+            base = Path(root['path']).resolve()
+            folder = entry_folder(base, relative)
+            if _cancelled(cancel):
+                status = 'cancelled'
+            else:
+                inventory = _inventory(folder)
+                if _cancelled(cancel):
+                    status = 'cancelled'
+                elif inventory:
+                    with db.connect(database) as connection:
+                        generation = connection.execute('SELECT generation FROM media_roots WHERE id=?', (root_id,)).fetchone()[0]
+                        changed = int(_upsert(connection, root_id, generation, folder.parent.name, folder, inventory, base=base))
+                    processed = 1
+        except Exception as exc:
+            status, error = 'failed', f'{type(exc).__name__}: 下载条目索引未完成；旧索引已保留'
+        with db.connect(database) as connection:
+            connection.execute('UPDATE media_scans SET status=?,processed=?,changed=?,total=?,error=?,finished_at=? WHERE id=?',
+                               (status, processed, changed, processed if status == 'success' else None, error, db.utc_now(), scan_id))
         result = get_scan(scan_id, database=database)
         if progress:
             progress(result)

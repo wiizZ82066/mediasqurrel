@@ -53,6 +53,7 @@ class DownloadIndexingTests(unittest.IsolatedAsyncioTestCase):
         self.broadcast = self.stack.enter_context(patch.object(tm, 'broadcast', new=AsyncMock()))
         self.releases = []
         self.real_scan = catalog.scan_root
+        self.real_entry_scan = catalog.scan_entry
 
     async def asyncTearDown(self):
         for release in self.releases:
@@ -130,11 +131,11 @@ class DownloadIndexingTests(unittest.IsolatedAsyncioTestCase):
             "(p/'photo.jpg').write_bytes(b'fixture'); print('保存目录: '+str(p))", str(self.folder)]
         started, release = threading.Event(), self.release_event()
         order = []
-        def slow_scan(root_id, **kwargs):
+        def slow_scan(root_id, relative, **kwargs):
             started.set()
             if not release.wait(5):
                 raise TimeoutError('fixture scan release missing')
-            return self.real_scan(root_id, **kwargs)
+            return self.real_entry_scan(root_id, relative, **kwargs)
         def completion(summary):
             main._invalidate_library(summary)
             order.append('callback')
@@ -144,7 +145,8 @@ class DownloadIndexingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(library_service.task_indexing(message['task']))
         self.broadcast.side_effect = capture
         tm.ON_TASK_DONE.append(completion)
-        with patch.object(catalog, 'scan_root', side_effect=slow_scan):
+        with patch.object(catalog, 'scan_entry', side_effect=slow_scan), \
+                patch.object(catalog, '_folders', side_effect=AssertionError('download traversed the media root')):
             await asyncio.wait_for(tm._run(task['id']), 5)
             await self.wait_event(started)
             self.assertEqual(order, ['callback', 'success'])
@@ -157,39 +159,43 @@ class DownloadIndexingTests(unittest.IsolatedAsyncioTestCase):
             await self.wait_index(job)
         await self.assert_ready(task)
 
-    async def test_existing_scan_gets_followup_and_stays_pending_until_new_entry_is_indexed(self):
+    async def test_existing_full_scan_gets_one_targeted_followup_not_another_root_scan(self):
         task = self.saved_task()
         first, second = threading.Event(), threading.Event()
         release_first, release_second = self.release_event(), self.release_event()
         calls = []
-        def phased_scan(root_id, **kwargs):
+        def root_scan(root_id, **kwargs):
             calls.append(kwargs['scan_id'])
-            if len(calls) == 1:
-                # The original pass enumerates before the download appears.
-                result = self.real_scan(root_id, **kwargs)
-                first.set()
-                if not release_first.wait(5):
-                    raise TimeoutError('fixture first pass release missing')
-                return result
+            # The original pass enumerates before the download appears.
+            result = self.real_scan(root_id, **kwargs)
+            first.set()
+            if not release_first.wait(5):
+                raise TimeoutError('fixture first pass release missing')
+            return result
+        def entry_scan(root_id, relative, **kwargs):
             second.set()
             if not release_second.wait(5):
                 raise TimeoutError('fixture followup release missing')
-            return self.real_scan(root_id, **kwargs)
-        with patch.object(catalog, 'scan_root', side_effect=phased_scan):
+            return self.real_entry_scan(root_id, relative, **kwargs)
+        with patch.object(catalog, 'scan_root', side_effect=root_scan), \
+                patch.object(catalog, 'scan_entry', side_effect=entry_scan):
             handle = library_service.start_scan(self.media_root['id'])
             job = library_service._scans[handle['id']]['task']
             await self.wait_event(first)
             (self.folder / 'photo.jpg').write_bytes(b'fixture')
             main._invalidate_library(task)
+            targeted = next(state['task'] for state in library_service._scans.values() if state.get('relative'))
+            self.assertFalse(library_service._scans[handle['id']]['dirty'])
             await self.assert_pending(task)
             release_first.set()
             await self.wait_event(second)
-            self.assertFalse(job.done())
+            self.assertFalse(targeted.done())
             self.assertEqual(self.indexed_events(), [])
             await self.assert_pending(task)
             release_second.set()
+            await self.wait_index(targeted)
             await self.wait_index(job)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 1)
         await self.assert_ready(task)
 
     async def test_failed_or_cancelled_index_without_entry_does_not_publish_ready(self):
@@ -197,13 +203,13 @@ class DownloadIndexingTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(outcome=outcome):
                 task = self.saved_task(identity='fixture-' + outcome)
                 started, release = threading.Event(), self.release_event()
-                def incomplete_scan(root_id, **kwargs):
+                def incomplete_scan(root_id, relative, **kwargs):
                     started.set()
                     if not release.wait(5):
                         raise TimeoutError('fixture failed scan release missing')
                     return {'id': kwargs['scan_id'], 'root_id': root_id,
                             'status': 'cancelled' if kwargs['cancel'].is_set() else 'failed'}
-                with patch.object(catalog, 'scan_root', side_effect=incomplete_scan):
+                with patch.object(catalog, 'scan_entry', side_effect=incomplete_scan):
                     main._invalidate_library(task)
                     await self.wait_event(started)
                     scan_id, state = next(iter(library_service._scans.items()))
@@ -221,14 +227,56 @@ class DownloadIndexingTests(unittest.IsolatedAsyncioTestCase):
     async def test_output_outside_registered_root_never_starts_default_scan(self):
         task = self.saved_task(folder=self.temp / 'unregistered' / 'author' / 'date')
         self.assertIsNone(library_service.task_root_id(task))
-        with patch.object(library_service, 'start_scan') as start_scan:
+        with patch.object(catalog, 'scan_root') as start_scan, patch.object(catalog, 'scan_entry') as entry_scan:
             main._invalidate_library(task)
         start_scan.assert_not_called()
+        entry_scan.assert_not_called()
         self.assertFalse(library_service.task_indexing(task))
         with self.assertRaises(HTTPException) as raised:
             await library_api.locate(task_id=task['id'])
         self.assertEqual(raised.exception.status_code, 404)
         self.assertEqual(self.indexed_events(), [])
+
+    async def test_indexing_tracks_exact_output_and_repeat_completion_coalesces_that_folder(self):
+        (self.folder / 'photo.jpg').write_bytes(b'fixture')
+        task = self.saved_task()
+        sibling = self.saved_task(identity='sibling', folder=self.media / 'other-author' / '2026-10-10')
+        started, release = threading.Event(), self.release_event()
+        calls = []
+        def entry_scan(root_id, relative, **kwargs):
+            calls.append(relative)
+            if len(calls) == 1:
+                started.set()
+                if not release.wait(5):
+                    raise TimeoutError('fixture scan release missing')
+            return self.real_entry_scan(root_id, relative, **kwargs)
+        with patch.object(catalog, 'scan_entry', side_effect=entry_scan), \
+                patch.object(catalog, 'scan_root', side_effect=AssertionError('download triggered a full scan')):
+            handle = library_service.start_entry_scan(task)
+            job = library_service._scans[handle['id']]['task']
+            await self.wait_event(started)
+            self.assertTrue(library_service.task_indexing(task))
+            self.assertFalse(library_service.task_indexing(sibling))
+            for _ in range(10):
+                self.assertEqual(library_service.start_entry_scan(task)['id'], handle['id'])
+            release.set()
+            await self.wait_index(job)
+        self.assertEqual(calls, ['fixture-author/2026-10-10'] * 2)
+        self.assertFalse(library_service.task_indexing(task))
+
+    async def test_no_output_diagnostic_or_private_output_never_scans_default_root(self):
+        task = self.saved_task()
+        variants = [task | {'output_dir': None, 'output_rel': None},
+                    task | {'metadata': {'diagnostic': True}},
+                    task | {'output_dir': str(self.media / 'data' / 'author' / '2026-10-10')},
+                    task | {'output_dir': str(self.media)},
+                    task | {'output_dir': None, 'output_rel': '../outside/author/2026-10-10'}]
+        with patch.object(catalog, 'scan_root') as root_scan, patch.object(catalog, 'scan_entry') as entry_scan:
+            for value in variants:
+                self.assertIsNone(library_service.start_entry_scan(value))
+                self.assertFalse(library_service.task_indexing(value))
+        root_scan.assert_not_called()
+        entry_scan.assert_not_called()
 
     async def test_locate_rechecks_entry_when_scan_finishes_between_lookups(self):
         task = self.saved_task()

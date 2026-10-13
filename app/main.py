@@ -93,10 +93,9 @@ def _invalidate_library(task):
     if (task.get('metadata') or {}).get('diagnostic'):
         return
     media_library.invalidate()
-    selected = library_service.task_root_id(task)
-    if not selected:
+    scan = library_service.start_entry_scan(task)
+    if not scan:
         return  # External and diagnostic outputs are not the default library.
-    scan = library_service.start_scan(selected, force_followup=True)
     state = library_service._scans.get(scan['id'])
     if state:
         def link(finished):

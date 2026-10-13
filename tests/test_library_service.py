@@ -104,7 +104,7 @@ class LibraryLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(.01)
         self.fail('scan did not reach expected stage')
 
-    async def test_download_invalidations_coalesce_followup_before_callbacks(self):
+    async def test_explicit_root_refreshes_coalesce_followup_before_callbacks(self):
         first, second = threading.Event(), threading.Event()
         release_first, release_second = threading.Event(), threading.Event()
         calls, finished = [], []

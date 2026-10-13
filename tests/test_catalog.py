@@ -1,6 +1,7 @@
 """Isolated metadata/index tests. Fixtures are text bytes, never real media."""
 import json
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import shutil
@@ -353,6 +354,122 @@ class CatalogTests(unittest.TestCase):
         self.assertFalse({item["id"] for item in first["items"]} & {item["id"] for item in second["items"]})
         self.assertLess(len(json.dumps(first).encode()), 100000)
         self.assertEqual(len(self.entries(page_size=1000000)["items"]), 200)
+
+    def test_targeted_scan_reads_only_output_and_keeps_root_generation_and_other_entries(self):
+        old = self.fixture('26-10-08', item='Old')
+        self.scan()
+        before = catalog.get_root(self.root_id, database=self.database)
+        old_entry = self.entries()['items'][0]
+        folder = self.fixture('26-10-09', item='New')
+        with patch.object(catalog, '_folders', side_effect=AssertionError('must not traverse siblings')), \
+                patch.object(catalog, '_inventory', wraps=catalog._inventory) as inventory:
+            result = catalog.scan_entry(self.root_id, folder.relative_to(self.root), database=self.database)
+        self.assertEqual((result['status'], result['processed'], result['changed']), ('success', 1, 1))
+        inventory.assert_called_once_with(folder.resolve())
+        self.assertEqual(self.entries()['total'], 2)
+        self.assertEqual(catalog.get_entry(old_entry['id'], database=self.database)['availability'], 'present')
+        self.assertEqual(catalog.get_root(self.root_id, database=self.database), before)
+        shutil.rmtree(old)
+        catalog.scan_entry(self.root_id, folder.relative_to(self.root), database=self.database)
+        self.assertEqual(self.entries()['total'], 2, 'a single-entry refresh is not a missing-file census')
+        self.scan()
+        self.assertEqual(self.entries(status='missing')['total'], 1)
+
+    def test_targeted_scan_handles_partial_completion_and_retains_identity(self):
+        entry = archive.begin_entry(str(self.root), 'Example', '26-10-09', 'weibo', 'Ab123')
+        folder = Path(entry.folder)
+        (folder / 'context.md').write_text('# Partial text', encoding='utf-8')
+        catalog.scan_entry(self.root_id, folder.relative_to(self.root), database=self.database)
+        partial = self.entries(status='partial')['items'][0]
+        entry.complete(['context.md'])
+        catalog.scan_entry(self.root_id, folder.relative_to(self.root), database=self.database)
+        complete = self.entries(status='complete')['items'][0]
+        self.assertEqual(partial['id'], complete['id'])
+        self.assertEqual(complete['media_count'], 0)
+
+    def test_targeted_scan_rejects_roots_private_paths_and_nested_media_folders(self):
+        self.fixture()
+        for relative in ('.', 'Example', '../outside/Example/26-10-09',
+                         'data/Example/26-10-09', 'Example/26-10-09/photo/26-10-10',
+                         'Example/26-10-09/../26-10-09'):
+            with self.subTest(relative=relative), self.assertRaises(ValueError):
+                catalog.scan_entry(self.root_id, relative, database=self.database)
+        self.assertEqual(self.entries()['total'], 0)
+
+    def test_failed_or_cancelled_targeted_scan_keeps_existing_index(self):
+        folder = self.fixture()
+        self.scan()
+        original = self.entries()['items'][0]
+        for cancelled in (False, True):
+            cancel = threading.Event()
+            if cancelled:
+                cancel.set()
+            with patch.object(catalog, '_inventory', side_effect=PermissionError('fixture unreadable')) as inventory:
+                result = catalog.scan_entry(self.root_id, folder.relative_to(self.root), cancel=cancel, database=self.database)
+            self.assertEqual(result['status'], 'cancelled' if cancelled else 'failed')
+            self.assertEqual(self.entries()['items'][0], original)
+            if cancelled:
+                inventory.assert_not_called()
+
+    def test_targeted_scan_waits_for_full_scan_then_publishes_new_entry_as_present(self):
+        self.fixture('26-10-08', item='Old')
+        enumerated, release, attempting = threading.Event(), threading.Event(), threading.Event()
+        original_folders, acquire = catalog._folders, catalog._acquire_scan_lock
+        def paused_folders(*args, **kwargs):
+            yield from original_folders(*args, **kwargs)
+            enumerated.set()
+            if not release.wait(5):
+                raise TimeoutError('full scan release missing')
+        def observe_lock(lock, *, wait, cancel):
+            if wait:
+                attempting.set()
+            return acquire(lock, wait=wait, cancel=cancel)
+        with ThreadPoolExecutor(max_workers=2) as pool, \
+                patch.object(catalog, '_folders', side_effect=paused_folders), \
+                patch.object(catalog, '_acquire_scan_lock', side_effect=observe_lock):
+            full = pool.submit(self.scan)
+            try:
+                self.assertTrue(enumerated.wait(3))
+                folder = self.fixture('26-10-09', item='New')
+                # Explicit and default DB arguments must also share this lock.
+                with patch.object(catalog.config, 'DB_PATH', str(self.database)):
+                    single = pool.submit(catalog.scan_entry, self.root_id, folder.relative_to(self.root))
+                    self.assertTrue(attempting.wait(3))
+                    self.assertFalse(single.done())
+                    release.set()
+                    self.assertEqual(full.result(5)['processed'], 1)
+                    self.assertEqual(single.result(5)['processed'], 1)
+            finally:
+                release.set()
+        self.assertEqual(self.entries()['total'], 2)
+        self.assertEqual(self.entries(status='missing')['total'], 0)
+
+    def test_full_scan_waits_for_targeted_index_and_waiting_cancellation_leaves_rows_intact(self):
+        folder = self.fixture()
+        indexing, release = threading.Event(), threading.Event()
+        cancel = threading.Event()
+        inventory = catalog._inventory
+        def paused_inventory(path):
+            indexing.set()
+            if not release.wait(5):
+                raise TimeoutError('targeted scan release missing')
+            return inventory(path)
+        with ThreadPoolExecutor(max_workers=2) as pool, patch.object(catalog, '_inventory', side_effect=paused_inventory):
+            single = pool.submit(catalog.scan_entry, self.root_id, folder.relative_to(self.root), database=self.database)
+            try:
+                self.assertTrue(indexing.wait(3))
+                cancel.set()
+                stopped = pool.submit(self.scan, wait=True, cancel=cancel).result(3)
+                self.assertEqual(stopped['status'], 'cancelled')
+                self.assertEqual(catalog.get_root(self.root_id, database=self.database)['generation'], 0)
+                waiting = pool.submit(self.scan, wait=True)
+                self.assertFalse(waiting.done())
+                release.set()
+                self.assertEqual(single.result(5)['status'], 'success')
+                self.assertEqual(waiting.result(5)['status'], 'success')
+            finally:
+                release.set()
+        self.assertEqual(self.entries()['total'], 1)
 
 
 if __name__ == "__main__":

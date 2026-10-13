@@ -5,6 +5,8 @@ from pathlib import Path
 import threading
 import uuid
 
+from fastapi import HTTPException
+
 from . import catalog, config, db, media_jobs, media_library, thumbs
 from .redaction import redact_text
 from .security import media_path
@@ -30,31 +32,47 @@ def start():
 
 
 def start_scan(root_id=None, *, force_followup=False):
+    return _start_scan(root_id or _default_root_id, force_followup=force_followup)
+
+
+def start_entry_scan(task):
+    """Queue only this task's actual output, never its configured parent root."""
+    target = task_output(task)
+    if not target:
+        return None
+    root_id, relative = target
+    catalog.entry_folder(root_path(root_id), relative)
+    return _start_scan(root_id, relative=relative, force_followup=True)
+
+
+def _start_scan(root_id, *, relative=None, force_followup=False):
     if _stopping:
         raise ValueError('媒体库正在退出')
-    root_id = root_id or _default_root_id
     if not catalog.get_root(root_id):
         raise ValueError('媒体根目录不存在')
     for scan_id, state in _scans.items():
-        if state['root_id'] == root_id and not state['task'].done():
+        if (state['root_id'] == root_id and state.get('relative') == relative
+                and not state['task'].done() and not state['cancel'].is_set()):
             if force_followup:
                 state['dirty'] = True
             return {'id': scan_id, 'root_id': root_id, 'status': 'running'}
     scan_id = uuid.uuid4().hex
     cancel = threading.Event()
-    state = {'root_id': root_id, 'cancel': cancel, 'dirty': False}
+    state = {'root_id': root_id, 'relative': relative, 'cancel': cancel, 'dirty': False}
 
     async def run():
         try:
             current_id = scan_id
             while True:
                 state['dirty'] = False
-                result = await asyncio.to_thread(catalog.scan_root, root_id, cancel=cancel, scan_id=current_id)
+                if relative is None:
+                    result = await asyncio.to_thread(catalog.scan_root, root_id, cancel=cancel, scan_id=current_id, wait=True)
+                else:
+                    result = await asyncio.to_thread(catalog.scan_entry, root_id, relative, cancel=cancel, scan_id=current_id)
                 if not state['dirty'] or cancel.is_set() or _stopping:
                     return result
-                # Downloads can finish after the scanner enumerated their
-                # author. Coalesce requests into another pass before releasing
-                # this task's completion callbacks (including task_media links).
+                # Coalesce repeat requests for exactly this scope. A download
+                # never dirties a full-root scan, even if one is already running.
                 current_id = uuid.uuid4().hex
         except Exception as error:
             print('[catalog] ' + redact_text(str(error)))
@@ -186,29 +204,47 @@ async def thumbnail(relative, width=480, root_id=None):
     return await asyncio.wait_for(asyncio.shield(future), 30)
 
 
-def task_root_id(task):
-    """Resolve only registered output roots; never map an external path by default."""
+def task_output(task):
+    """Resolve only an actual output inside a registered root."""
     if not task or (task.get('metadata') or {}).get('diagnostic'):
         return None
     try:
         output = task.get('output_dir')
         if not output:
-            output = Path(config.LIBRARY_ROOT) / (task.get('output_rel') or '')
+            if not task.get('output_rel'):
+                return None
+            output = media_path(task['output_rel'])
+        if not Path(output).is_absolute():
+            return None
         output = Path(output).resolve()
         matches = [root for root in catalog.list_roots()
                    if output.is_relative_to(Path(root['path']).resolve())]
-        return max(matches, key=lambda root: len(Path(root['path']).parts))['id'] if matches else None
-    except (OSError, ValueError):
+        if not matches:
+            return None
+        root = max(matches, key=lambda root: len(Path(root['path']).parts))
+        relative = output.relative_to(Path(root['path']).resolve()).as_posix()
+        media_path(relative, root=root['path'])
+        return root['id'], relative
+    except (OSError, ValueError, HTTPException):
         return None
+
+
+def task_root_id(task):
+    """Resolve only registered output roots; never map an external path by default."""
+    target = task_output(task)
+    return target[0] if target else None
 
 
 def task_indexing(task):
     """Called on the event loop: pending is independent of download success."""
     if not task or task.get('status') != 'success':
         return False
-    root_id = task_root_id(task)
-    return bool(root_id and any(state['root_id'] == root_id and not state['task'].done()
-                               for state in _scans.values()))
+    target = task_output(task)
+    if not target:
+        return False
+    root_id, relative = target
+    return any(state['root_id'] == root_id and state.get('relative') in (None, relative)
+               and not state['task'].done() for state in _scans.values())
 
 
 def task_entry(task):
