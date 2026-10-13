@@ -26,6 +26,8 @@ class WindowsRuntimeTests(unittest.TestCase):
         self.pythonw = self.root / 'pythonw.exe'
         self.pythonw.write_bytes(b'fixture')
         self.stack.enter_context(patch.object(windows, 'IS_WINDOWS', True))
+        # Exercise the mocked Windows branch on Linux CI too; never launch it.
+        self.stack.enter_context(patch.object(subprocess, 'CREATE_NO_WINDOW', 0x08000000, create=True))
         self.stack.enter_context(patch.object(sys, 'executable', str(self.python)))
         self.stack.enter_context(patch.object(config, 'SOURCE_DIR', str(self.source)))
         self.stack.enter_context(patch.object(config, 'PATHS_FILE', str(self.source / '.mediasquirrel.local.json')))

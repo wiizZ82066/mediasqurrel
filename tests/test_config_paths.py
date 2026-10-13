@@ -13,7 +13,8 @@ class RuntimePathTests(unittest.TestCase):
         env.update(MS_HOME=str(root / 'default'), MS_PATHS_FILE=str(root / 'paths.json'))
         env.update(values)
         code = "import json; from app import config; print(json.dumps([config.DATA_DIR,config.LIBRARY_ROOT]))"
-        return subprocess.run([sys.executable, '-B', '-c', code], env=env, text=True, capture_output=True)
+        return subprocess.run([sys.executable, '-X', 'utf8', '-B', '-c', code], env=env,
+                              text=True, encoding='utf-8', capture_output=True)
 
     def test_path_selection_never_creates_or_migrates_data_at_import(self):
         with tempfile.TemporaryDirectory() as directory:

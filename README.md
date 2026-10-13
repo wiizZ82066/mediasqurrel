@@ -172,6 +172,18 @@ npm run dev
 
 提交前运行 `python .github/scripts/check-repository.py` 并人工审查差异。个人媒体、本地报告、数据库、缓存、浏览器档案、Cookie、密钥和私人路径不得进入 Git。测试使用隔离目录，不能把真实平台测试、受控测试和静态检查混称为同一种验证。
 
+常规 CI 在 Windows 与 Linux 上运行 Python 3.12 后端回归，在 Node 22 下执行前端测试和构建；不安装 Electron 或触发打包发布。本地可运行以下检查：
+
+```powershell
+python .github/scripts/run-tests.py --suite business
+python .github/scripts/run-tests.py --suite legacy
+npm --prefix frontend test
+node --test electron/tests/updates.test.cjs
+npm --prefix frontend run build
+```
+
+Python 测试入口在导入应用前切换到临时数据目录，并阻止测试主进程访问外网；允许回环地址以验证本地接口。它不读取实际账号或证明真实平台当前可用，也不能替代浏览器实测和真实链接验收。平台清单的能力声明仅表示已实现的功能，不代表登录、网络或运行环境已就绪。
+
 ## 素材与使用范围
 
 松鼠品牌与普通操作图标为原创 SVG。扫描图标来自 IconPark Scanning（Apache-2.0）；微博与抖音识别图形来自 Simple Icons，项目许可为 CC0，品牌商标仍归各自权利人，不表示平台授权、关联或背书。
