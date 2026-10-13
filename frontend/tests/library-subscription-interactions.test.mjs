@@ -1,4 +1,4 @@
-import { buildLibraryRows, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../src/library-layout.js'
+import { buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../src/library-layout.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -56,7 +56,7 @@ function setupComponent(name, t, savedState = {}) {
     useRoute: () => ({ query: {} }), useRouter: () => ({ replace: () => {} }),
     setTimeout: fn => { const id = ++timerId; timers.set(id, fn); return id },
     clearTimeout: id => timers.delete(id),
-    buildLibraryRows, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch, applyDefaultVolume: () => {}, ContentText: {}, AppIcon: {}, PlatformLogo: {}, ActivityProgress: {}, MediaThumbnail: {}, Avatar: {}, SchedulePanel: {}, SubscriptionFilterPanel: {}, parseDownloadTags: value => ({tags: []}), downloadFilterLabel: () => '全部新内容',
+    buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch, applyDefaultVolume: () => {}, ContentText: {}, AppIcon: {}, PlatformLogo: {}, ActivityProgress: {}, MediaThumbnail: {}, Avatar: {}, SchedulePanel: {}, SubscriptionFilterPanel: {}, parseDownloadTags: value => ({tags: []}), downloadFilterLabel: () => '全部新内容',
   }
   const source = script.content.replace(/^import .*$/gm, '').replace('export default', 'return')
   const component = new Function(...Object.keys(env), source)(...Object.values(env))
@@ -445,4 +445,86 @@ test('matching cached entries are restored without a first-page refresh', async 
   await restored.mount()
   assert.deepEqual(restored.state.entries.value.map(item => item.id), ['saved-entry'])
   assert.equal(restored.state.nextCursor.value, 'saved-cursor')
+})
+
+test('expanding a small library viewport tops up once without following an unfilled cursor chain', async t => {
+  const { state, api } = setupComponent('Library', t)
+  const previousSize = [window.innerWidth, window.innerHeight]
+  t.after(() => { [window.innerWidth, window.innerHeight] = previousSize })
+  let width = 834, height = 960
+  window.innerWidth = 1366; window.innerHeight = height
+  state.rootId.value = 'test-root'
+  await vue.nextTick()
+  state.contentEl = { removeEventListener: () => {}, scrollTop: 0,
+    get clientHeight() { return height }, getBoundingClientRect: () => ({ top: 0, bottom: height }) }
+  state.gridEl.value = { getBoundingClientRect: () => ({ width, top: 160, bottom: 160 + state.virtualLayout.value.height }) }
+  state.updateViewport()
+  const items = Array.from({ length: 60 }, (_, index) => ({ id: String(index), sort_at: '2026-10-13' }))
+  const requests = [], refill = deferred()
+  api.libraryEntries = params => {
+    requests.push(params)
+    return requests.length === 1
+      ? Promise.resolve({ items, total: 100000, next_cursor: 'after-small-screen' })
+      : refill.promise
+  }
+  await state.loadEntries()
+  state.ready = true
+  state.maybeLoadMore()
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].page_size, 60)
+
+  width = 3260; height = 2160
+  window.innerWidth = 3840; window.innerHeight = height
+  state.updateViewport()
+  assert.ok(state.virtualLayout.value.height + 160 < height, 'the previous 60 items no longer fill the larger viewport')
+  state.maybeLoadMore()
+  for (let resize = 0; resize < 5; resize++) { state.updateViewport(); state.maybeLoadMore() }
+  assert.equal(requests.length, 2, 'repeated resize callbacks share one in-flight request')
+  assert.equal(requests[1].cursor, 'after-small-screen')
+  assert.ok(requests[1].page_size > 60 && requests[1].page_size <= 100)
+
+  // Even a stale/overlapping response that contributes no new cards must not
+  // make a stationary viewport automatically exhaust an arbitrary cursor chain.
+  refill.resolve({ items: items.slice(0, 3), total: 100000, next_cursor: 'still-more' })
+  for (let flush = 0; flush < 6; flush++) await vue.nextTick()
+  for (let resize = 0; resize < 5; resize++) { state.updateViewport(); state.maybeLoadMore() }
+  assert.equal(requests.length, 2)
+  assert.equal(state.entries.value.length, 60)
+  assert.equal(state.nextCursor.value, 'still-more')
+  assert.equal(state.contentEl.scrollTop, 0)
+})
+
+test('a 60-item cache restored on a larger screen gets one bounded continuation instead of a first-page reload', async t => {
+  const original = setupComponent('Library', t)
+  original.state.rootId.value = 'test-root'
+  await vue.nextTick()
+  const items = Array.from({ length: 60 }, (_, index) => ({ id: String(index), sort_at: '2026-10-13' }))
+  original.api.libraryEntries = async () => ({ items, total: 100000, next_cursor: 'cached-cursor' })
+  await original.state.loadEntries()
+  original.unmount()
+
+  const restored = setupComponent('Library', t, original.store.libraryState)
+  const previousSize = [window.innerWidth, window.innerHeight]
+  const previousQuery = document.querySelector
+  t.after(() => { [window.innerWidth, window.innerHeight] = previousSize; document.querySelector = previousQuery })
+  window.innerWidth = 3840; window.innerHeight = 2160
+  const content = { addEventListener: () => {}, removeEventListener: () => {}, scrollTop: 0,
+    clientHeight: 2160, getBoundingClientRect: () => ({ top: 0, bottom: 2160 }) }
+  document.querySelector = selector => selector === '.content' ? content : null
+  restored.state.gridEl.value = { getBoundingClientRect: () => ({ width: 3260, top: 160, bottom: 160 + restored.state.virtualLayout.value.height }) }
+  const requests = []
+  restored.api.libraryRoots = async () => ({ items: [{ id: 'test-root' }] })
+  restored.api.libraryAuthors = async () => ({ items: [], total: 0 })
+  restored.api.libraryScans = async () => ({ items: [] })
+  restored.api.libraryEntries = async params => {
+    requests.push(params)
+    return { items: items.slice(0, 2), total: 100000, next_cursor: 'after-cached-cursor' }
+  }
+  await restored.mount()
+  for (let flush = 0; flush < 6; flush++) await vue.nextTick()
+  for (let resize = 0; resize < 5; resize++) restored.state.maybeLoadMore()
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].cursor, 'cached-cursor')
+  assert.ok(requests[0].page_size > 60 && requests[0].page_size <= 100)
+  assert.equal(restored.state.entries.value.length, 60)
 })

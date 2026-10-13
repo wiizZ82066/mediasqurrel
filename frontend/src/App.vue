@@ -31,7 +31,8 @@ onBeforeUnmount(() => contentEl.value?.removeEventListener('scroll', onContentSc
       </nav>
       <div class="sidebar-footer"><span class="dot" :style="{ color: store.wsConnected ? 'var(--green)' : 'var(--orange)' }"></span> {{ store.wsConnected ? '实时连接正常' : '正在重新连接…' }}<div>本地媒体收藏与浏览</div></div>
     </aside>
-    <main ref="contentEl" class="content"><div class="content-inner"><router-view/></div></main>
+    <main ref="contentEl" class="content"><div class="content-inner" :class="{'library-content':route.name === 'library'}"><router-view/></div></main>
+    <div id="library-sidebar" v-show="route.name === 'library'" class="library-sidebar-host"></div>
   </div>
   <div class="toast-wrap" aria-live="polite" aria-relevant="additions text">
     <div v-for="item in store.toasts" :key="item.id" class="toast" :class="'toast-' + item.kind" role="status">
@@ -39,10 +40,14 @@ onBeforeUnmount(() => contentEl.value?.removeEventListener('scroll', onContentSc
       <button class="toast-close" aria-label="关闭提示" @click="dismissToast(item.id)"><AppIcon name="close" :size="20"/></button>
     </div>
   </div>
-  <button v-if="showTop" class="back-top" aria-label="回到顶部" @click="contentEl?.scrollTo({ top: 0, behavior: 'instant' })"><AppIcon name="up"/></button>
+  <button v-if="showTop" class="back-top" :class="{'beside-library':route.name === 'library'}" aria-label="回到顶部" @click="contentEl?.scrollTo({ top: 0, behavior: 'instant' })"><AppIcon name="up"/></button>
 </template>
 <style scoped>
 .sidebar-footer .dot { display:inline-block; }
+.content-inner.library-content { max-width:none; }
+.library-sidebar-host { flex:0 0 240px; min-width:0; height:100%; padding:36px 18px 24px; overflow:hidden; background:rgba(255,255,255,.55); border-left:1px solid var(--border); }
+@media(min-width:1100px) { .back-top.beside-library { right:264px; } }
+@media(max-width:1099px) { .library-sidebar-host { display:none; } }
 .toast-wrap { position:fixed; top:20px; right:20px; z-index:999; display:flex; flex-direction:column; gap:10px; width:min(390px,calc(100vw - 32px)); pointer-events:none; }
 .toast { display:flex; align-items:flex-start; gap:14px; padding:14px 16px; background:#fff; color:var(--text); border:1px solid var(--border); border-left:4px solid var(--blue); border-radius:14px; box-shadow:var(--shadow-card); pointer-events:auto; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
 .toast > div { flex:1; }.toast-success { border-left-color:#438f73; }.toast-error { border-left-color:var(--red); }.toast a { color:var(--blue); display:inline-block; margin-top:4px; }

@@ -8,7 +8,7 @@ import PlatformLogo from '../components/PlatformLogo.vue'
 import ActivityProgress from '../components/ActivityProgress.vue'
 import MediaThumbnail from '../components/MediaThumbnail.vue'
 import ContentText from '../components/ContentText.vue'
-import { buildLibraryRows, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../library-layout.js'
+import { buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../library-layout.js'
 import { applyDefaultVolume } from '../playback.js'
 const route=useRoute(), router=useRouter(), saved=store.libraryState || {}
 const roots=ref([]), rootId=ref(saved.rootId || ''), entries=ref(saved.entries || []), total=ref(saved.total || 0), nextCursor=ref(saved.nextCursor ?? null)
@@ -16,8 +16,10 @@ const entriesFilterKey=ref(saved.entriesFilterKey || null)
 const viewMode=ref(saved.viewMode || 'timeline'), author=ref(saved.author || ''), query=ref(saved.query || ''), platform=ref(saved.platform || ''), mediaType=ref(saved.mediaType || ''), status=ref(saved.status || ''), sort=ref(saved.sort || 'desc')
 const dateFrom=ref(saved.dateFrom || ''), dateTo=ref(saved.dateTo || ''), groupBy=ref(saved.groupBy || 'month'), dates=ref([])
 const authors=ref([]), authorQuery=ref(''), authorPage=ref(1), authorTotal=ref(0), authorsBusy=ref(false), authorsError=ref(''), authorsOpen=ref(false)
+const authorsInline=ref(false)
 const gridEl=ref(null), gridWidth=ref(700), viewportTop=ref(0), viewportHeight=ref(800), compact=ref(false), focusedEntry=ref(null), revealBusy=ref(false)
 let resizeObserver=null, scrollFrame=null, authorController=null, authorSequence=0
+let viewportBatchCapacity=0
 const hasMore=computed(()=>!!nextCursor.value)
 const loading=ref(false), error=ref(''), scan=ref(null), scanBusy=ref(false), changed=ref(false)
 const gallery=ref(null), galleryIndex=ref(0), detailBusy=ref(false), detailError=ref(''), livePlaying=ref(false), mediaError=ref('')
@@ -25,7 +27,6 @@ const locateBusy=ref(false), locateMessage=ref(''), detailNotice=ref('')
 let locateController=null, locateSequence=0
 const viewerEl=ref(null), closeButton=ref(null), liveVideo=ref(null), filtersOpen=ref(false), cardLiveId=ref(null), cardLiveVideo=ref(null)
 let livePlaybackSequence=0, cardLiveSequence=0
-const pageSize=60
 let ready=false, disposed=false, listSequence=0, detailSequence=0, auxSequence=0, listController=null, detailController=null, auxController=null, debounceTimer=null, authorTimer=null, scanTimer=null, contentEl=null, restoreFocus=null, preloads=[]
 
 const activeScan=computed(()=>['queued','running'].includes(scan.value?.status))
@@ -67,6 +68,8 @@ async function loadEntries({reset=true,restore=false,append=false}={}) {
   listController?.abort();listController=new AbortController();const sequence=++listSequence
   const cursor=append?nextCursor.value:''
   const requestedFilters=filters(), filterKey=JSON.stringify(requestedFilters)
+  const pageSize=libraryBatchSize(virtualLayout.value,viewportHeight.value)
+  viewportBatchCapacity=append?Math.max(viewportBatchCapacity,pageSize):pageSize
   if(!append){stopCardLive();entries.value=[];nextCursor.value=null;entriesFilterKey.value=null;focusedEntry.value=null;if(contentEl && !restore)contentEl.scrollTop=0}
   loading.value=true;error.value=''
   try {
@@ -100,6 +103,7 @@ async function loadAuxiliary() {
 }
 function selectAuthor(name){author.value=name;authorsOpen.value=false;nextTick(updateViewport)}
 function updateViewport(){
+  authorsInline.value=window.innerWidth<1100
   if(!gridEl.value || !contentEl)return
   const bounds=gridEl.value.getBoundingClientRect(), contentBounds=contentEl.getBoundingClientRect()
   gridWidth.value=bounds.width;viewportHeight.value=contentEl.clientHeight || 800;viewportTop.value=Math.max(0,contentBounds.top-bounds.top);compact.value=window.innerWidth<768
@@ -107,12 +111,18 @@ function updateViewport(){
 function maybeLoadMore(){
   if(!ready || disposed || loading.value || error.value || gallery.value || !hasMore.value || !gridEl.value || !contentEl)return
   const bounds=gridEl.value.getBoundingClientRect()
+  const capacity=libraryBatchSize(virtualLayout.value,viewportHeight.value)
+  // A larger viewport or restored cache may need one larger batch. Reserve
+  // that capacity in loadEntries so a short response cannot drain all cursors.
+  const viewportBottom=Math.min(contentEl.getBoundingClientRect().bottom,window.innerHeight)
+  if(capacity>viewportBatchCapacity && entries.value.length<capacity && Math.max(bounds.bottom,bounds.top+virtualLayout.value.height)<viewportBottom){loadEntries({append:true});return}
   if(shouldLoadNextLibraryBatch({scrollTop:contentEl.scrollTop,gridTop:bounds.top,gridBottom:bounds.bottom,layoutHeight:virtualLayout.value.height,viewportBottom:contentEl.getBoundingClientRect().bottom,windowHeight:window.innerHeight}))loadEntries({append:true})
 }
 function onScroll(){if(scrollFrame!==null)return;scrollFrame=requestAnimationFrame(()=>{scrollFrame=null;updateViewport();maybeLoadMore()})}
 async function revealEntry(entry,rel=null){if(revealBusy.value)return;revealBusy.value=true;try{await api.libraryReveal(entry.id,rel);toast(rel?'已在文件资源管理器中定位文件':'已打开内容目录','success')}catch(e){toast(e.message,'error')}finally{revealBusy.value=false}}
 watch([rootId,author,query,platform,mediaType,status,sort,dateFrom,dateTo],()=>{if(!ready)return;clearTimeout(debounceTimer);listController?.abort();++listSequence;loading.value=true;debounceTimer=setTimeout(()=>{loadEntries({reset:true});loadAuxiliary()},300)})
 watch(filtersOpen,open=>{if(open && ready)loadAuxiliary();else if(!open){auxController?.abort();++auxSequence}nextTick(updateViewport)})
+watch([authorsOpen,authorsInline],()=>nextTick(updateViewport))
 watch(rootId,()=>{if(ready){author.value='';scan.value=null;pollScan();loadAuthors()}})
 watch(groupBy,()=>{if(ready){loadAuxiliary();nextTick(updateViewport)}})
 watch(authorQuery,()=>{if(!ready)return;authorController?.abort();++authorSequence;clearTimeout(authorTimer);authorTimer=setTimeout(()=>loadAuthors(),300)})
@@ -197,6 +207,7 @@ async function locateRoute(){
 watch(()=>route.fullPath,()=>{if(ready)locateRoute()},{flush:'sync'})
 onMounted(async()=>{
   contentEl=document.querySelector('.content');window.addEventListener('keydown',onKey);contentEl?.addEventListener('scroll',onScroll,{passive:true});window.addEventListener('resize',onScroll)
+  updateViewport()
   try{
     const result=await api.libraryRoots();roots.value=result.items
     const restored=roots.value.some(item=>item.id===rootId.value) && saved.entries?.length && entriesMatchFilters()
@@ -227,8 +238,8 @@ onBeforeUnmount(()=>{stopCardLive();stopLive();unsubscribe();document.querySelec
     <div v-if="error" class="card error-text" role="alert">{{ error }} <button class="text-button" @click="loadEntries({append:entries.length>0 && hasMore})">重新加载</button></div>
     <p v-if="loading" class="list-note" role="status">正在读取媒体索引…</p>
 
-    <div class="library-browser">
-      <aside id="library-authors" class="card author-list" :class="{'is-open':authorsOpen}" aria-label="作者列表">
+    <Teleport defer to="#library-sidebar" :disabled="authorsInline">
+      <aside id="library-authors" class="author-list" :class="{'is-open':authorsOpen,'card':authorsInline}" aria-label="作者列表">
         <h2><AppIcon name="person" :size="20"/>作者 <span>{{ authorTotal }}</span></h2>
         <label><span class="sr-only">搜索作者列表</span><input v-model="authorQuery" class="input" type="search" placeholder="查找作者"></label>
         <div class="author-options"><button :class="{selected:!author}" :aria-pressed="!author" @click="selectAuthor('')">全部作者</button><button v-for="item in authors" :key="item.name" :class="{selected:author===item.name}" :aria-pressed="author===item.name" @click="selectAuthor(item.name)"><span>{{ item.name }}</span><small>{{ item.count }}</small></button></div>
@@ -236,6 +247,7 @@ onBeforeUnmount(()=>{stopCardLive();stopLive();unsubscribe();document.querySelec
         <p v-if="authorsError" class="error-text">{{ authorsError }} <button class="text-button" @click="loadAuthors()">重试</button></p>
         <button v-if="authors.length<authorTotal" class="text-button" :disabled="authorsBusy" @click="loadAuthors({append:true})">显示更多作者</button>
       </aside>
+    </Teleport>
       <div class="library-feed">
     <div v-if="!loading && !error && !entries.length" class="card library-empty"><AppIcon name="library" :size="72"/><h2>{{ query || author || dateFrom || dateTo || status || platform || mediaType?'没有符合条件的内容':'这里还没有媒体内容' }}</h2><p>已有媒体文件夹可在设置中只建立索引；文件不会复制或移动。</p><p v-if="selectedRoot" class="root-path">当前目录：{{ selectedRoot.path }}</p><div><router-link to="/settings" class="btn btn-ghost">媒体目录与导入</router-link><router-link to="/" class="btn btn-primary">下载内容</router-link></div></div>
         <p v-if="total" class="feed-summary">{{ author || '全部作者' }} · 共 {{ total }} 条 <button class="text-button" :disabled="loading" @click="loadEntries()">刷新内容</button></p>
@@ -249,7 +261,6 @@ onBeforeUnmount(()=>{stopCardLive();stopLive();unsubscribe();document.querySelec
         </div>
         <div v-if="total" class="load-more" role="status"><span>{{ loading?'正在读取更多内容…':hasMore?'向下滚动继续浏览':'已显示全部内容' }}</span><button v-if="hasMore" class="text-button" :disabled="loading" @click="loadEntries({append:true})">{{ error?'重试加载':'继续加载' }}</button><span>{{ entries.length }} / {{ total }} 条</span></div>
       </div>
-    </div>
     <Teleport to="body"><div v-if="gallery" class="gallery-mask" @click.self="closeGallery"><section ref="viewerEl" class="gallery-panel" role="dialog" aria-modal="true" aria-label="媒体查看器"><header class="gallery-head"><div><strong>{{ gallery.author }}</strong><p>{{ displayTime(gallery.sort_at) }} · {{ datesLabel[gallery.date_source] }}</p></div><button class="viewer-button" title="打开内容目录" aria-label="打开内容目录" :disabled="revealBusy" @click="revealEntry(gallery)"><AppIcon name="folder"/></button><button v-if="currentItem" class="viewer-button" title="在文件资源管理器中定位当前文件" aria-label="在文件资源管理器中定位当前文件" :disabled="revealBusy" @click="revealEntry(gallery,currentItem.rel)"><AppIcon name="search"/></button><span>{{ gallery.gallery?.length ? galleryIndex+1 : 0 }} / {{ gallery.gallery?.length || 0 }}</span><button ref="closeButton" class="viewer-button" aria-label="关闭查看器" @click="closeGallery"><AppIcon name="close"/></button></header><div class="gallery-stage"><button class="viewer-button gallery-prev" :disabled="galleryIndex===0" aria-label="上一项" @click="navigateMedia(-1)"><AppIcon name="chevron-left" :size="24"/></button><div v-if="currentItem" class="gallery-media" @pointerenter="hoverLive" @pointerleave="leaveLive"><template v-if="currentItem.live"><video v-if="livePlaying" ref="liveVideo" :src="mediaUrl(gallery,currentItem.rel)" :poster="currentItem.poster?mediaUrl(gallery,currentItem.poster):undefined" controls muted loop playsinline preload="metadata" @error="liveError"></video><img v-else-if="currentItem.poster" :src="mediaUrl(gallery,currentItem.poster)" alt="Live 图静态画面，鼠标悬停可静音播放" @error="mediaError='静态画面无法读取，可尝试播放 Live 图。'"><button class="live-play" :aria-pressed="livePlaying" @click="toggleLive"><AppIcon name="play"/>{{ livePlaying?'停止 Live 图':'播放 Live 图' }}</button></template><video v-else-if="currentItem.type==='video'" :src="mediaUrl(gallery,currentItem.rel)" :poster="currentItem.poster?mediaUrl(gallery,currentItem.poster):undefined" controls playsinline preload="metadata" @loadedmetadata="applyDefaultVolume($event, store.preferences.default_volume)" @error="mediaError='视频无法读取或浏览器不支持此格式，请检查原文件。'"></video><img v-else :src="mediaUrl(gallery,currentItem.rel)" alt="媒体原图" @error="mediaError='图片无法读取，请检查文件是否移动或删除。'"><p v-if="mediaError" class="media-error" role="alert">{{ mediaError }}</p></div><div v-else class="text-only"><AppIcon name="library" :size="64"/><p>这是一条文字存档</p></div><button class="viewer-button gallery-next" :disabled="galleryIndex>=(gallery.gallery?.length || 0)-1" aria-label="下一项" @click="navigateMedia(1)"><AppIcon name="chevron-right" :size="24"/></button></div><div v-if="visibleThumbnails.length>1" class="gallery-thumbnails"><button v-for="item in visibleThumbnails" :key="item.id || item.rel" :class="{selected:item.index===galleryIndex}" :aria-label="`查看第 ${item.index+1} 项`" @click="galleryIndex=item.index"><img v-if="item.type==='image' || item.poster" :src="thumbUrl(gallery,item.poster || item.rel,160)" alt=""><AppIcon v-else name="play" :size="25"/><span v-if="item.live">Live</span></button></div><details class="gallery-details"><summary>内容说明与存档信息</summary><p><ContentText :text="gallery.text || gallery.text_preview || '没有正文'" :platform="gallery.platform"/></p><dl><template v-for="(value,key) in gallery.meta" :key="key"><dt>{{ key }}</dt><dd><ContentText :text="String(value)" :platform="gallery.platform"/></dd></template><dt>目录</dt><dd>{{ gallery.rel_dir }}</dd><dt>完整性</dt><dd>{{ gallery.archive_status==='complete'?'已验证完整':gallery.archive_status==='partial'?'未完成':'旧格式，尚未确认完整' }}</dd></dl></details></section></div></Teleport>
   </div>
 </template>
@@ -261,8 +272,7 @@ onBeforeUnmount(()=>{stopCardLive();stopLive();unsubscribe();document.querySelec
 @media(max-width:1050px){.entry-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }.date-row label { flex-basis:40%; }}
 @media(max-width:767px){.page-heading { flex-wrap:wrap; margin-bottom:20px; }.page-heading .page-sub { margin-bottom:0; }.toolbar-row { display:block; }.view-switch { width:max-content; margin-top:12px; }.entry-grid { gap:12px; }.entry-caption { padding:10px; }.entry-title { font-size:12px; }.entry-count { font-size:9px; }.pagination { gap:10px; font-size:11px; }.pagination .btn { padding:9px 14px; }.gallery-mask { padding:12px; }.gallery-stage { gap:0; }.gallery-prev,.gallery-next { position:absolute; bottom:14px; z-index:2; background:#16283fbb; }.gallery-prev { left:5px; }.gallery-next { right:5px; }.gallery-thumbnails { justify-content:flex-start; }.gallery-head { gap:10px; }.gallery-head strong { font-size:14px; }.gallery-head p { font-size:10px; }.library-toolbar { padding:16px; } }
 
-.library-browser { display:grid; grid-template-columns:190px minmax(0,1fr); gap:22px; align-items:start; }
-.author-list { position:sticky; top:16px; padding:16px 12px; min-width:0; max-height:calc(100vh - 110px); overflow:auto; }
+.author-list { height:100%; min-width:0; overflow:auto; overscroll-behavior:contain; }
 .author-list h2 { display:flex; gap:8px; align-items:center; font-size:15px; margin:0 4px 14px; }
 .author-list h2 span { margin-left:auto; color:var(--text-2); font-size:12px; font-weight:400; }
 .author-list label { display:block; margin-bottom:12px; }.author-list input { padding:9px; font-size:12px; min-width:0; }
@@ -271,5 +281,6 @@ onBeforeUnmount(()=>{stopCardLive();stopLive();unsubscribe();document.querySelec
 .author-toggle { display:none; }.library-feed { min-width:0; }.feed-summary { font-size:12px; color:var(--text-2); margin-bottom:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .virtual-entries { position:relative; min-width:0; }.virtual-row { position:absolute; inset:0 0 auto; }.group-heading { display:flex; align-items:center; gap:12px; height:56px; font-size:19px; margin:0; }.group-heading span { font-size:11px; font-weight:400; color:var(--text-2); }
 .entry-card { display:block; padding:0; }.entry-caption { height:140px; box-sizing:border-box; }.entry-cover { width:100%; }.load-more { display:flex; align-items:center; justify-content:center; gap:12px; flex-wrap:wrap; min-height:70px; padding:12px; color:var(--text-2); font-size:12px; }
-@media(max-width:767px){.library-browser { display:block; }.author-toggle { display:flex; }.author-list { display:none; position:static; max-height:320px; margin-bottom:20px; }.author-list.is-open { display:block; }.author-options { grid-template-columns:repeat(2,minmax(0,1fr)); }.gallery-head { flex-wrap:wrap; }.gallery-head>div { flex-basis:45%; }.gallery-head .viewer-button { width:36px; height:36px; }.gallery-head>span { margin-left:auto; }}
+@media(max-width:1099px){.author-toggle { display:flex; }.author-list { display:none; height:auto; max-height:320px; padding:16px 12px; margin-bottom:20px; }.author-list.is-open { display:block; }.author-options { grid-template-columns:repeat(2,minmax(0,1fr)); }}
+@media(max-width:767px){.gallery-head { flex-wrap:wrap; }.gallery-head>div { flex-basis:45%; }.gallery-head .viewer-button { width:36px; height:36px; }.gallery-head>span { margin-left:auto; }}
 </style>

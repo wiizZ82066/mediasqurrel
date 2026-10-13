@@ -1,9 +1,10 @@
 // Only visible rows (plus nearby overscan) mount media elements. Loaded summary
 // records stay available for a stable return position without retaining images.
 export function buildLibraryRows(groups, width, compact = false) {
-  const columns = width >= 880 ? 3 : width >= 460 ? 2 : 1
+  width = Number.isFinite(width) && width > 0 ? width : 240
   const gap = compact ? 12 : 18
-  const cardHeight = ((Math.max(width, 240) - gap * (columns - 1)) / columns - 2) * .75 + 142
+  const columns = Math.max(1, Math.floor((width + gap) / (240 + gap)))
+  const cardHeight = ((width - gap * (columns - 1)) / columns - 2) * .75 + 142
   const rows = []
   let top = 0
   for (const group of groups) {
@@ -17,6 +18,14 @@ export function buildLibraryRows(groups, width, compact = false) {
     }
   }
   return { rows, height: top, columns, cardHeight, gap }
+}
+
+export function libraryBatchSize(layout, viewportHeight) {
+  // Fill taller/wider screens in one bounded request, without eagerly walking
+  // the cursor chain. Two extra rows cover the next short scroll.
+  const height = Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 800
+  const visibleRows = Math.ceil(height / (layout.cardHeight + layout.gap))
+  return Math.min(100, Math.max(60, layout.columns * (visibleRows + 2)))
 }
 
 export function visibleLibraryRows(layout, top, height, focusedId = null) {
