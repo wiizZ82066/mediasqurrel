@@ -32,7 +32,7 @@ class DetailAdapterTests(unittest.TestCase):
         self.addCleanup(windows.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.node = self.root / ('node.exe' if os.name == 'nt' else 'node')
         self.node.write_bytes(b'fixture-not-an-executable')
         self.package = self.root / 'catbus'

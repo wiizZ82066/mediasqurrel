@@ -17,7 +17,8 @@ class WindowsRuntimeTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         root = self.stack.enter_context(tempfile.TemporaryDirectory())
-        self.root = Path(root)
+        # Windows hosted runners may expose TEMP through an 8.3 alias.
+        self.root = Path(root).resolve()
         self.source = self.root / 'Media Squirrel'
         self.source.mkdir()
         (self.source / 'run.py').write_text('# fixture', encoding='utf-8')
@@ -97,11 +98,14 @@ class WindowsRuntimeTests(unittest.TestCase):
         self.registry.SetValueEx.assert_not_called()
 
     def test_custom_paths_file_and_port_are_explicit(self):
-        with patch.object(config, 'PATHS_FILE', str(self.root / 'paths.json')), patch.object(config, 'PORT', 9000):
+        # This checks command arguments, not host-specific TEMP path length.
+        # A paths file need not exist while constructing a startup command.
+        paths = Path(self.root.anchor) / 'ms-paths.json'
+        with patch.object(config, 'PATHS_FILE', str(paths)), patch.object(config, 'PORT', 9000):
             command = windows.startup_command()
         self.assertIn('--port 9000', command)
-        self.assertIn('--paths-file', command)
-        self.assertIn('paths.json', command)
+        self.assertIn('--paths-file ' + subprocess.list2cmdline([str(paths)]), command)
+        self.assertLessEqual(len(command.encode('utf-16-le')) // 2, 260)
 
     def test_permission_denied_returns_actionable_status(self):
         self.registry.OpenKey.side_effect = PermissionError('registry denied')

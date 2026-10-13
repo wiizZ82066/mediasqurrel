@@ -35,7 +35,7 @@ class DouyinAlbumTests(unittest.TestCase):
     def setUp(self):
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
-        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory())).resolve()
         self.stack.enter_context(patch.dict(os.environ, {'MS_DOWNLOAD_RETRIES': '0', 'MS_PROGRESS': '1'}))
         self.output = self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
         self.stack.enter_context(patch.object(downloader, '_ua', return_value='fixture'))

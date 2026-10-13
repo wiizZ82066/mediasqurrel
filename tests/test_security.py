@@ -16,7 +16,7 @@ class MediaBoundaryTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name) / "library"
+        self.root = Path(self.temporary.name).resolve() / "library"
         self.root.mkdir()
         self.author = self.root / "author" / "2026-01-01"
         self.author.mkdir(parents=True)

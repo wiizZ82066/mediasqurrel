@@ -16,7 +16,7 @@ import weibo_downloader as weibo
 class ArchiveTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="mediasquirrel-archive-test-")
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.addCleanup(self.temporary.cleanup)
 
     def begin(self, item_id="Ab123", author="example", date="26-10-09"):
@@ -108,7 +108,7 @@ class ArchiveTests(unittest.TestCase):
 class DownloaderArchiveTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="mediasquirrel-downloader-test-")
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.addCleanup(self.temporary.cleanup)
         self.output = contextlib.redirect_stdout(io.StringIO())
         self.output.__enter__()

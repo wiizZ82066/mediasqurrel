@@ -18,7 +18,7 @@ class MediaOpenTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
-        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory())).resolve()
         self.library = self.root / 'library'
         self.folder = self.library / 'Author' / '2026-10-13_weibo_123'
         self.folder.mkdir(parents=True)
@@ -169,7 +169,7 @@ class NativeOpenTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.path = Path(self.temp.name) / 'photo,中文.jpg'
+        self.path = Path(self.temp.name).resolve() / 'photo,中文.jpg'
         self.path.write_bytes(b'fixture')
         windows = patch.object(local_files, 'IS_WINDOWS', True)
         windows.start()

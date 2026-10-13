@@ -19,7 +19,7 @@ class CatalogTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="mediasquirrel-catalog-test-")
         self.addCleanup(self.temporary.cleanup)
-        self.base = Path(self.temporary.name)
+        self.base = Path(self.temporary.name).resolve()
         self.root = self.base / "source"
         self.root.mkdir()
         self.database = self.base / "isolated.db"
