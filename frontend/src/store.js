@@ -10,6 +10,7 @@ export const store = reactive({
   toasts: [],
   downloadState: { selectedId: '', drafts: {}, task: null },
   libraryState: null,
+  libraryAuthorsCollapsed: false,
   preferences: { density: 'comfortable', default_volume: 50 },
   taskListState: { items: [], cursor: '', nextCursor: null, previous: [], status: '', q: '', scrollTop: 0, loaded: false },
 })

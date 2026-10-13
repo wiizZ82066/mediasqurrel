@@ -37,8 +37,8 @@ function mediaDouble() {
   })
 }
 
-function setupComponent(name, t, savedState = {}) {
-  const filename = fileURLToPath(new URL(`../src/views/${name}.vue`, import.meta.url))
+function setupComponent(name, t, savedState = {}, sharedStore = null) {
+  const filename = fileURLToPath(new URL(name === 'App' ? '../src/App.vue' : `../src/views/${name}.vue`, import.meta.url))
   const { descriptor, errors } = parse(fs.readFileSync(filename, 'utf8'), { filename })
   assert.deepEqual(errors, [])
   const script = compileScript(descriptor, { id: name })
@@ -47,10 +47,10 @@ function setupComponent(name, t, savedState = {}) {
   assert.deepEqual(template.errors, [])
   const api = {}, mounted = [], cleanups = [], timers = new Map()
   let timerId = 0
-  const store = vue.reactive({ subs: [], libraryState: savedState })
+  const store = sharedStore || vue.reactive({ tasks: [], subs: [], libraryState: savedState, libraryAuthorsCollapsed: false })
   const scope = vue.effectScope()
   const env = {
-    ...vue, api, store, toast: () => {}, refreshSubs: async () => {},
+    ...vue, api, store, toast: () => {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},
     onTaskEvent: () => () => {}, onMounted: fn => mounted.push(fn),
     onBeforeUnmount: fn => cleanups.push(fn),
     useRoute: () => ({ query: {} }), useRouter: () => ({ replace: () => {} }),
@@ -527,4 +527,44 @@ test('a 60-item cache restored on a larger screen gets one bounded continuation 
   assert.equal(requests[0].cursor, 'cached-cursor')
   assert.ok(requests[0].page_size > 60 && requests[0].page_size <= 100)
   assert.equal(restored.state.entries.value.length, 60)
+})
+
+test('desktop author collapse survives library navigation without changing the selected author', async t => {
+  const app = setupComponent('App', t)
+  const library = setupComponent('Library', t, {}, app.store)
+  assert.equal(app.store.libraryAuthorsCollapsed, false)
+  library.state.author.value = 'Selected author'
+  app.state.toggleLibraryAuthors()
+  await vue.nextTick()
+  assert.equal(app.store.libraryAuthorsCollapsed, true)
+  assert.equal(library.state.author.value, 'Selected author')
+  library.unmount()
+  const returned = setupComponent('Library', t, {}, app.store)
+  assert.equal(returned.store.libraryAuthorsCollapsed, true)
+  assert.equal(returned.state.author.value, 'Selected author')
+  app.state.toggleLibraryAuthors()
+  assert.equal(app.store.libraryAuthorsCollapsed, false)
+  assert.equal(returned.state.author.value, 'Selected author')
+})
+
+test('desktop author collapse does not block narrow-window author selection', async t => {
+  const app = setupComponent('App', t)
+  const library = setupComponent('Library', t, {}, app.store)
+  const previousWidth = window.innerWidth
+  t.after(() => { window.innerWidth = previousWidth })
+  app.state.toggleLibraryAuthors()
+  window.innerWidth = 390
+  library.state.updateViewport()
+  library.state.authorsOpen.value = true
+  await vue.nextTick()
+  assert.equal(library.state.authorsInline.value, true)
+  assert.equal(library.state.authorsOpen.value, true)
+  library.state.selectAuthor('Mobile author')
+  assert.equal(library.state.author.value, 'Mobile author')
+  assert.equal(library.state.authorsOpen.value, false)
+  assert.equal(app.store.libraryAuthorsCollapsed, true)
+  window.innerWidth = 1366
+  library.state.updateViewport()
+  assert.equal(library.state.authorsInline.value, false)
+  assert.equal(app.store.libraryAuthorsCollapsed, true)
 })

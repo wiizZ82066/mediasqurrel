@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import catalog, config, library_service as service, media_jobs, task_manager, local_files
+from . import catalog, config, library_service as service, media_jobs, task_manager, local_files, task_files
 from .security import media_path
 
 router = APIRouter()
@@ -91,22 +91,31 @@ async def scan(body: dict):
         raise HTTPException(400, str(error))
 
 
+def _entry_target(entry, relative=None):
+    if relative is not None and (not isinstance(relative, str) or
+            relative not in {asset['rel_path'] for asset in entry['assets']}):
+        raise HTTPException(403, '只能定位此条目中已索引的媒体文件')
+    root = service.root_path(entry['root_id'])
+    folder = media_path(entry['rel_dir'], root=root)
+    target = media_path('/'.join([entry['rel_dir'], relative]), root=root, file_only=True) if relative is not None else folder
+    # A link to another author's directory must not escape this entry either.
+    if relative is not None and not Path(target).is_relative_to(Path(folder)):
+        raise HTTPException(403, '媒体文件超出此条目目录')
+    if not Path(folder).is_dir():
+        raise FileNotFoundError('条目目录已移动')
+    return target
+
+
 @router.post('/api/library/entries/{entry_id}/reveal')
 def reveal(entry_id: str, body: dict):
     entry = catalog.get_entry(entry_id)
     if not entry:
         raise HTTPException(404, '媒体条目不存在')
+    if set(body) - {'rel'}:
+        raise HTTPException(400, '仅接受条目内的相对文件路径')
     relative = body.get('rel')
-    if relative is not None and (not isinstance(relative, str) or
-            relative not in {asset['rel_path'] for asset in entry['assets']}):
-        raise HTTPException(403, '只能定位此条目中已索引的媒体文件')
     try:
-        root = service.root_path(entry['root_id'])
-        folder = media_path(entry['rel_dir'], root=root)
-        target = media_path('/'.join([entry['rel_dir'], relative]), root=root, file_only=True) if relative is not None else folder
-        # A link to another author's directory must not escape this entry either.
-        if relative is not None and not Path(target).is_relative_to(Path(folder)):
-            raise HTTPException(403, '媒体文件超出此条目目录')
+        target = _entry_target(entry, relative)
         local_files.reveal_path(target, select_file=relative is not None)
     except KeyError:
         raise HTTPException(404, '媒体根目录不存在') from None
@@ -116,6 +125,51 @@ def reveal(entry_id: str, body: dict):
         raise HTTPException(501, str(error)) from None
     except OSError:
         raise HTTPException(503, '无法打开文件资源管理器，请检查目录是否可用后重试') from None
+    return {'ok': True}
+
+
+@router.post('/api/library/entries/{entry_id}/open')
+def open_media(entry_id: str, body: dict):
+    if set(body) != {'rel', 'mode'} or not isinstance(body.get('rel'), str) or body.get('mode') not in ('default', 'choose'):
+        raise HTTPException(400, '需要条目内的媒体路径 rel 和打开方式 default 或 choose')
+    entry = catalog.get_entry(entry_id)
+    if not entry:
+        raise HTTPException(404, '媒体条目不存在')
+    try:
+        target = _entry_target(entry, body['rel'])
+        cancelled = local_files.open_media(target, mode=body['mode'])
+    except KeyError:
+        raise HTTPException(404, '媒体根目录不存在') from None
+    except FileNotFoundError:
+        raise HTTPException(404, '媒体文件已移动，请更新媒体索引') from None
+    except local_files.OpenWithBusyError as error:
+        raise HTTPException(409, str(error)) from None
+    except NotImplementedError as error:
+        raise HTTPException(501, str(error)) from None
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
+    except OSError:
+        raise HTTPException(503, '无法调用本机应用；请检查文件是否可用，或使用“选择打开方式”') from None
+    return {'ok': True, 'cancelled': bool(cancelled)}
+
+
+@router.post('/api/tasks/{task_id}/reveal')
+def reveal_task(task_id: str):
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(404, '任务记录不存在')
+    try:
+        entry = service.task_entry(task)
+        target = _entry_target(entry) if entry else task_files.output_directory(task)
+        local_files.reveal_path(target, select_file=False)
+    except KeyError:
+        raise HTTPException(404, '媒体根目录不存在，请检查磁盘或重新建立索引') from None
+    except FileNotFoundError:
+        raise HTTPException(404, '任务产物目录已移动或不存在，请更新媒体索引') from None
+    except NotImplementedError as error:
+        raise HTTPException(501, str(error)) from None
+    except OSError:
+        raise HTTPException(503, '无法打开任务产物目录，请检查目录是否可用后重试') from None
     return {'ok': True}
 
 

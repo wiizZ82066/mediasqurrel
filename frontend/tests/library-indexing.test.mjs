@@ -66,7 +66,7 @@ function component(name, t) {
     timers.clear()
   }
   t.after(unmount)
-  return { state, api, route, pushed, notices, store, unmount,
+  return { state, api, route, pushed, notices, store, unmount, document: env.document,
     emit: event => listeners.forEach(listener => listener(event)),
     mount: async () => { for (const callback of mounted) await callback() },
   }
@@ -322,4 +322,122 @@ test('Library deep link recovers automatically after indexing timeout and matchi
   await flush()
   assert.equal(calls, 2)
   assert.equal(state.gallery.value.id, 'entry-a')
+})
+
+test('file actions post only stable entry/task IDs and the selected indexed relative media path', async t => {
+  const requests = []
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push({ url, options })
+    return response(200, { ok: true, cancelled: false })
+  })
+  await realApi.taskReveal('task/a')
+  await realApi.libraryReveal('entry/a')
+  await realApi.libraryOpen('entry/a', 'media/图片 1.jpg', 'choose')
+  assert.deepEqual(requests.map(request => [request.url, request.options.method]), [
+    ['/api/tasks/task%2Fa/reveal', 'POST'],
+    ['/api/library/entries/entry%2Fa/reveal', 'POST'],
+    ['/api/library/entries/entry%2Fa/open', 'POST'],
+  ])
+  assert.equal(requests[0].options.body, undefined)
+  assert.deepEqual(JSON.parse(requests[1].options.body), { rel: null })
+  assert.deepEqual(JSON.parse(requests[2].options.body), { rel: 'media/图片 1.jpg', mode: 'choose' })
+})
+
+test('task folder actions accept old and linked tasks, deduplicate clicks, and preserve logs/navigation on failure', async t => {
+  const { state, api, pushed, notices } = component('Tasks', t)
+  const pending = deferred(), calls = []
+  api.taskReveal = id => { calls.push(id); return pending.promise }
+  state.logs.old = { items: [{ seq: 1, text: 'retained log' }] }
+  await state.revealTask({ id: 'queued', status: 'queued' })
+  assert.deepEqual(calls, [])
+  const first = state.revealTask(completed('old')) // Earlier summaries may have no output path.
+  await state.revealTask(completed('old'))
+  assert.deepEqual(calls, ['old'])
+  assert.equal(state.revealing.old, true)
+  pending.reject(new Error('内容目录已移动，请更新媒体索引'))
+  await first
+  assert.equal(state.revealing.old, undefined)
+  assert.deepEqual(notices, [['内容目录已移动，请更新媒体索引', 'error']])
+  assert.deepEqual(state.logs.old.items, [{ seq: 1, text: 'retained log' }])
+  assert.deepEqual(pushed, [])
+  api.taskReveal = async id => { calls.push(id); return { ok: true } }
+  await state.revealTask({ id: 'linked', status: 'queued', entry_id: 'entry-a' })
+  await state.revealTask(completed('old'))
+  assert.deepEqual(calls, ['old', 'linked', 'old'])
+})
+
+test('viewer file actions use the current image/video/Live media, handle native cancellation, and allow retry', async t => {
+  const { state, api, notices } = component('Library', t)
+  state.gallery.value = { ...entry('entry-a'), gallery: [
+    { type: 'image', rel: 'one.jpg' },
+    { type: 'video', rel: 'two.mp4' },
+    { type: 'video', live: true, rel: 'three.mov', poster: 'three.jpg' },
+  ] }
+  const calls = [], pending = deferred()
+  api.libraryOpen = (...args) => { calls.push(args); return pending.promise }
+  const choice = state.openCurrentFile('choose')
+  assert.equal(state.openBusy.value, true)
+  await state.openCurrentFile('choose')
+  assert.equal(calls.length, 1)
+  pending.resolve({ ok: true, cancelled: true })
+  await choice
+  assert.equal(state.openBusy.value, false)
+  assert.deepEqual(notices, [])
+  api.libraryOpen = async (...args) => { calls.push(args); return { ok: true, cancelled: false } }
+  state.galleryIndex.value = 1
+  await state.openCurrentFile('default')
+  state.openMenuVisible.value = true
+  state.galleryIndex.value = 2
+  assert.equal(state.openMenuVisible.value, false)
+  await state.openCurrentFile('default')
+  assert.deepEqual(calls, [
+    ['entry-a', 'one.jpg', 'choose'], ['entry-a', 'two.mp4', 'default'], ['entry-a', 'three.mov', 'default'],
+  ])
+  api.libraryOpen = async () => { throw new Error('系统尚未设置此格式的默认应用') }
+  await state.openCurrentFile('default')
+  assert.equal(state.openBusy.value, false)
+  assert.equal(notices.at(-1)[1], 'error')
+  state.gallery.value = entry('text-only')
+  await state.showOpenMenu()
+  await state.openCurrentFile('default')
+  assert.equal(state.openMenuVisible.value, false)
+  assert.equal(calls.length, 3)
+})
+
+test('viewer open menu supports keyboard focus, outside dismissal, and Escape before closing the viewer', async t => {
+  const { state, document } = component('Library', t)
+  state.gallery.value = { ...entry('entry-a'), gallery: [{ type: 'image', rel: 'one.jpg' }] }
+  const control = () => vue.markRaw({ focus() { document.activeElement = this } })
+  const trigger = control(), first = control(), last = control(), close = control()
+  const menu = vue.markRaw({ contains: node => [trigger, first, last].includes(node), querySelectorAll: () => [first, last] })
+  state.openMenuEl.value = menu
+  state.openMenuButton.value = trigger
+  state.closeButton.value = close
+  state.viewerEl.value = vue.markRaw({ querySelectorAll: () => [trigger, first, last, close] })
+  const key = (value, shiftKey = false) => ({ key: value, shiftKey, preventDefault() { this.prevented = true } })
+  await state.showOpenMenu()
+  assert.equal(document.activeElement, first)
+  state.onOpenMenuKey(key('ArrowUp'))
+  assert.equal(document.activeElement, last)
+  state.onOpenMenuKey(key('Home'))
+  assert.equal(document.activeElement, first)
+  state.onOpenMenuKey(key('Escape'))
+  assert.equal(document.activeElement, trigger)
+  assert.equal(state.openMenuVisible.value, false)
+  assert.equal(state.gallery.value.id, 'entry-a')
+  await state.showOpenMenu(true)
+  assert.equal(document.activeElement, last)
+  state.onOpenMenuKey(key('Tab'))
+  assert.equal(document.activeElement, close)
+  assert.equal(state.openMenuVisible.value, false)
+  await state.showOpenMenu()
+  state.onViewerPointerDown({ target: first })
+  assert.equal(state.openMenuVisible.value, true)
+  state.onViewerPointerDown({ target: close })
+  assert.equal(state.openMenuVisible.value, false)
+  await state.showOpenMenu()
+  state.onOpenMenuFocusOut({ currentTarget: menu, relatedTarget: close })
+  assert.equal(state.openMenuVisible.value, false)
+  state.onOpenMenuKey(key('Escape')) // Escape on the collapsed trigger still closes the viewer.
+  assert.equal(state.gallery.value, null)
 })

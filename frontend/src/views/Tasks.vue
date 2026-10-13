@@ -5,6 +5,7 @@ import { api } from '../api.js'
 import { store, onTaskEvent, upsertTaskSummary, removeTaskSummary, toast } from '../store.js'
 import ActivityProgress from '../components/ActivityProgress.vue'
 import PlatformLogo from '../components/PlatformLogo.vue'
+import AppIcon from '../components/AppIcon.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -20,6 +21,7 @@ const loading = ref(false)
 const error = ref('')
 const changed = ref(false)
 const busy = reactive({})
+const revealing = reactive({})
 const locatingTaskId = ref(null)
 const locateNotice = ref('')
 let locateController = null
@@ -40,6 +42,20 @@ const statusText = {
   cancelled: '已取消', interrupted: '运行中断',
 }
 const isActive = (task) => ['queued', 'running'].includes(task.status)
+const noTaskOutputYet = (task) => task.status === 'queued' && !task.entry_id && !task.output_rel && !task.output_dir
+
+async function revealTask(task) {
+  if (revealing[task.id] || noTaskOutputYet(task)) return
+  revealing[task.id] = true
+  try {
+    await api.taskReveal(task.id)
+    toast('已打开任务内容目录', 'success')
+  } catch (failure) {
+    toast(failure.message, 'error')
+  } finally {
+    delete revealing[task.id]
+  }
+}
 
 function formatTime(value) {
   if (!value) return '—'
@@ -423,6 +439,7 @@ onBeforeUnmount(() => {
             <div v-if="!logs[task.id].items.length && !logs[task.id].loading" class="t-line">{{ isActive(task) ? '等待任务输出…' : '没有可显示的详细日志。' }}</div>
           </div>
         </section>
+        <div class="task-file-actions"><button class="btn btn-ghost task-reveal" :disabled="revealing[task.id] || noTaskOutputYet(task)" :title="noTaskOutputYet(task) ? '任务排队中，尚未生成内容目录' : '在文件资源管理器中打开任务内容目录'" aria-label="在文件资源管理器中打开任务内容目录" @click.stop="revealTask(task)"><AppIcon name="folder" :size="21"/></button></div>
       </article>
     </div>
     <nav v-if="tasks.length || previous.length" class="pagination" aria-label="任务分页"><button class="btn btn-ghost" :disabled="loading || !previous.length" @click="previousPage">上一页</button><span>第 {{ previous.length + 1 }} 页 · 本页 {{ tasks.length }} 条</span><button class="btn btn-ghost" :disabled="loading || !nextCursor" @click="nextPage">下一页</button></nav>
@@ -437,6 +454,8 @@ onBeforeUnmount(() => {
 .task-filters .btn { flex-shrink: 0; }
 .task-list { display: flex; flex-direction: column; gap: 14px; }
 .task-card { padding: 18px 22px; }
+.task-file-actions { display:flex; justify-content:flex-end; margin-top:8px; }
+.task-reveal { width:34px; height:34px; padding:0; display:grid; place-items:center; }
 .task-head { display: flex; align-items: center; gap: 14px; width: 100%; border: 0; background: transparent; text-align: left; padding: 0; color: inherit; font: inherit; cursor: pointer; }
 .task-head:focus-visible { outline: 2px solid var(--blue); outline-offset: 5px; border-radius: 8px; }
 .hidden-filter { display:flex; align-items:center; gap:6px; white-space:nowrap; font-size:12px; }

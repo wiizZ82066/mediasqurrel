@@ -16,6 +16,7 @@ const activeTasks = computed(() => store.tasks.filter(t => ['queued', 'running']
 const showTop = ref(false)
 const contentEl = ref(null)
 function onContentScroll() { showTop.value = contentEl.value?.scrollTop > 300 }
+function toggleLibraryAuthors() { store.libraryAuthorsCollapsed = !store.libraryAuthorsCollapsed }
 onMounted(() => { api.settings().then(result => { store.preferences = result.values }).catch(() => {}); connectWS(); refreshTasks(); contentEl.value?.addEventListener('scroll', onContentScroll, { passive: true }) })
 onBeforeUnmount(() => contentEl.value?.removeEventListener('scroll', onContentScroll))
 </script>
@@ -32,7 +33,10 @@ onBeforeUnmount(() => contentEl.value?.removeEventListener('scroll', onContentSc
       <div class="sidebar-footer"><span class="dot" :style="{ color: store.wsConnected ? 'var(--green)' : 'var(--orange)' }"></span> {{ store.wsConnected ? '实时连接正常' : '正在重新连接…' }}<div>本地媒体收藏与浏览</div></div>
     </aside>
     <main ref="contentEl" class="content"><div class="content-inner" :class="{'library-content':route.name === 'library'}"><router-view/></div></main>
-    <div id="library-sidebar" v-show="route.name === 'library'" class="library-sidebar-host"></div>
+    <div v-show="route.name === 'library'" class="library-sidebar-host" :class="{'is-collapsed':store.libraryAuthorsCollapsed}">
+      <button class="library-sidebar-toggle" :aria-expanded="!store.libraryAuthorsCollapsed" aria-controls="library-sidebar" :aria-label="store.libraryAuthorsCollapsed?'展开作者列表':'收起作者列表'" :title="store.libraryAuthorsCollapsed?'展开作者列表':'收起作者列表'" @click="toggleLibraryAuthors"><AppIcon :name="store.libraryAuthorsCollapsed?'chevron-left':'chevron-right'" :size="20"/><span>{{ store.libraryAuthorsCollapsed?'作者':'收起作者' }}</span></button>
+      <div id="library-sidebar" v-show="!store.libraryAuthorsCollapsed" class="library-sidebar-body"></div>
+    </div>
   </div>
   <div class="toast-wrap" aria-live="polite" aria-relevant="additions text">
     <div v-for="item in store.toasts" :key="item.id" class="toast" :class="'toast-' + item.kind" role="status">
@@ -40,13 +44,18 @@ onBeforeUnmount(() => contentEl.value?.removeEventListener('scroll', onContentSc
       <button class="toast-close" aria-label="关闭提示" @click="dismissToast(item.id)"><AppIcon name="close" :size="20"/></button>
     </div>
   </div>
-  <button v-if="showTop" class="back-top" :class="{'beside-library':route.name === 'library'}" aria-label="回到顶部" @click="contentEl?.scrollTo({ top: 0, behavior: 'instant' })"><AppIcon name="up"/></button>
+  <button v-if="showTop" class="back-top" :class="{'beside-library':route.name === 'library','beside-collapsed-library':route.name === 'library' && store.libraryAuthorsCollapsed}" aria-label="回到顶部" @click="contentEl?.scrollTo({ top: 0, behavior: 'instant' })"><AppIcon name="up"/></button>
 </template>
 <style scoped>
 .sidebar-footer .dot { display:inline-block; }
 .content-inner.library-content { max-width:none; }
-.library-sidebar-host { flex:0 0 240px; min-width:0; height:100%; padding:36px 18px 24px; overflow:hidden; background:rgba(255,255,255,.55); border-left:1px solid var(--border); }
-@media(min-width:1100px) { .back-top.beside-library { right:264px; } }
+.library-sidebar-host { display:flex; flex-direction:column; flex:0 0 240px; min-width:0; height:100%; padding:36px 18px 24px; overflow:hidden; background:rgba(255,255,255,.55); border-left:1px solid var(--border); }
+.library-sidebar-host.is-collapsed { flex-basis:56px; padding-right:7px; padding-left:7px; }
+.library-sidebar-toggle { display:flex; align-items:center; justify-content:center; gap:7px; flex-shrink:0; min-height:36px; width:100%; margin-bottom:18px; padding:7px; border:1px solid var(--border); border-radius:10px; background:#fff; color:var(--text-2); font-size:12px; cursor:pointer; }
+.library-sidebar-toggle:hover { background:#edf3f7; color:var(--blue); }
+.is-collapsed .library-sidebar-toggle { flex-direction:column; gap:4px; padding:8px 2px; font-size:11px; }
+.library-sidebar-body { flex:1; min-height:0; }
+@media(min-width:1100px) { .back-top.beside-library { right:264px; }.back-top.beside-collapsed-library { right:80px; } }
 @media(max-width:1099px) { .library-sidebar-host { display:none; } }
 .toast-wrap { position:fixed; top:20px; right:20px; z-index:999; display:flex; flex-direction:column; gap:10px; width:min(390px,calc(100vw - 32px)); pointer-events:none; }
 .toast { display:flex; align-items:flex-start; gap:14px; padding:14px 16px; background:#fff; color:var(--text); border:1px solid var(--border); border-left:4px solid var(--blue); border-radius:14px; box-shadow:var(--shadow-card); pointer-events:auto; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
