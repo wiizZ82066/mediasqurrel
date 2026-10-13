@@ -17,6 +17,13 @@
 !/.github/**
 !/DESIGN.md
 !/README.md
+!/docs/
+/docs/*
+!/docs/guide.md
+!/docs/images/
+/docs/images/*
+!/docs/images/library.png
+!/docs/images/viewer.png
 !/requirements.txt
 !/requirements-release.txt
 !/weibo_downloader.py
