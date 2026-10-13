@@ -1,3 +1,5 @@
+![Media Squirrel 松鼠 Logo](docs/images/logo.svg)
+
 # Media Squirrel
 
 **把微博与抖音内容存到本机，按作者和时间整理成自己的媒体库。**

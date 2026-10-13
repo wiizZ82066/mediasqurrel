@@ -24,6 +24,7 @@
 /docs/images/*
 !/docs/images/library.png
 !/docs/images/viewer.png
+!/docs/images/logo.svg
 !/requirements.txt
 !/requirements-release.txt
 !/weibo_downloader.py
