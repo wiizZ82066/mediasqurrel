@@ -91,3 +91,16 @@ class SettingsApiTests(unittest.TestCase):
                 response = self.client.patch('/api/settings', json={'default_volume': invalid})
                 self.assertEqual(response.status_code, 400, response.text)
                 self.assertEqual((Path(config.DATA_DIR) / 'settings.json').read_bytes(), before)
+
+    def test_douyin_channel_defaults_to_browser_and_validates_before_saving(self):
+        self.assertEqual(settings.load()['douyin_detail_channel'], 'browser')
+        with patch.object(settings, 'apply'):
+            for channel in ('catbus', 'browser'):
+                response = self.client.patch('/api/settings', json={'douyin_detail_channel': channel})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(settings.load()['douyin_detail_channel'], channel)
+            before = (Path(config.DATA_DIR) / 'settings.json').read_bytes()
+            for invalid in ('auto', None, {}, True):
+                response = self.client.patch('/api/settings', json={'douyin_detail_channel': invalid})
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertEqual((Path(config.DATA_DIR) / 'settings.json').read_bytes(), before)

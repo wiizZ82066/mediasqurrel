@@ -3,6 +3,7 @@ import re
 from .. import watcher
 from ..browser import launch_chrome, stealth_context
 from .common import collect_browser, published_at, run_sync_scan
+from ..douyin_content import source_url
 
 def parse_page(payload):
     if not isinstance(payload, dict) or payload.get('status_code') != 0:
@@ -18,7 +19,7 @@ def parse_page(payload):
         hashtags = [value.get('cha_name') for value in (post.get('cha_list') or []) if isinstance(value, dict)]
         hashtags += [value.get('hashtag_name') for value in (post.get('text_extra') or []) if isinstance(value, dict)]
         items.append({'item_id': str(vid), 'script_id': 'douyin',
-                      'params': {'input': f'https://www.douyin.com/video/{vid}'},
+                      'params': {'input': source_url(post)},
                       'title': title[:60] or '（无文案）', 'created_at': published_at(post.get('create_time')),
                       'content_text': str(post.get('desc') or ''), 'hashtags': hashtags,
                       'content_complete': isinstance(post.get('desc'), str),

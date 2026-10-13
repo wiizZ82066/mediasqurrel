@@ -4,6 +4,13 @@
   "icon": "🌐",
   "script": "weibo_downloader.py",
   "description": "输入微博帖子链接，下载正文、原图与 Live 图",
+  "capabilities": {
+    "download": true,
+    "search": true,
+    "subscription": true,
+    "media_types": ["image", "live"],
+    "detail_transports": ["browser"]
+  },
   "params": [
     {
       "name": "url",

@@ -8,9 +8,33 @@
 import json
 import os
 import sys
+from copy import deepcopy
 from typing import Optional
 
 from . import config
+
+
+def _capabilities(manifest):
+    """Declarative support, not a promise that credentials/network are ready.
+
+    Older third-party manifests keep working, without implicitly advertising
+    search or subscription support merely because a download script exists.
+    """
+    declared = manifest.get('capabilities') or {}
+    if not isinstance(declared, dict):
+        declared = {}
+    result = {'download': True, 'search': False, 'subscription': False,
+              'media_types': [], 'detail_transports': []}
+    for key in ('download', 'search', 'subscription'):
+        if type(declared.get(key)) is bool:
+            result[key] = declared[key]
+    for key, supported in (('media_types', {'image', 'video', 'live'}),
+                           ('detail_transports', {'browser', 'cli_optional'})):
+        values = declared.get(key)
+        if isinstance(values, list):
+            result[key] = list(dict.fromkeys(value for value in values
+                                             if isinstance(value, str) and value in supported))
+    return result
 
 
 def _launcher_argv() -> list[str]:
@@ -41,6 +65,7 @@ def _load_all() -> dict:
                 continue
             m["_script_path"] = os.path.join(config.RESOURCE_DIR, m["script"])
             m["_available"] = os.path.isfile(m["_script_path"])
+            m['capabilities'] = _capabilities(m)
             manifests[m["id"]] = m
         except Exception as e:
             print(f"[registry] 清单加载失败 {fn}: {e}")
@@ -60,7 +85,7 @@ def all_scripts() -> list[dict]:
     global _CACHE
     if _CACHE is None:
         _CACHE = _load_all()
-    return [dict(m) for m in _CACHE.values()]
+    return [deepcopy(m) for m in _CACHE.values()]
 
 
 def get(script_id: str) -> Optional[dict]:
@@ -68,7 +93,7 @@ def get(script_id: str) -> Optional[dict]:
     if _CACHE is None:
         _CACHE = _load_all()
     m = _CACHE.get(script_id)
-    return dict(m) if m else None
+    return deepcopy(m) if m else None
 
 
 def build_command(script_id: str, params: dict) -> list[str]:

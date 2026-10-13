@@ -389,6 +389,7 @@ async def _run(task_id):
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                 cwd=config.RESOURCE_DIR, env={**os.environ, 'MS_PROGRESS': '1',
                     'MS_DOWNLOAD_TIMEOUT': str(config.DOWNLOAD_TIMEOUT),
+                    'MS_DOUYIN_DETAIL_CHANNEL': config.DOUYIN_DETAIL_CHANNEL,
                     'MS_DOWNLOAD_RETRIES': str(config.DOWNLOAD_RETRIES)}, **kwargs)
             task['proc'] = proc
             if task.get('_cancelling') or _stopping:

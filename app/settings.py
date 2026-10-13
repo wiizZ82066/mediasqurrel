@@ -19,7 +19,8 @@ _LOCK = threading.RLock()
 _storage_cached = None
 DEFAULTS = {'default_download_dir': '', 'download_concurrency': 1, 'timeout_seconds': 120,
             'retries': 2, 'cache_limit_mb': 2048, 'notifications': 'in_app',
-            'density': 'comfortable', 'reduce_motion': True, 'default_volume': 50}
+            'density': 'comfortable', 'reduce_motion': True, 'default_volume': 50,
+            'douyin_detail_channel': 'browser'}
 _RANGES = {'download_concurrency': (1, 4), 'timeout_seconds': (10, 600), 'retries': (0, 5), 'cache_limit_mb': (128, 32768), 'default_volume': (0, 100)}
 
 
@@ -47,6 +48,8 @@ def validate(values):
         raise ValueError('本轮使用网页内通知')
     if result.get('density', 'comfortable') not in {'comfortable', 'compact'}:
         raise ValueError('列表密度无效')
+    if result.get('douyin_detail_channel', 'browser') not in ('browser', 'catbus'):
+        raise ValueError('抖音解析方式无效')
     if result.get('reduce_motion', True) is not True:
         raise ValueError('本轮只保留进度条动画')
     output = result.get('default_download_dir', '')
@@ -70,6 +73,7 @@ def apply(values):
     config.DOWNLOAD_RETRIES = values['retries']
     config.CACHE_LIMIT_BYTES = values['cache_limit_mb'] * 1024 * 1024
     config.DEFAULT_DOWNLOAD_DIR = values['default_download_dir'] or None
+    config.DOUYIN_DETAIL_CHANNEL = values.get('douyin_detail_channel', 'browser')
 
 
 def save(changes):

@@ -10,6 +10,7 @@ import time
 from urllib.parse import urlencode, urlsplit
 
 from .browser import sync_playwright
+from .platform_errors import PlatformAccessError
 
 MOBILE_UA = ('Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
              '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
@@ -17,10 +18,9 @@ DESKTOP_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
 
 
-class WeiboAccessError(ValueError):
+class WeiboAccessError(PlatformAccessError):
     def __init__(self, message, reason='platform_error'):
-        super().__init__(message)
-        self.reason = reason
+        super().__init__(message, reason, platform='weibo')
 
 
 def clean_text(value, limit=200):

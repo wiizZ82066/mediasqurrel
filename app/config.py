@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+DOUYIN_DETAIL_CHANNEL = 'browser'
 _FROZEN = getattr(sys, "frozen", False)
 SOURCE_DIR = str(Path(__file__).resolve().parent.parent)
 RESOURCE_DIR = str(getattr(sys, "_MEIPASS", SOURCE_DIR))

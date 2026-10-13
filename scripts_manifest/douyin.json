@@ -3,16 +3,23 @@
   "name": "抖音下载器",
   "icon": "🎵",
   "script": "douyin_downloader.py",
-  "description": "粘贴分享文案或视频链接，自动解析并下载无水印视频",
+  "description": "粘贴分享文案或作品链接，下载视频、图集与正文",
+  "capabilities": {
+    "download": true,
+    "search": true,
+    "subscription": true,
+    "media_types": ["image", "video"],
+    "detail_transports": ["browser", "cli_optional"]
+  },
   "params": [
     {
       "name": "input",
-      "label": "分享文案 / 视频链接",
+      "label": "分享文案 / 作品链接",
       "kind": "textarea",
       "required": true,
       "positional": true,
       "placeholder": "例如：3.30 复制打开抖音，看看【xx的作品】... https://v.douyin.com/xxxx/",
-      "help": "支持完整分享文案、v.douyin.com 短链、www.douyin.com/video/{id} 直链"
+      "help": "支持完整分享文案、v.douyin.com 短链、www.douyin.com/video/{id} 视频及 /note/{id} 图集链接"
     },
     {
       "name": "out",
@@ -21,7 +28,7 @@
       "flag": "-o",
       "required": false,
       "placeholder": "不填则使用默认输出根目录",
-      "help": "视频保存位置：输出目录/作者昵称/发布时间/"
+      "help": "作品保存位置：输出目录/作者昵称/发布时间/"
     }
   ],
   "link_hints": ["douyin.com", "iesdouyin.com"]

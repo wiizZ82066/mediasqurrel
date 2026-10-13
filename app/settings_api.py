@@ -22,11 +22,13 @@ _paths_pending = False
 
 @router.get('/api/settings')
 def current_settings():
+    from .douyin_detail_adapter import configuration_status
     return {'paths': {'library_root': config.LIBRARY_ROOT, 'data_dir': config.DATA_DIR,
                      'default_download_dir': config.DEFAULT_DOWNLOAD_DIR or config.LIBRARY_ROOT,
                      'legacy_locations': config.legacy_locations()},
             'values': settings.load(), 'retention': {'tasks': 'forever', 'logs': 'compressed_forever'},
-            'versions': settings.versions(), 'storage': settings.storage_usage(), 'restart_required': _paths_pending}
+            'versions': settings.versions(), 'storage': settings.storage_usage(), 'restart_required': _paths_pending,
+            'douyin_adapter': configuration_status()}
 
 
 @router.patch('/api/settings')

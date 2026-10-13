@@ -13,7 +13,8 @@ class ParserTests(unittest.TestCase):
         return {'status_code': 0, 'aweme_list': list(posts), 'has_more': more}
 
     def post(self, ident, timestamp, pinned=False):
-        return {'aweme_id': ident, 'create_time': timestamp, 'is_top': pinned, 'desc': 'example'}
+        identity = {'old': '10001', 'new': '10002', 'older': '10003', 'one': '10004', 'two': '10005'}[ident]
+        return {'aweme_id': identity, 'create_time': timestamp, 'is_top': pinned, 'desc': 'example'}
 
     def test_pinned_does_not_end_overlap_and_multiple_pages_deduplicate(self):
         collector = Collector({'scan_options': {'cutoff_at': '2026-10-01T00:00:00+00:00'}}, douyin.parse_page)
