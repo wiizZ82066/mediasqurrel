@@ -43,6 +43,41 @@ class CatalogTests(unittest.TestCase):
     def entries(self, **kwargs):
         return catalog.list_entries(root_id=self.root_id, database=self.database, **kwargs)
 
+    def test_cursor_batches_keep_order_without_duplicates_when_new_content_arrives(self):
+        for number in range(7):
+            self.fixture(name=f'26-10-{number + 1:02d}', item=f'item{number}')
+        self.scan()
+        for direction in ('asc', 'desc'):
+            expected = [item['id'] for item in self.entries(sort=direction)['items']]
+            self.assertEqual(len(expected), 7)
+            first = self.entries(cursor='', page_size=2, sort=direction)
+            received = [item['id'] for item in first['items']]
+            cursor = first['next_cursor']
+            while cursor:
+                result = self.entries(cursor=cursor, page_size=2, sort=direction)
+                received.extend(item['id'] for item in result['items'])
+                cursor = result['next_cursor']
+            self.assertEqual(received, expected)
+        first = self.entries(cursor='', page_size=2)
+        original = [item['id'] for item in self.entries()['items']]
+        newest = self.fixture(name='26-10-10', item='newest')
+        (newest / 'context.md').write_text('- **发布时间**: 26-10-10 14:30\n', encoding='utf-8')
+        self.scan()
+        second = self.entries(cursor=first['next_cursor'], page_size=2)
+        self.assertEqual([item['id'] for item in second['items']], original[2:4])
+
+    def test_cursor_rejects_filter_changes_and_malformed_values(self):
+        self.fixture(name='26-10-01', item='one'); self.fixture(name='26-10-02', item='two')
+        self.scan()
+        cursor = self.entries(cursor='', page_size=1)['next_cursor']
+        self.assertIsNotNone(cursor)
+        for options in ({'q': 'changed'}, {'author': 'Other'}, {'sort': 'asc'}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                self.entries(cursor=cursor, **options)
+        for cursor in ('not-json', '[1]', 'x' * 1025):
+            with self.subTest(cursor=cursor[:20]), self.assertRaises(ValueError):
+                self.entries(cursor=cursor)
+
     def test_metadata_scan_legacy_gallery_and_lazy_summary(self):
         folder = self.fixture()
         (folder / "live").mkdir()

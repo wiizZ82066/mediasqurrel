@@ -21,7 +21,8 @@ def _launcher_argv() -> list[str]:
     """
     if getattr(sys, "frozen", False):
         return [sys.executable, "--internal-run"]
-    return [sys.executable, "-u"]
+    from .windows_runtime import console_python
+    return [console_python(), "-u"]
 
 
 def _load_all() -> dict:

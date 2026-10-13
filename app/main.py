@@ -19,6 +19,7 @@ from .redaction import redact_text
 from .runtime import InstanceLock, runtime_identity
 from . import settings
 from . import settings_api, maintenance, db
+from . import windows_api
 from . import scanners  # noqa: F401  (import 即注册各平台扫描器)
 
 
@@ -152,6 +153,7 @@ async def lifespan(_app: FastAPI):
 app.router.lifespan_context = lifespan
 app.include_router(library_router)
 app.include_router(settings_api.router)
+app.include_router(windows_api.router)
 
 
 # ---------------------------------------------------------------- 健康检查
@@ -493,6 +495,7 @@ def api_add_sub(body: dict):
             homepage=(body.get('homepage') or '').strip(),
             interval_minutes=int(body.get('interval_minutes') or 30),
             avatar_url=str(body.get('avatar_url') or body.get('avatar') or ''),
+            download_filter=body.get('download_filter'),
         )
     except (ValueError, TypeError) as error:
         raise HTTPException(400, str(error))
@@ -513,6 +516,11 @@ def api_update_sub(sub_id: int, body: dict):
 def api_delete_sub(sub_id: int):
     ok = watcher.remove_sub(sub_id)
     return {"ok": ok}
+
+
+@app.get('/api/subs/{sub_id}/items')
+def api_subscription_items(sub_id: int, limit: int = 20, offset: int = 0):
+    return watcher.subscription_store.list_items(sub_id, limit=limit, offset=offset)
 
 
 @app.post("/api/subs/{sub_id}/scan")

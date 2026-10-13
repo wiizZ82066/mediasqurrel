@@ -15,9 +15,13 @@ def parse_page(payload):
         if not vid:
             continue
         title = re.sub(r'\s+', ' ', str(post.get('desc') or '')).strip()
+        hashtags = [value.get('cha_name') for value in (post.get('cha_list') or []) if isinstance(value, dict)]
+        hashtags += [value.get('hashtag_name') for value in (post.get('text_extra') or []) if isinstance(value, dict)]
         items.append({'item_id': str(vid), 'script_id': 'douyin',
                       'params': {'input': f'https://www.douyin.com/video/{vid}'},
                       'title': title[:60] or '（无文案）', 'created_at': published_at(post.get('create_time')),
+                      'content_text': str(post.get('desc') or ''), 'hashtags': hashtags,
+                      'content_complete': isinstance(post.get('desc'), str),
                       'pinned': bool(post.get('is_top') or post.get('is_pinned')),
                       '_avatar_source': ((((post.get('author') or {}).get('avatar_thumb') or {}).get('url_list') or [''])[0])})
     more = payload.get('has_more')

@@ -13,13 +13,14 @@ import time
 from . import config, db
 from .archive import atomic_write_text
 from .redaction import redact_text, redact_value
+from .windows_runtime import console_python
 
 _LOCK = threading.RLock()
 _storage_cached = None
 DEFAULTS = {'default_download_dir': '', 'download_concurrency': 1, 'timeout_seconds': 120,
             'retries': 2, 'cache_limit_mb': 2048, 'notifications': 'in_app',
-            'density': 'comfortable', 'reduce_motion': True}
-_RANGES = {'download_concurrency': (1, 4), 'timeout_seconds': (10, 600), 'retries': (0, 5), 'cache_limit_mb': (128, 32768)}
+            'density': 'comfortable', 'reduce_motion': True, 'default_volume': 50}
+_RANGES = {'download_concurrency': (1, 4), 'timeout_seconds': (10, 600), 'retries': (0, 5), 'cache_limit_mb': (128, 32768), 'default_volume': (0, 100)}
 
 
 def load():
@@ -120,14 +121,14 @@ def diagnostics():
         checks.append(dict(id=identity, label=label, status=status, reason=reason, suggestion=suggestion))
     try:
         code = 'import fastapi, uvicorn, playwright.sync_api, requests, cv2, PIL, pystray, browserforge; import weibo_downloader, douyin_downloader'
-        tested = subprocess.run([sys.executable, '-B', '-c', code], cwd=config.RESOURCE_DIR,
+        tested = subprocess.run([console_python(), '-B', '-c', code], cwd=config.RESOURCE_DIR,
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=20,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if tested.returncode:
             add('dependencies', 'Python 依赖与脚本导入', 'failed', redact_text(tested.stderr[-2000:], diagnostic=True), '在当前 Python 环境执行 python -m pip install -r requirements.txt')
         else:
             add('dependencies', 'Python 依赖与脚本导入', 'passed', '已在独立子进程实际导入依赖和两个下载脚本')
-    except (OSError, subprocess.SubprocessError) as error:
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         add('dependencies', 'Python 依赖与脚本导入', 'failed', redact_text(str(error), diagnostic=True), '检查 Python 环境与依赖安装')
     for script in ('weibo_downloader.py', 'douyin_downloader.py'):
         try:

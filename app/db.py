@@ -83,9 +83,11 @@ def _migrations():
     from .maintenance import SCHEMA as maintenance
     from .scheduling import SCHEMA as schedules
     from .path_transition import SCHEMA as paths
+    from .subscription_filters import SCHEMA as filters
     return [(1, "subscription-history", subscriptions), (2, "task-history", tasks),
             (3, "media-catalog", catalog), (4, "data-maintenance", maintenance),
-            (5, "subscription-schedules", schedules), (6, "restart-path-transitions", paths)]
+            (5, "subscription-schedules", schedules), (6, "restart-path-transitions", paths),
+            (7, "subscription-topic-filters", filters)]
 
 
 def migrate(path=None, *, migrations=None):

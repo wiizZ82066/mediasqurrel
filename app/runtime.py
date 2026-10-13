@@ -149,8 +149,19 @@ def ensure_frontend(*, build=True, frontend=None):
     if not npm or not (root / 'node_modules' / 'vite').is_dir():
         raise RuntimeError('前端需要构建。请安装兼容的 Node.js，然后在 frontend 目录执行 npm ci，再重新启动。')
     print('[startup] 前端源码有变化或构建资源不完整，正在构建…')
-    subprocess.run([npm, 'run', 'build'], cwd=root, check=True, timeout=180,
-                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+    # pythonw has no inherited console handles. Capture build output so startup
+    # failures still reach its redacted, rotating diagnostic log.
+    try:
+        result = subprocess.run([npm, 'run', 'build'], cwd=root, check=True, timeout=180,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding='utf-8', errors='replace',
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+    except subprocess.CalledProcessError as error:
+        if isinstance(error.stdout, str):
+            print(error.stdout[-65536:])
+        raise RuntimeError('前端构建失败，请查看启动日志或控制台中的 npm 错误') from error
+    if isinstance(getattr(result, 'stdout', None), str) and result.stdout:
+        print(result.stdout[-65536:])
     try:
         files = _build_files(root)
     except (OSError, ValueError) as error:

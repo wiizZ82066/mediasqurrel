@@ -6,6 +6,7 @@ analysis belong to the bounded media worker queue, never to list queries.
 from __future__ import annotations
 
 import datetime as dt
+import base64
 import hashlib
 import json
 import os
@@ -475,7 +476,7 @@ def _summary(row):
 
 def list_entries(*, root_id=None, author=None, q="", date_from=None, date_to=None,
                  page=1, page_size=60, status=None, sort="desc", platform=None,
-                 media_type=None, database=None):
+                 media_type=None, cursor=None, database=None):
     page, page_size = _page(page, page_size)
     conditions, params = [], []
     if root_id:
@@ -518,13 +519,33 @@ def list_entries(*, root_id=None, author=None, q="", date_from=None, date_to=Non
             params.append(dt.datetime.combine(value, dt.time(), tzinfo=_LOCAL_TZ).astimezone(dt.timezone.utc).isoformat(timespec="seconds"))
     where = " AND ".join(conditions)
     direction = "ASC" if sort == "asc" else "DESC"
+    # A filter-bound keyset cursor keeps subsequent batches stable when a new
+    # download is indexed at the beginning. Legacy page clients remain supported.
+    fingerprint = hashlib.sha256(json.dumps([conditions, params, direction], ensure_ascii=False).encode()).hexdigest()[:24]
+    cursor_where, cursor_params = where, list(params)
+    if cursor:
+        try:
+            if len(cursor) > 1024:
+                raise ValueError
+            data = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
+            if (not isinstance(data, list) or len(data) != 3 or data[0] != fingerprint
+                    or not all(isinstance(value, str) and value for value in data)):
+                raise ValueError
+            comparison = ">" if direction == "ASC" else "<"
+            cursor_where += f" AND (sort_at,id) {comparison} (?,?)"
+            cursor_params += data[1:]
+        except (ValueError, TypeError, UnicodeError):
+            raise ValueError("媒体浏览位置已失效，请重新加载") from None
     with db.connect(database) as connection:
         total = connection.execute(f"SELECT count(*) FROM media_entries WHERE {where}", params).fetchone()[0]
-        rows = connection.execute(f"SELECT {_SUMMARY_COLUMNS} FROM media_entries WHERE {where} ORDER BY sort_at {direction},id {direction} LIMIT ? OFFSET ?",
-                                  [*params, page_size, (page - 1) * page_size]).fetchall()
+        rows = connection.execute(f"SELECT {_SUMMARY_COLUMNS} FROM media_entries WHERE {cursor_where} ORDER BY sort_at {direction},id {direction} LIMIT ? OFFSET ?",
+                                  [*cursor_params, page_size + 1, 0 if cursor is not None else (page - 1) * page_size]).fetchall()
+        has_more = len(rows) > page_size
+        rows = rows[:page_size]
         live_paths = _cover_live_paths(connection, rows)
     items = [_summary(row) | {"cover_live_rel": live_paths.get(row["id"])} for row in rows]
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    next_cursor = base64.urlsafe_b64encode(json.dumps([fingerprint, rows[-1]['sort_at'], rows[-1]['id']]).encode()).decode() if has_more else None
+    return {"items": items, "total": total, "page": page, "page_size": page_size, "next_cursor": next_cursor}
 
 
 def date_groups(*, root_id=None, author=None, q="", group="month", limit=240, database=None):

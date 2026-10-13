@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS maintenance_files (
 CREATE INDEX IF NOT EXISTS maintenance_file_status ON maintenance_files(plan_id,status,ordinal);
 """
 
-SETTINGS_KEYS = {"default_download_dir", "download_concurrency", "timeout_seconds", "retries",
+SETTINGS_KEYS = {"default_download_dir", "download_concurrency", "timeout_seconds", "retries", "default_volume",
                  "cache_limit_mb", "scan_defaults", "notifications", "theme", "density",
                  "reduce_motion", "preview"}
 _MARKER = ".mediasquirrel-plan.json"

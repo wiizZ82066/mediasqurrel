@@ -3,6 +3,8 @@ import re
 
 from .. import watcher
 from ..redaction import redact_text
+from ..content_text import weibo_post_text, html_to_text
+from ..subscription_filters import extract_tags, normalize_rule
 from ..weibo_client import (BrowserSession, MOBILE_UA, WeiboAccessError, checked_payload,
                             checked_uid, clean_text)
 from .common import Collector, ScanCancelled, published_at, run_sync_scan
@@ -37,9 +39,17 @@ def parse_page(payload, uid):
         title = card.get('title') or post.get('title') or {}
         pinned = bool(card.get('is_top') or post.get('isTop') or post.get('is_top') or
                       '置顶' in str(title.get('text', '') if isinstance(title, dict) else title))
+        long_text = post.get('longText')
+        full = long_text.get('longTextContent') if isinstance(long_text, dict) else None
+        text = html_to_text(full) if isinstance(full, str) and full else weibo_post_text(post)
+        hashtags = [value.get('topic_title') for value in (post.get('topic_struct') or []) if isinstance(value, dict)]
         items.append({'item_id': bid, 'script_id': 'weibo',
                       'params': {'url': f'https://weibo.com/{uid}/{bid}'},
-                      'title': clean_text(post.get('text'), 60) or '（无正文）',
+                      'title': re.sub(r'\s+', ' ', text).strip()[:60] or '（无正文）',
+                      'content_text': text, 'hashtags': hashtags,
+                      'content_complete': bool(full) or (not bool(post.get('isLongText')) and
+                                                        any(isinstance(post.get(key), str) for key in ('text_raw', 'text'))),
+                      '_detail_id': str(post.get('idstr') or post.get('id') or bid),
                       'created_at': published_at(post.get('created_at')), 'pinned': pinned})
     more = data.get('has_more', payload.get('has_more'))
     if more is not None:
@@ -50,6 +60,43 @@ def parse_page(payload, uid):
         next_page = (data.get('cardlistInfo') or {}).get('page')
         more = True if str(next_page or '').isdigit() and int(next_page) > 0 else None
     return items, more
+
+
+def complete_filter_text(client, result, sub, collector):
+    """At most 10 serial detail requests, sharing the existing scan time budget."""
+    wanted = set(normalize_rule(sub.get('download_filter'))['tags'])
+    if not wanted or collector.options.get('baseline'):
+        return
+    if sub.get('id'):
+        from ..subscription_store import pending_filter_items
+        known = {item['item_id'] for item in result['items']}
+        result['items'].extend(item for item in pending_filter_items(sub) if item['item_id'] not in known)
+    candidates = [item for item in result['items'] if not item.get('content_complete')
+                  and not wanted.intersection(extract_tags(item.get('content_text'), item.get('hashtags') or []))]
+    if sub.get('id') and candidates:
+        from ..subscription_store import needs_filter_text
+        needed = needs_filter_text(sub, [item['item_id'] for item in candidates])
+        candidates = [item for item in candidates if item['item_id'] in needed]
+    for item in candidates[:10]:
+        collector.check()
+        if collector.remaining() <= 0:
+            break
+        identity = item.get('_detail_id') or item['item_id']
+        if not re.fullmatch(r'[A-Za-z0-9]{1,32}', identity):
+            continue
+        try:
+            payload = client.request('/statuses/extend?id=' + identity, '长微博正文')
+            data = checked_payload(payload, '长微博正文')
+            text = data.get('longTextContent')
+            if isinstance(text, str) and text:
+                item['content_text'] = html_to_text(text)
+                item['content_complete'] = True
+        except ScanCancelled:
+            raise
+        except (WeiboAccessError, TimeoutError):
+            # Keep pending_filter without poisoning a valid discovery scan.
+            # Stop on access/network limits to avoid a burst of failed requests.
+            break
 
 
 def _scan_sync(sub):
@@ -94,6 +141,7 @@ def _scan_sync(sub):
                 page = int(next_page) if str(next_page or '').isdigit() and int(next_page) > page else page + 1
             if result is None:
                 result = collector.result()
+            complete_filter_text(client, result, sub, collector)
     except ScanCancelled:
         raise
     except Exception as error:

@@ -1,3 +1,4 @@
+import { buildLibraryRows, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../src/library-layout.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -51,7 +52,7 @@ function component(name, t) {
     Image: class { set src(value) {} },
     setTimeout: timer, clearTimeout: id => timers.delete(id),
     setInterval: timer, clearInterval: id => timers.delete(id),
-    ContentText: {}, AppIcon: {}, PlatformLogo: {}, ActivityProgress: {}, MediaThumbnail: {},
+    buildLibraryRows, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch, applyDefaultVolume: () => {}, ContentText: {}, AppIcon: {}, PlatformLogo: {}, ActivityProgress: {}, MediaThumbnail: {},
   }
   const source = script.content.replace(/^import .*$/gm, '').replace('export default', 'return')
   const setup = new Function(...Object.keys(env), source)(...Object.values(env)).setup

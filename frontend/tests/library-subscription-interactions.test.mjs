@@ -1,3 +1,4 @@
+import { buildLibraryRows, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../src/library-layout.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -12,7 +13,7 @@ const vue = require('vue')
 // Browser layout, pointer dispatch and video decoding remain browser QA concerns.
 const originalGlobals = Object.fromEntries(['document', 'window', 'Image'].map(key => [key, globalThis[key]]))
 globalThis.document = { querySelector: () => null, activeElement: null }
-globalThis.window = { matchMedia: () => ({ matches: true }), removeEventListener: () => {} }
+globalThis.window = { addEventListener: () => {}, matchMedia: () => ({ matches: true }), removeEventListener: () => {} }
 globalThis.Image = class { set src(value) { this.value = value } }
 after(() => {
   for (const [key, value] of Object.entries(originalGlobals)) {
@@ -36,7 +37,7 @@ function mediaDouble() {
   })
 }
 
-function setupComponent(name, t) {
+function setupComponent(name, t, savedState = {}) {
   const filename = fileURLToPath(new URL(`../src/views/${name}.vue`, import.meta.url))
   const { descriptor, errors } = parse(fs.readFileSync(filename, 'utf8'), { filename })
   assert.deepEqual(errors, [])
@@ -46,7 +47,7 @@ function setupComponent(name, t) {
   assert.deepEqual(template.errors, [])
   const api = {}, mounted = [], cleanups = [], timers = new Map()
   let timerId = 0
-  const store = vue.reactive({ subs: [], libraryState: {} })
+  const store = vue.reactive({ subs: [], libraryState: savedState })
   const scope = vue.effectScope()
   const env = {
     ...vue, api, store, toast: () => {}, refreshSubs: async () => {},
@@ -55,7 +56,7 @@ function setupComponent(name, t) {
     useRoute: () => ({ query: {} }), useRouter: () => ({ replace: () => {} }),
     setTimeout: fn => { const id = ++timerId; timers.set(id, fn); return id },
     clearTimeout: id => timers.delete(id),
-    ContentText: {}, AppIcon: {}, PlatformLogo: {}, ActivityProgress: {}, MediaThumbnail: {}, Avatar: {}, SchedulePanel: {},
+    buildLibraryRows, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch, applyDefaultVolume: () => {}, ContentText: {}, AppIcon: {}, PlatformLogo: {}, ActivityProgress: {}, MediaThumbnail: {}, Avatar: {}, SchedulePanel: {}, SubscriptionFilterPanel: {}, parseDownloadTags: value => ({tags: []}), downloadFilterLabel: () => '全部新内容',
   }
   const source = script.content.replace(/^import .*$/gm, '').replace('export default', 'return')
   const component = new Function(...Object.keys(env), source)(...Object.values(env))
@@ -71,7 +72,7 @@ function setupComponent(name, t) {
   t.after(unmount)
   return {
     state, api, store, timers, unmount,
-    async mount() { mounted.forEach(fn => fn()); await vue.nextTick() },
+    async mount() { await Promise.all(mounted.map(fn => fn())); await vue.nextTick() },
     async runTimers() {
       const pending = [...timers.values()]
       timers.clear()
@@ -88,7 +89,7 @@ function gallery() {
   ] }
 }
 
-test('collapsed library controls preserve filters without fetching author/date choices', async t => {
+test('collapsed library controls preserve filters without fetching date choices', async t => {
   const { state, api } = setupComponent('Library', t)
   let requests = 0
   api.libraryAuthors = async () => { requests++; return { items: [], total: 0 } }
@@ -99,14 +100,14 @@ test('collapsed library controls preserve filters without fetching author/date c
   assert.equal(requests, 0)
   state.filtersOpen.value = true
   await state.loadAuxiliary()
-  assert.equal(requests, 2)
+  assert.equal(requests, 1)
   state.query.value = 'saved search'
   state.platform.value = 'weibo'
   state.dateFrom.value = '2026-01-01'
   state.filtersOpen.value = false
   await vue.nextTick()
   await state.loadAuxiliary()
-  assert.equal(requests, 2)
+  assert.equal(requests, 1)
   assert.equal(state.query.value, 'saved search')
   assert.equal(state.platform.value, 'weibo')
   assert.equal(state.dateFrom.value, '2026-01-01')
@@ -318,4 +319,130 @@ test('Weibo login only follows explicit action and keeps its platform when selec
   assert.equal(douyinLogins, 0)
   assert.equal(state.wbAuth.value.logged_in, true)
   assert.equal(state.dyAuth.value.logged_in, false)
+})
+
+test('continuous library loading appends batches, deduplicates, and preserves items for retry', async t => {
+  const { state, api } = setupComponent('Library', t)
+  state.rootId.value = 'test-root'
+  const requests = []
+  api.libraryEntries = async params => { requests.push(params); return { items: [{ id: 'a' }, { id: 'b' }], total: 4, next_cursor: 'next' } }
+  await state.loadEntries()
+  assert.equal(requests[0].cursor, '')
+  assert.equal(requests[0].page_size, 60)
+  api.libraryEntries = async params => { requests.push(params); throw new Error('offline') }
+  await state.loadEntries({ append: true })
+  assert.deepEqual(state.entries.value.map(item => item.id), ['a', 'b'])
+  assert.equal(state.nextCursor.value, 'next')
+  assert.equal(state.error.value, 'offline')
+  api.libraryEntries = async params => { requests.push(params); return { items: [{ id: 'b', updated: true }, { id: 'c' }, { id: 'd' }], total: 4, next_cursor: null } }
+  await state.loadEntries({ append: true })
+  assert.equal(requests.at(-1).cursor, 'next')
+  assert.deepEqual(state.entries.value.map(item => item.id), ['a', 'b', 'c', 'd'])
+  assert.equal(state.entries.value[1].updated, true)
+  assert.equal(state.hasMore.value, false)
+})
+
+test('a late previous author batch cannot overwrite a new author selection', async t => {
+  const { state, api } = setupComponent('Library', t)
+  state.rootId.value = 'test-root'
+  const old = deferred(), latest = deferred(), requests = []
+  api.libraryEntries = params => { requests.push(params); return requests.length === 1 ? old.promise : latest.promise }
+  state.author.value = 'one'
+  const first = state.loadEntries()
+  state.author.value = 'two'
+  const second = state.loadEntries()
+  assert.equal(requests[0].signal.aborted, true)
+  latest.resolve({ items: [{ id: 'two' }], total: 1, next_cursor: null })
+  await second
+  old.resolve({ items: [{ id: 'one' }], total: 1, next_cursor: 'stale' })
+  await first
+  assert.deepEqual(state.entries.value.map(item => item.id), ['two'])
+  assert.equal(state.nextCursor.value, null)
+})
+
+test('author list remains independent of collapsed search and appends without duplicate names', async t => {
+  const { state, api } = setupComponent('Library', t)
+  state.rootId.value = 'test-root'
+  api.libraryAuthors = async params => ({ items: params.page === 1 ? [{ name: 'A', count: 2 }] : [{ name: 'A', count: 2 }, { name: 'B', count: 1 }], total: 2 })
+  await state.loadAuthors()
+  await state.loadAuthors({ append: true })
+  assert.deepEqual(state.authors.value.map(item => item.name), ['A', 'B'])
+  state.selectAuthor('B')
+  assert.equal(state.filters().author, 'B')
+  assert.equal(state.filtersOpen.value, false)
+})
+
+test('the first library batch stays bounded until scrolling reaches its calculated end', async t => {
+  const { state, api } = setupComponent('Library', t)
+  let calls = 0
+  state.rootId.value = 'test-root'
+  await vue.nextTick()
+  state.contentEl = { removeEventListener: () => {}, scrollTop: 0, getBoundingClientRect: () => ({ top: 0, bottom: 20000 }), clientHeight: 960 }
+  state.gridEl.value = { getBoundingClientRect: () => ({ width: 834, top: 340, bottom: 340 }) }
+  window.innerHeight = 960
+  state.ready = true
+  api.libraryEntries = async () => {
+    calls++
+    return { items: Array.from({ length: 60 }, (_, index) => ({ id: String(index), sort_at: '2026-10-13' })), total: 100000, next_cursor: 'next' }
+  }
+  await state.loadEntries()
+  for (let count = 0; count < 5; count++) state.maybeLoadMore()
+  assert.equal(calls, 1)
+  state.contentEl.scrollTop = 100
+  state.maybeLoadMore()
+  assert.equal(calls, 1)
+  const height = state.virtualLayout.value.height
+  state.gridEl.value = { getBoundingClientRect: () => ({ width: 834, top: 1000 - height, bottom: 1000 }) }
+  state.contentEl.getBoundingClientRect = () => ({ top: 0, bottom: 960 })
+  api.libraryEntries = async () => { calls++; return { items: [{ id: 'last' }], total: 61, next_cursor: null } }
+  state.maybeLoadMore()
+  await vue.nextTick()
+  assert.equal(calls, 2)
+})
+
+test('leaving during the author debounce cannot restore old entries under a new filter', async t => {
+  const original = setupComponent('Library', t)
+  original.state.rootId.value = 'test-root'
+  original.state.author.value = 'first-author'
+  await vue.nextTick()
+  original.api.libraryEntries = async () => ({ items: [{ id: 'old-entry' }], total: 5, next_cursor: 'old-cursor' })
+  await original.state.loadEntries()
+  original.state.ready = true
+  original.state.author.value = 'second-author'
+  await vue.nextTick()
+  assert.ok(original.timers.size > 0, 'the 300ms reload is still pending')
+  original.unmount()
+  assert.equal(original.store.libraryState.author, 'second-author')
+  assert.deepEqual(original.store.libraryState.entries, [])
+  assert.equal(original.store.libraryState.nextCursor, null)
+  assert.equal(original.store.libraryState.scrollTop, 0)
+
+  const restored = setupComponent('Library', t, original.store.libraryState)
+  const requests = []
+  restored.api.libraryRoots = async () => ({ items: [{ id: 'test-root' }], default_root_id: 'test-root' })
+  restored.api.libraryEntries = async params => { requests.push(params); return { items: [{ id: 'new-entry' }], total: 1, next_cursor: null } }
+  restored.api.libraryAuthors = async () => ({ items: [], total: 0 })
+  restored.api.libraryScans = async () => ({ items: [] })
+  await restored.mount()
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].author, 'second-author')
+  assert.equal(requests[0].cursor, '')
+  assert.deepEqual(restored.state.entries.value.map(item => item.id), ['new-entry'])
+})
+
+test('matching cached entries are restored without a first-page refresh', async t => {
+  const original = setupComponent('Library', t)
+  original.state.rootId.value = 'test-root'
+  await vue.nextTick()
+  original.api.libraryEntries = async () => ({ items: [{ id: 'saved-entry' }], total: 2, next_cursor: 'saved-cursor' })
+  await original.state.loadEntries()
+  original.unmount()
+  const restored = setupComponent('Library', t, original.store.libraryState)
+  restored.api.libraryRoots = async () => ({ items: [{ id: 'test-root' }] })
+  restored.api.libraryEntries = () => assert.fail('valid saved entries must retain their continuous position')
+  restored.api.libraryAuthors = async () => ({ items: [], total: 0 })
+  restored.api.libraryScans = async () => ({ items: [] })
+  await restored.mount()
+  assert.deepEqual(restored.state.entries.value.map(item => item.id), ['saved-entry'])
+  assert.equal(restored.state.nextCursor.value, 'saved-cursor')
 })

@@ -5,14 +5,69 @@
     python run.py --no-tray       # 无托盘，纯控制台服务
     python run.py --no-browser    # 不自动打开浏览器
     python run.py --port 9000     # 自定义端口
+    python run.py --background    # Windows 隐藏控制台，在托盘后台运行
 """
 import argparse
 import os
+from pathlib import Path
 import socket
 import subprocess
 import sys
 import threading
 import webbrowser
+
+
+_BACKGROUND = __name__ == '__main__' and os.name == 'nt' and (
+    '--background-child' in sys.argv or Path(sys.executable).name.lower() == 'pythonw.exe')
+_STARTUP_LOG = None
+_LOG_STREAM = None
+_LOG_HANDLER = None
+
+
+def _report_startup_error(error):
+    """A windowless launch must never fail silently or expose credentials."""
+    from app.windows_runtime import message_box
+    from app.redaction import redact_text
+    reason = redact_text(str(error))
+    print('[startup] ' + reason, file=sys.stderr)
+    if _BACKGROUND:
+        details = f'\n\n启动日志：{_STARTUP_LOG}' if _STARTUP_LOG else '\n请用 python run.py 在控制台查看错误。'
+        message_box(reason + details)
+
+
+def _prepare_background():
+    global _STARTUP_LOG, _LOG_STREAM, _LOG_HANDLER
+    # HKCU Run has no working-directory field; source paths must be stable even
+    # when Windows starts us from System32. Never change a caller's console cwd.
+    os.chdir(Path(__file__).resolve().parent)
+    if '--paths-file' in sys.argv:
+        index = sys.argv.index('--paths-file')
+        if index + 1 >= len(sys.argv) or not os.path.isabs(sys.argv[index + 1]):
+            raise ValueError('--paths-file 需要绝对路径')
+        os.environ['MS_PATHS_FILE'] = sys.argv[index + 1]
+    from app.windows_runtime import configure_background_logging
+    try:
+        from app import config as launch_config
+        directory = Path(launch_config.LOG_DIR) / 'startup'
+    except Exception:
+        directory = Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'Media Squirrel' / 'startup-logs'
+    try:
+        _STARTUP_LOG, _LOG_STREAM, _LOG_HANDLER = configure_background_logging(directory)
+    except OSError:
+        fallback = Path(os.environ.get('TEMP') or Path.home()) / 'MediaSquirrel-startup-logs'
+        _STARTUP_LOG, _LOG_STREAM, _LOG_HANDLER = configure_background_logging(fallback)
+    sys.stdout = sys.stderr = _LOG_STREAM
+    # pythonw may have None for all three standard streams.
+    if sys.stdin is None:
+        sys.stdin = open(os.devnull, 'r', encoding='utf-8')
+
+
+if _BACKGROUND:
+    try:
+        _prepare_background()
+    except Exception as _error:
+        _report_startup_error(_error)
+        raise SystemExit(1)
 
 
 # Electron and the task manager consume UTF-8 pipes. Frozen Python ignores
@@ -45,9 +100,14 @@ def _handle_internal_run() -> bool:
 
 _handle_internal_run()
 
-import uvicorn
-
-from app import config
+try:
+    import uvicorn
+    from app import config
+except Exception as _error:
+    if _BACKGROUND:
+        _report_startup_error(_error)
+        raise SystemExit(1)
+    raise
 
 
 def _stdin_watchdog(on_exit=None):
@@ -147,36 +207,91 @@ def _make_tray_icon():
     return img
 
 
-def _watch_backend(worker, icon, stopped):
+def _watch_backend(worker, icon, stopped, refresh=None):
     """Stop the tray after normal shutdown, watchdog shutdown or backend failure."""
+    count = 0
     while not stopped.is_set():
         worker.join(timeout=.25)
         if not worker.is_alive():
             if not stopped.is_set():
                 icon.stop()
             return
+        count += 1
+        if refresh and count % 8 == 0:
+            try:
+                refresh()
+            except Exception:
+                pass
+
+
+def _tray_activity():
+    from app import task_manager, watcher
+    # Copy the in-memory dictionaries before iterating on the tray thread.
+    tasks = list(task_manager.TASKS.values())
+    return {'running': sum(task.get('status') == 'running' for task in tasks),
+            'queued': sum(task.get('status') == 'queued' for task in tasks),
+            'scanning': len(watcher._SCANNING)}
+
+
+def _tray_status(server):
+    if server.should_exit:
+        return '正在退出并清理子进程…'
+    if not server.started:
+        return '正在启动本地服务…'
+    state = _tray_activity()
+    return f"下载 {state['running']} · 排队 {state['queued']} · 扫描 {state['scanning']}"
+
+
+def _request_tray_exit(server, icon):
+    from app.windows_runtime import message_box
+    if server.should_exit:
+        return
+    state = _tray_activity()
+    if any(state.values()) and not message_box(
+            f"当前有 {state['running']} 个下载、{state['queued']} 个排队任务和 {state['scanning']} 个扫描。\n"
+            '退出会中断正在运行的工作；排队任务下次启动继续，已中断的下载需重试。确定退出？', question=True):
+        return
+    server.should_exit = True
+    icon.title = 'Media Squirrel — 正在退出并清理子进程'
+    icon.update_menu()
 
 
 def _run_tray(url: str, server, worker):
-    """系统托盘常驻：菜单可打开页面 / 退出。"""
+    """Keep the tray present until normal backend/child cleanup finishes."""
     import pystray
     from pystray import Menu, MenuItem
+    from app.windows_runtime import message_box, open_directory
 
     def open_page(icon, item):
         webbrowser.open(url)
 
     def quit_app(icon, item):
-        server.should_exit = True
-        icon.stop()
+        _request_tray_exit(server, icon)
+
+    def open_folder(target):
+        def open_selected(icon, item):
+            try:
+                open_directory(target)
+            except (OSError, RuntimeError, ValueError) as error:
+                print('[tray] ' + str(error))
+                message_box(str(error))
+        return open_selected
+
+    def status_text(item=None):
+        return _tray_status(server)
 
     icon = pystray.Icon(
         "media_squirrel",
         icon=_make_tray_icon(),
         title=f"Media Squirrel — {url}",
         menu=Menu(
+            MenuItem(status_text, None, enabled=False),
             MenuItem(f"打开页面 ({url})", open_page, default=True),
+            MenuItem('打开媒体目录', open_folder('library')),
+            MenuItem('打开数据目录', open_folder('data')),
+            MenuItem('打开日志目录', open_folder('logs')),
             Menu.SEPARATOR,
-            MenuItem("退出", quit_app),
+            MenuItem("退出", quit_app, enabled=lambda item: not server.should_exit),
         ),
     )
     stopped = threading.Event()
@@ -185,7 +300,11 @@ def _run_tray(url: str, server, worker):
     def ready(tray):
         nonlocal monitor
         tray.visible = True
-        monitor = threading.Thread(target=_watch_backend, args=(worker, tray, stopped),
+        def refresh():
+            tray.title = 'Media Squirrel — ' + status_text()
+            tray.update_menu()
+        refresh()
+        monitor = threading.Thread(target=_watch_backend, args=(worker, tray, stopped, refresh),
                                    name='media-squirrel-tray-watch', daemon=True)
         monitor.start()
 
@@ -204,7 +323,21 @@ def main():
     ap.add_argument("--no-watchdog", action="store_true", help="禁用 stdin 看门狗（桌面模式父进程存活检测）")
     ap.add_argument("--port", type=int, default=config.PORT, help=f"端口（默认 {config.PORT}）")
     ap.add_argument("--reload", action="store_true", help="开发模式热重载")
+    ap.add_argument('--background', action='store_true', help='Windows 隐藏控制台并保留托盘')
+    ap.add_argument('--console', action='store_true', help='保留控制台（可用于 start.bat 排错）')
+    ap.add_argument('--background-child', action='store_true', help=argparse.SUPPRESS)
+    ap.add_argument('--paths-file', help=argparse.SUPPRESS)
     args = ap.parse_args()
+
+    if args.background and not (args.console or args.no_tray or args.reload or _BACKGROUND):
+        from app.windows_runtime import launch_background
+        try:
+            launch_background(sys.argv[1:])
+        except (RuntimeError, OSError) as error:
+            raise SystemExit(str(error))
+        return
+    if _BACKGROUND and (args.no_tray or args.reload):
+        raise SystemExit('隐藏运行必须保留托盘；调试请使用 python run.py --no-tray 或 --reload')
 
     if not 1024 <= args.port <= 65535:
         ap.error('端口必须在 1024–65535 之间')
@@ -261,13 +394,20 @@ def main():
             if service.started or not worker.is_alive():
                 break
             time.sleep(.1)
+        # A large database migration/recovery can outlast the initial wait.
+        # Keep a visible tray with "starting" status while the worker is alive;
+        # only an exited worker proves startup failure.
         if not worker.is_alive():
             raise SystemExit('本地服务启动失败，请检查上方错误。')
         try:
             _run_tray(url, service, worker)
         except Exception as error:
+            if _BACKGROUND:
+                raise RuntimeError('托盘启动失败，后台服务将正常退出。请使用 python run.py 检查 pystray 安装：' + str(error)) from error
             print(f'[!] 托盘不可用({error})，当前使用控制台模式，Ctrl+C 退出。')
             worker.join()
+        if not service.should_exit:
+            raise SystemExit('后台服务意外停止，请查看启动日志。')
     except KeyboardInterrupt:
         pass
     finally:
@@ -276,4 +416,21 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit as _error:
+        if _BACKGROUND and _error.code not in (None, 0):
+            _report_startup_error(_error)
+        raise
+    except Exception as _error:
+        if _BACKGROUND:
+            import traceback
+            traceback.print_exc()
+            _report_startup_error(_error)
+            raise SystemExit(1)
+        raise
+    finally:
+        if _LOG_STREAM:
+            _LOG_STREAM.close()
+        if _LOG_HANDLER:
+            _LOG_HANDLER.close()

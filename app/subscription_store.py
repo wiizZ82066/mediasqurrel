@@ -8,7 +8,7 @@ import json
 import math
 import uuid
 
-from . import db
+from . import db, subscription_filters
 from .redaction import redact_text
 
 
@@ -86,7 +86,7 @@ INSERT OR IGNORE INTO subscription_items(
     FROM seen_items;
 """
 
-RETRYABLE = {"discovered", "failed", "interrupted"}
+RETRYABLE = {"discovered", "failed", "interrupted", "pending_filter"}
 ACTIVE = {"dispatching", "queued", "running"}
 
 
@@ -98,7 +98,7 @@ def _json(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def record_discoveries(sub, items, complete_keys=()):
+def record_discoveries(sub, items, complete_keys=(), *, filter_counts=None):
     """Commit a whole successful baseline atomically, including an empty one.
 
 Legacy seen records and explicit baseline entries remain suppressed. File
@@ -112,6 +112,10 @@ Only a verified complete manifest can establish a local download as complete.
     unique = {str(item["item_id"]): item for item in items}
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        rule = _current_rule(conn, platform, blogger)
+        if rule is None:
+            return False, []
+        counts = {'filtered': 0, 'pending_filter': 0}
         first = conn.execute(
             "SELECT 1 FROM subscription_state WHERE platform=? AND blogger_id=?",
             (platform, blogger),
@@ -125,11 +129,14 @@ Only a verified complete manifest can establish a local download as complete.
                 "(platform,blogger_id,item_id,status,discovered_at,updated_at) VALUES (?,?,?,?,?,?)",
                 (*identity, initial, timestamp, timestamp),
             )
+            # Retain extracted topics outside task logs. Already-filtered
+            # decisions stay final; loosening a rule never backfills old posts.
+            metadata = subscription_filters.content_metadata(item)
             conn.execute(
-                "UPDATE subscription_items SET title=?,params_json=?,script_id=? WHERE "
+                "UPDATE subscription_items SET title=?,params_json=?,script_id=?,content_json=? WHERE "
                 "platform=? AND blogger_id=? AND item_id=?",
                 (str(item.get("title") or ""), _json(item.get("params") or {}),
-                 item.get("script_id") or platform, *identity),
+                 item.get("script_id") or platform, _json(metadata), *identity),
             )
             if complete:
                 # An active attempt remains owned by its task until settlement.
@@ -150,7 +157,7 @@ Only a verified complete manifest can establish a local download as complete.
         if not first:
             pending = conn.execute(
                 "SELECT * FROM subscription_items WHERE platform=? AND blogger_id=? "
-                "AND status IN ('discovered','failed','interrupted') ORDER BY discovered_at,item_id",
+                "AND status IN ('discovered','failed','interrupted','pending_filter') ORDER BY discovered_at,item_id",
                 (platform, blogger),
             ).fetchall()
             for row in pending:
@@ -162,15 +169,76 @@ Only a verified complete manifest can establish a local download as complete.
                         (timestamp, platform, blogger, item_id),
                     )
                     continue
+                decision = subscription_filters.evaluate(rule, json.loads(row['content_json']))
+                _save_decision(conn, identity=(platform, blogger, item_id), decision=decision, timestamp=timestamp)
+                if decision['result'] != 'matched':
+                    counts[decision['result']] += 1
+                    continue
                 # A failed download remains retryable even after leaving the
                 # platform's current first page. Its saved URL is the source.
                 item = unique.get(item_id) or {
                     "item_id": item_id, "script_id": row["script_id"],
                     "params": json.loads(row["params_json"]), "title": row["title"],
                 }
-                candidates.append({**item, "item_id": item_id, "platform": platform,
-                                   "blogger_id": blogger, "sub_id": sub["id"]})
+                candidate = {**item, "item_id": item_id, "platform": platform,
+                             "blogger_id": blogger, "sub_id": sub["id"]}
+                candidates.append({key: value for key, value in candidate.items()
+                                   if key not in {'content_text', 'content_complete', 'hashtags', '_detail_id'}})
+        if filter_counts is not None:
+            filter_counts.update(counts)
     return first, candidates
+
+
+def _current_rule(conn, platform, blogger):
+    row = conn.execute('SELECT download_filter_json FROM subscriptions WHERE platform=? AND blogger_id=?',
+                       (platform, blogger)).fetchone()
+    # A removed subscription must not dispatch an in-flight scan's candidates.
+    return json.loads(row['download_filter_json']) if row else None
+
+
+def _save_decision(conn, identity, decision, timestamp):
+    state = decision['result']
+    conn.execute('UPDATE subscription_items SET filter_decision_json=?,updated_at=?,status=CASE '
+                 "WHEN ?='matched' AND status='pending_filter' THEN 'discovered' "
+                 "WHEN ?='matched' THEN status ELSE ? END WHERE platform=? AND blogger_id=? AND item_id=?",
+                 (_json({**decision, 'at': timestamp}), timestamp, state, state, state, *identity))
+
+
+def list_items(sub_id, *, limit=20, offset=0):
+    """Small public projection: never return saved download parameters or full text."""
+    limit, offset = min(100, max(1, int(limit))), max(0, int(offset))
+    with db.connect() as conn:
+        rows = conn.execute('SELECT i.item_id,i.title,i.status,i.discovered_at,i.updated_at,i.task_id,'
+                            'i.last_error,i.filter_decision_json FROM subscription_items i JOIN subscriptions s '
+                            'ON s.platform=i.platform AND s.blogger_id=i.blogger_id WHERE s.id=? '
+                            'ORDER BY i.discovered_at DESC,i.item_id DESC LIMIT ? OFFSET ?',
+                            (sub_id, limit, offset)).fetchall()
+    return [{**{key: row[key] for key in row.keys() if key != 'filter_decision_json'},
+             'filter_decision': json.loads(row['filter_decision_json'])} for row in rows]
+
+
+def needs_filter_text(sub, item_ids):
+    """Only unseen/retryable records may need extra platform detail requests."""
+    needed = set(item_ids)
+    with db.connect() as conn:
+        for identity in item_ids:
+            row = conn.execute('SELECT status FROM subscription_items WHERE platform=? AND blogger_id=? AND item_id=?',
+                               (sub['platform'], sub['blogger_id'], identity)).fetchone()
+            if row and row['status'] not in RETRYABLE:
+                needed.discard(identity)
+    return needed
+
+
+def pending_filter_items(sub, limit=10):
+    """Resume incomplete-text checks even after a post leaves the list window."""
+    with db.connect() as conn:
+        rows = conn.execute("SELECT item_id,title,params_json,script_id,content_json FROM subscription_items "
+                            "WHERE platform=? AND blogger_id=? AND status='pending_filter' "
+                            "ORDER BY updated_at,item_id LIMIT ?", (sub['platform'], sub['blogger_id'], limit)).fetchall()
+    return [{'item_id': row['item_id'], 'title': row['title'], 'params': json.loads(row['params_json']),
+             'script_id': row['script_id'], 'content_text': '', 'content_complete': False,
+             '_detail_id': json.loads(row['content_json']).get('detail_id') or row['item_id'],
+             'hashtags': json.loads(row['content_json']).get('tags') or []} for row in rows]
 
 
 def claim_item(platform, blogger_id, item_id):
@@ -179,6 +247,17 @@ def claim_item(platform, blogger_id, item_id):
     identity = (platform, blogger_id, str(item_id))
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        rule = _current_rule(conn, platform, blogger_id)
+        if rule is None:
+            return None
+        row = conn.execute('SELECT status,content_json FROM subscription_items WHERE platform=? AND blogger_id=? AND item_id=?',
+                           identity).fetchone()
+        if not row or row['status'] not in RETRYABLE:
+            return None
+        decision = subscription_filters.evaluate(rule, json.loads(row['content_json']))
+        _save_decision(conn, identity, decision, now())
+        if decision['result'] != 'matched':
+            return None
         active = conn.execute(
             "SELECT 1 FROM subscription_items WHERE platform=? AND item_id=? "
             "AND status IN ('dispatching','queued','running','downloaded') LIMIT 1",

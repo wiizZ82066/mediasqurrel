@@ -78,3 +78,16 @@ class SettingsApiTests(unittest.TestCase):
         response = self.client.get(result.json()['download_url'])
         self.assertNotIn('fixture-secret', response.text)
         self.assertNotIn(str(self.root).replace('\\', '\\\\'), response.text)
+
+    def test_default_volume_persists_and_rejects_invalid_values(self):
+        self.assertEqual(settings.load()['default_volume'], 50)
+        with patch.object(settings, 'apply'):
+            for volume in (0, 25, 100):
+                response = self.client.patch('/api/settings', json={'default_volume': volume})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(settings.load()['default_volume'], volume)
+            before = (Path(config.DATA_DIR) / 'settings.json').read_bytes()
+            for invalid in (-1, 101, True, 1.5, '50', None):
+                response = self.client.patch('/api/settings', json={'default_volume': invalid})
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertEqual((Path(config.DATA_DIR) / 'settings.json').read_bytes(), before)

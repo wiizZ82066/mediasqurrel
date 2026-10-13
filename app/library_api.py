@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import catalog, config, library_service as service, media_jobs, task_manager
+from . import catalog, config, library_service as service, media_jobs, task_manager, local_files
 from .security import media_path
 
 router = APIRouter()
@@ -20,11 +20,11 @@ def roots():
 async def entries(root_id: str | None = None, author: str | None = None, q: str = '',
                   date_from: str | None = None, date_to: str | None = None, page: int = 1,
                   page_size: int = 60, status: str | None = None, sort: str = 'desc',
-                  platform: str | None = None, media_type: str | None = None):
+                  platform: str | None = None, media_type: str | None = None, cursor: str | None = None):
     try:
         result = await asyncio.to_thread(catalog.list_entries, root_id=root_id, author=author,
             q=q, date_from=date_from, date_to=date_to, page=page, page_size=min(100, page_size),
-            status=status, sort=sort, platform=platform, media_type=media_type)
+            status=status, sort=sort, platform=platform, media_type=media_type, cursor=cursor)
         service.enrich_page(result['items'])
         return result
     except ValueError as error:
@@ -89,6 +89,34 @@ async def scan(body: dict):
         return service.start_scan(body.get('root_id'))
     except (KeyError, ValueError) as error:
         raise HTTPException(400, str(error))
+
+
+@router.post('/api/library/entries/{entry_id}/reveal')
+def reveal(entry_id: str, body: dict):
+    entry = catalog.get_entry(entry_id)
+    if not entry:
+        raise HTTPException(404, '媒体条目不存在')
+    relative = body.get('rel')
+    if relative is not None and (not isinstance(relative, str) or
+            relative not in {asset['rel_path'] for asset in entry['assets']}):
+        raise HTTPException(403, '只能定位此条目中已索引的媒体文件')
+    try:
+        root = service.root_path(entry['root_id'])
+        folder = media_path(entry['rel_dir'], root=root)
+        target = media_path('/'.join([entry['rel_dir'], relative]), root=root, file_only=True) if relative is not None else folder
+        # A link to another author's directory must not escape this entry either.
+        if relative is not None and not Path(target).is_relative_to(Path(folder)):
+            raise HTTPException(403, '媒体文件超出此条目目录')
+        local_files.reveal_path(target, select_file=relative is not None)
+    except KeyError:
+        raise HTTPException(404, '媒体根目录不存在') from None
+    except FileNotFoundError:
+        raise HTTPException(404, '文件或目录已移动，请更新媒体索引') from None
+    except NotImplementedError as error:
+        raise HTTPException(501, str(error)) from None
+    except OSError:
+        raise HTTPException(503, '无法打开文件资源管理器，请检查目录是否可用后重试') from None
+    return {'ok': True}
 
 
 @router.get('/api/library/scans')

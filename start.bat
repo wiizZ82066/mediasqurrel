@@ -8,9 +8,9 @@ if errorlevel 1 (
 )
 
 if exist ".venv\Scripts\python.exe" (
-    ".venv\Scripts\python.exe" run.py %*
+    ".venv\Scripts\python.exe" run.py --background %*
 ) else (
-    python run.py %*
+    python run.py --background %*
 )
 set "MS_LAUNCH_EXIT=%errorlevel%"
 popd

@@ -47,7 +47,7 @@ class MaintenanceTests(unittest.TestCase):
         with db.connect(source) as connection:
             connection.execute("INSERT INTO task_log_archives VALUES(?,?,?,?,?,?)",
                                ("testtask", 1, 1, "testtask/" + log.name, 1, log.stat().st_size))
-        (directory / "settings.json").write_text(json.dumps({"theme": "dark", "notifications": {"enabled": True},
+        (directory / "settings.json").write_text(json.dumps({"theme": "dark", "notifications": {"enabled": True}, "default_volume": 0,
                                                               "cookie": "must-not-copy", "profile_path": "must-not-copy"}), encoding="utf-8")
         (directory / "cookies.json").write_text("private", encoding="utf-8")
         (directory / "browser-profile").mkdir()
@@ -143,7 +143,8 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(result["status"], "complete", result.get("error"))
         self.assertTrue((backup / "app.db").is_file())
         settings = json.loads((backup / "settings.json").read_text(encoding="utf-8"))
-        self.assertEqual(settings, {"theme": "dark", "notifications": {"enabled": True}})
+        self.assertEqual(settings['default_volume'], 0)
+        self.assertEqual(settings, {"theme": "dark", "notifications": {"enabled": True}, "default_volume": 0})
         self.assertFalse((backup / "cookies.json").exists())
         self.assertFalse((backup / "browser-profile").exists())
         prepared = self.base / "restored-data"
@@ -151,6 +152,7 @@ class MaintenanceTests(unittest.TestCase):
         restored = self.execute(restore)
         self.assertEqual(restored["status"], "complete", restored.get("error"))
         self.assertTrue(restored["result"]["requires_restart"])
+        self.assertEqual(json.loads((prepared / 'settings.json').read_text(encoding='utf-8'))['default_volume'], 0)
         self.assertTrue(source.is_file())
         with db.connect(prepared / "app.db") as connection:
             self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")

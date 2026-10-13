@@ -11,7 +11,8 @@ from pathlib import Path
 import threading
 from typing import Callable, Optional
 
-from . import config, db, subscription_store, scheduling
+from . import config, db, subscription_store, scheduling, subscription_filters
+import json
 from .redaction import redact_text
 
 # Live snapshots are cached in memory and persisted with their scan run.
@@ -53,6 +54,7 @@ def list_subs() -> list[dict]:
     result = []
     for row in rows:
         sub = dict(row)
+        sub['download_filter'] = json.loads(sub.pop('download_filter_json'))
         source = sub.pop('avatar_source', '')
         sub.update(scan=SCAN_STATES.get(sub['id']), avatar_url=f"/api/subs/{sub['id']}/avatar" if source else '')
         result.append(sub)
@@ -60,20 +62,22 @@ def list_subs() -> list[dict]:
 
 
 def add_sub(platform: str, blogger_id: str, nickname: str = "",
-            homepage: str = "", interval_minutes: int = 30, avatar_url: str = '') -> dict:
+            homepage: str = "", interval_minutes: int = 30, avatar_url: str = '', download_filter=None) -> dict:
     interval_minutes = scheduling.normalize_plan({'kind': 'interval', 'minutes': interval_minutes})['minutes']
+    rule = subscription_filters.normalize_rule(download_filter)
     with _connect() as conn:
         conn.execute(
             "INSERT OR IGNORE INTO subscriptions"
-            " (platform, blogger_id, nickname, homepage, interval_minutes, avatar_source)"
-            " VALUES (?,?,?,?,?,?)",
-            (platform, blogger_id, nickname, homepage, interval_minutes, str(avatar_url or '')),
+            " (platform, blogger_id, nickname, homepage, interval_minutes, avatar_source,download_filter_json)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (platform, blogger_id, nickname, homepage, interval_minutes, str(avatar_url or ''), json.dumps(rule, ensure_ascii=False)),
         )
         row = conn.execute(
             "SELECT * FROM subscriptions WHERE platform=? AND blogger_id=?",
             (platform, blogger_id),
         ).fetchone()
     result = dict(row)
+    result['download_filter'] = json.loads(result.pop('download_filter_json'))
     source = result.pop('avatar_source', '')
     result['avatar_url'] = f"/api/subs/{result['id']}/avatar" if source else ''
     scheduling.ensure_interval(result)
@@ -81,9 +85,13 @@ def add_sub(platform: str, blogger_id: str, nickname: str = "",
 
 
 def update_sub(sub_id: int, **fields) -> bool:
+    if 'download_filter_json' in fields:
+        raise ValueError('请使用 download_filter 设置下载标签')
+    if 'download_filter' in fields:
+        fields['download_filter_json'] = json.dumps(subscription_filters.normalize_rule(fields.pop('download_filter')), ensure_ascii=False)
     if 'interval_minutes' in fields:
         fields['interval_minutes'] = scheduling.normalize_plan({'kind': 'interval', 'minutes': fields['interval_minutes']})['minutes']
-    allowed = {"nickname", "homepage", "enabled", "interval_minutes"}
+    allowed = {"nickname", "homepage", "enabled", "interval_minutes", "download_filter_json"}
     sets, vals = [], []
     for k, v in fields.items():
         if k not in allowed:
@@ -392,7 +400,10 @@ async def _perform_scan(sub: dict, trigger: str = 'manual') -> dict:
                     sub["id"], "running", "正在比对最新内容", index * 100 / len(items),
                     completed=index, total=len(items), unit="条内容",
                 )
-            first_scan, result["new_items"] = subscription_store.record_discoveries(sub, items, local_ids)
+            filter_counts = {}
+            first_scan, result["new_items"] = subscription_store.record_discoveries(sub, items, local_ids, filter_counts=filter_counts)
+            result.update(filter_counts)
+            SCAN_STATES[sub['id']]['filter_counts'] = filter_counts
             if first_scan:
                 result["baseline"] = len({str(it["item_id"]) for it in items})
             scheduling.record_coverage(sub['id'], result['coverage'])
@@ -422,6 +433,10 @@ async def _perform_scan(sub: dict, trigger: str = 'manual') -> dict:
                 label = f"扫描完成，{len(result['new_items'])} 条内容待下载或重试"
             else:
                 label = "扫描完成，暂无新内容"
+            if result.get('filtered'):
+                label += f"；{result['filtered']} 条未命中标签"
+            if result.get('pending_filter'):
+                label += f"；{result['pending_filter']} 条待取得完整正文"
             if result.get('coverage', {}).get('complete') is False:
                 label += '；回溯未覆盖完整窗口（详见扫描记录）'
             await _scan_progress(sub["id"], "success", label, 100,
