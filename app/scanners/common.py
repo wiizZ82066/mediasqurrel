@@ -96,6 +96,32 @@ class Collector:
             'scope': 'baseline_current_page' if self.options.get('baseline') else 'overlap_window'}}
 
 
+def _browser_problem(error):
+    """Classify browser transport failures without leaking URLs or call logs."""
+    message = str(error)
+    if type(error).__name__ == 'TimeoutError' or re.search(r'\bTimeout\s+\d+ms exceeded', message):
+        return 'navigation_timeout', '页面加载超时；请检查网络或平台验证后重试'
+    if 'ERR_NETWORK_CHANGED' in message:
+        return 'network_changed', '扫描期间网络连接发生变化；网络稳定后可重试'
+    if 'ERR_INTERNET_DISCONNECTED' in message:
+        return 'network_unavailable', '当前网络未连接；恢复网络后可重试'
+    if any(value in message for value in ('ERR_CONNECTION_', 'ERR_NAME_NOT_RESOLVED', 'ERR_TIMED_OUT')):
+        return 'network_unavailable', '无法连接平台；请检查网络后重试'
+    return 'navigation_failed', '页面访问失败；请检查网络、登录状态或平台验证后重试'
+
+
+def _interrupted_result(collector, reason, detail):
+    collector.check()
+    if not collector.valid:
+        raise RuntimeError(detail)
+    # A usable response is worth retaining, but a failed browser operation must
+    # never imply that the rest of the requested window was checked.
+    collector.complete, collector.reason = False, reason
+    result = collector.result()
+    result['coverage']['detail'] = detail
+    return result
+
+
 def collect_browser(sub, parser, launch, setup_context, url, url_pattern):
     collector = Collector(sub, parser)
     try:
@@ -112,27 +138,67 @@ def collect_browser(sub, parser, launch, setup_context, url, url_pattern):
                     if not pattern.search(response.url) or collector.reason or collector.cancel.is_set():
                         return
                     try:
-                        collector.accept(response.json(), status=response.status)
-                    except Exception as error:
-                        collector.error = '列表响应无法解析: ' + redact_text(str(error))
+                        # A rate-limit/login response may be HTML. Keep the HTTP
+                        # error instead of replacing it with a JSON parse error.
+                        collector.accept(response.json() if response.status == 200 else None,
+                                         status=response.status)
+                    except Exception:
+                        collector.error = '列表响应读取失败；请检查网络、登录状态或平台验证后重试'
                 page.on('response', on_response)
-                page.goto(url, wait_until='domcontentloaded', timeout=max(1, min(10000, int(collector.remaining() * 1000))))
+                navigation_problem = None
+                try:
+                    response = page.goto(url, wait_until='domcontentloaded',
+                                         timeout=max(1, min(10000, int(collector.remaining() * 1000))))
+                except Exception as error:
+                    collector.check()
+                    navigation_problem = _browser_problem(error)
+                    if navigation_problem[0] != 'navigation_timeout':
+                        return _interrupted_result(collector, *navigation_problem)
+                    # DOM readiness is not the list readiness. A slow page can
+                    # have already delivered its API response, or deliver it
+                    # during the remaining bounded wait. Do not navigate again.
+                else:
+                    if response is not None and response.status >= 400:
+                        raise RuntimeError(f'平台页面请求失败（HTTP {response.status}）；请检查登录、平台验证或限流状态')
                 unchanged = 0
                 while collector.remaining() > 0 and not collector.reason:
                     collector.check()
                     previous = collector.pages
-                    for _ in range(12):
+                    try:
+                        for _ in range(12):
+                            collector.check()
+                            if collector.reason or collector.remaining() <= 0:
+                                break
+                            page.wait_for_timeout(min(250, max(1, int(collector.remaining() * 1000))))
                         collector.check()
-                        if collector.reason or collector.remaining() <= 0:
+                        if collector.reason:
                             break
-                        page.wait_for_timeout(min(250, max(1, int(collector.remaining() * 1000))))
-                    collector.check()
-                    if collector.reason:
-                        break
-                    unchanged = unchanged + 1 if collector.pages == previous else 0
-                    if unchanged >= 3:
-                        break
-                    page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                        unchanged = unchanged + 1 if collector.pages == previous else 0
+                        if (collector.valid and unchanged >= 3) or collector.remaining() <= 0:
+                            break
+                        # The first list can be delayed by page scripts. Give it
+                        # the configured total budget without sending repeated
+                        # scrolls while no usable page has arrived yet.
+                        if not collector.valid:
+                            continue
+                        page.evaluate('''() => {
+                            const root = document.scrollingElement || document.documentElement || document.body;
+                            if (!root) return false;
+                            window.scrollTo(0, root.scrollHeight);
+                            return true;
+                        }''')
+                    except ScanCancelled:
+                        raise
+                    except Exception as error:
+                        collector.check()
+                        # A client-side redirect can replace the execution
+                        # context between the wait and scroll. The same bounded
+                        # loop gets the next document; there is no new request.
+                        if 'Execution context was destroyed' in str(error):
+                            continue
+                        return _interrupted_result(collector, *_browser_problem(error))
+                if navigation_problem and not collector.valid:
+                    raise RuntimeError(navigation_problem[1])
                 return collector.result()
             finally:
                 browser.close()

@@ -127,10 +127,19 @@ class BrowserSession:
     def open(self, uid=None):
         host = 'm.weibo.cn' if self.mobile else 'weibo.com'
         suffix = f'/u/{checked_uid(uid)}' if uid else '/'
-        self.page.goto(f'https://{host}{suffix}', wait_until='domcontentloaded', timeout=self.timeout_ms(10000))
+        try:
+            self.page.goto(f'https://{host}{suffix}', wait_until='domcontentloaded', timeout=self.timeout_ms(10000))
+        except Exception as error:
+            self.check()
+            from playwright.sync_api import TimeoutError as NavigationTimeout
+            if not isinstance(error, NavigationTimeout):
+                raise WeiboAccessError('微博页面网络连接中断，请检查网络后重试', 'network_error') from None
+            # A slow DOMContentLoaded does not prove the API is unavailable.
+            # Continue within the original budget; request() still validates
+            # every response, and the origin gate below forbids off-site fetches.
         # Visitor cookies are issued during an automatic cross-domain redirect.
         # Issuing API requests before returning to Weibo can yield HTTP 432/403.
-        while urlsplit(self.page.url).hostname != host:
+        while (urlsplit(self.page.url).scheme, urlsplit(self.page.url).hostname) != ('https', host):
             self.check()
             self.page.wait_for_timeout(min(250, self.timeout_ms()))
         self.check()

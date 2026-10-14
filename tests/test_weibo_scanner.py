@@ -114,6 +114,8 @@ class WeiboScanTests(unittest.TestCase):
                 self.assertEqual(result['items'], [])
                 self.assertEqual(result['coverage']['pages'], 0)
                 self.assertFalse(result['coverage']['complete'])
+                self.assertEqual(result['coverage']['reason'], 'time_limit' if isinstance(error, TimeoutError)
+                                 else 'network_error')
 
     def test_cancellation_after_valid_page_does_not_turn_into_partial_success(self):
         with self.assertRaises(ScanCancelled):
@@ -138,6 +140,59 @@ class WeiboScanTests(unittest.TestCase):
 
 
 class WeiboBrowserAndAuthTests(unittest.TestCase):
+    def test_navigation_timeout_can_still_use_valid_same_origin_api(self):
+        from playwright.sync_api import TimeoutError as NavigationTimeout
+        client = weibo_client.BrowserSession()
+        client.page = MagicMock()
+        client.page.url = 'https://m.weibo.cn/u/123'
+        client.page.goto.side_effect = NavigationTimeout('signed_url=fixture-secret')
+        client.page.evaluate.return_value = {'status': 200, 'payload': profile()}
+        client.open('123')
+        self.assertEqual(client.profile('123')['blogger_id'], '123')
+        client.page.goto.assert_called_once()
+
+    def test_navigation_timeout_waits_for_visitor_redirect_before_api(self):
+        from playwright.sync_api import TimeoutError as NavigationTimeout
+        client = weibo_client.BrowserSession()
+        client.page = MagicMock()
+        client.page.url = 'https://passport.weibo.com/visitor'
+        client.page.goto.side_effect = NavigationTimeout('not ready')
+        def redirected(*_args):
+            client.page.url = 'https://m.weibo.cn/u/123'
+        client.page.wait_for_timeout.side_effect = redirected
+        client.open('123')
+        client.page.wait_for_timeout.assert_called_once()
+        client.page.evaluate.assert_not_called()
+
+    def test_navigation_failure_is_actionable_and_does_not_expose_call_log(self):
+        client = weibo_client.BrowserSession()
+        client.page = MagicMock()
+        client.page.goto.side_effect = RuntimeError('net::ERR_NETWORK_CHANGED signed_url=fixture-secret')
+        with self.assertRaises(weibo_client.WeiboAccessError) as raised:
+            client.open('123')
+        self.assertEqual(raised.exception.reason, 'network_error')
+        self.assertIn('检查网络', str(raised.exception))
+        self.assertNotIn('fixture-secret', str(raised.exception))
+        client.page.evaluate.assert_not_called()
+
+    def test_timeout_off_origin_stays_bounded_and_cancellable(self):
+        from playwright.sync_api import TimeoutError as NavigationTimeout
+        for cancelled in (False, True):
+            with self.subTest(cancelled=cancelled):
+                client = weibo_client.BrowserSession()
+                client.page = MagicMock()
+                client.page.url = 'https://unrelated.invalid/'
+                client.page.goto.side_effect = NavigationTimeout('slow navigation')
+                def stop(*_args):
+                    if cancelled:
+                        client.cancel.set()
+                    else:
+                        client.deadline = 0
+                client.page.wait_for_timeout.side_effect = stop
+                with self.assertRaises(ScanCancelled if cancelled else TimeoutError):
+                    client.open('123')
+                client.page.evaluate.assert_not_called()
+
     def test_request_rejects_http_limits_and_non_json_without_echoing_body(self):
         client = weibo_client.BrowserSession()
         client.page = MagicMock()

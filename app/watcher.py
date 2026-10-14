@@ -286,7 +286,7 @@ def register_scanner(platform: str, fn):
     SCANNERS[platform] = fn
 
 
-async def _scan_progress(sub_id, status, label, percent=None, **fields):
+async def _scan_progress(sub_id, status, label, percent=None, *, finish=None, **fields):
     from .task_manager import broadcast
 
     previous = SCAN_STATES.get(sub_id, {})
@@ -296,7 +296,12 @@ async def _scan_progress(sub_id, status, label, percent=None, **fields):
     }
     SCAN_STATES[sub_id] = state
     if state.get("scan_id"):
-        subscription_store.save_scan_snapshot(state["scan_id"], state)
+        if finish is not None:
+            # A terminal event prompts clients to reload history immediately.
+            # Commit the complete record before publishing that event.
+            subscription_store.finish_scan(state["scan_id"], status, state, **finish)
+        else:
+            subscription_store.save_scan_snapshot(state["scan_id"], state)
     await broadcast({"type": "sub_scan", "sub_id": sub_id, "scan": state})
 
 
@@ -356,9 +361,15 @@ async def _perform_scan(sub: dict, trigger: str = 'manual') -> dict:
     }
     scan_id = None
     items = []
+    # A snapshot describes one scan run. Keep only the monotonic revision used
+    # by reconnecting clients; coverage, counters and errors belong to that run.
+    # Reset before begin_scan as well, so a database failure cannot overwrite
+    # the previous run through its old scan_id in _scan_progress.
+    previous = SCAN_STATES.get(sub["id"], {})
+    SCAN_STATES[sub["id"]] = {"revision": previous.get("revision", 0), "last_error": ""}
     try:
         scan_id = subscription_store.begin_scan(sub, trigger)
-        SCAN_STATES[sub["id"]] = {**SCAN_STATES.get(sub["id"], {}), "scan_id": scan_id}
+        SCAN_STATES[sub["id"]]["scan_id"] = scan_id
         result["scan_id"] = scan_id
         await _scan_progress(sub["id"], "running", "正在获取博主最新内容…")
         try:
@@ -422,10 +433,12 @@ async def _perform_scan(sub: dict, trigger: str = 'manual') -> dict:
             last_scan_at=last_scan_at, last_status=last_status,
             last_error=result["error"] or "",
         )
+        finished = {"items_count": len(items), "new_count": len(result["new_items"]),
+                    "baseline": "baseline" in result, "error": result["error"]}
         if result["error"]:
             progress = SCAN_STATES[sub["id"]]["progress"]
             await _scan_progress(sub["id"], "failed", "扫描失败，请稍后重试",
-                                 progress.get("percent"))
+                                 progress.get("percent"), finish=finished)
         else:
             if "baseline" in result:
                 label = f"已建立基线，共 {result['baseline']} 条内容"
@@ -440,21 +453,15 @@ async def _perform_scan(sub: dict, trigger: str = 'manual') -> dict:
             if result.get('coverage', {}).get('complete') is False:
                 label += '；回溯未覆盖完整窗口（详见扫描记录）'
             await _scan_progress(sub["id"], "success", label, 100,
-                                 completed=len(items), total=len(items), unit="条内容")
-        subscription_store.finish_scan(
-            scan_id, "failed" if result["error"] else "success", SCAN_STATES[sub["id"]],
-            items_count=len(items), new_count=len(result["new_items"]),
-            baseline="baseline" in result, error=result["error"],
-        )
+                                 completed=len(items), total=len(items), unit="条内容", finish=finished)
     except asyncio.CancelledError:
-        await _scan_progress(sub["id"], "cancelled", "扫描已中断")
-        if scan_id:
-            subscription_store.finish_scan(scan_id, "cancelled", SCAN_STATES[sub["id"]], error="扫描已中断")
+        SCAN_STATES[sub["id"]].update(last_status="error", last_error="扫描已中断")
+        await _scan_progress(sub["id"], "cancelled", "扫描已中断", finish={"error": "扫描已中断"})
         raise
     except Exception as e:
-        await _scan_progress(sub["id"], "failed", "扫描失败，请稍后重试")
-        if scan_id:
-            subscription_store.finish_scan(scan_id, "failed", SCAN_STATES[sub["id"]], error=redact_text(str(e)))
+        error = redact_text(str(e))
+        SCAN_STATES[sub["id"]].update(last_status="error", last_error=error)
+        await _scan_progress(sub["id"], "failed", "扫描失败，请稍后重试", finish={"error": error})
         raise
     finally:
         _SCANNING.discard(sub["id"])
@@ -480,21 +487,45 @@ def has_active_scans():
 
 async def _scheduled_scan(sub, group, on_new_items):
     result = {}
+    attempted = False
+    finished = False
+    prior_scan_id = SCAN_STATES.get(sub['id'], {}).get('scan_id')
     try:
         if getattr(config, 'MAINTENANCE_ACTIVE', False):
             scheduling.finish_group(group['id'], {}, interrupted=True)
             return
+        attempted = True
         result = await _scan_guarded(sub, group['trigger'], join_running=True)
         if result.get('new_items') and on_new_items:
             await on_new_items(result['new_items'])
         scheduling.finish_group(group['id'], result)
+        finished = True
     except asyncio.CancelledError:
+        state = SCAN_STATES.get(sub['id'], {})
+        if state.get('status') == 'cancelled' and state.get('scan_id') != prior_scan_id:
+            result['scan_id'] = state.get('scan_id')
         scheduling.finish_group(group['id'], result, interrupted=True)
+        finished = True
         raise
     except Exception as error:
         result['error'] = redact_text(str(error))
+        state = SCAN_STATES.get(sub['id'], {})
+        if state.get('status') == 'failed' and state.get('scan_id') != prior_scan_id:
+            result['scan_id'] = state.get('scan_id')
         scheduling.finish_group(group['id'], result)
+        finished = True
         print('[watcher] 计划扫描失败: ' + result['error'])
+    finally:
+        state = SCAN_STATES.get(sub['id'], {})
+        if (attempted and finished and state.get('status') in {'success', 'failed', 'cancelled'} and
+                (not result.get('scan_id') or result['scan_id'] == state.get('scan_id'))):
+            # Plan records finish after the scan and optional task dispatch.
+            # Publish a newer terminal revision so an open panel can refresh
+            # both histories after those records are committed.
+            progress = state.get('progress', {})
+            await _scan_progress(sub['id'], state['status'], progress.get('label', ''),
+                                 progress.get('percent'), **{key: value for key, value in progress.items()
+                                                           if key not in {'label', 'percent'}})
 
 
 async def scheduler_tick(on_new_items=None, *, now=None):

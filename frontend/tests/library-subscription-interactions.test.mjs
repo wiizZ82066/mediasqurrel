@@ -1,4 +1,5 @@
 import { buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../src/library-layout.js'
+import { scanCoverageNotice, scanStatusText } from '../src/subscription-scan.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -56,7 +57,7 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
     useRoute: () => ({ query: {} }), useRouter: () => ({ replace: () => {} }),
     setTimeout: fn => { const id = ++timerId; timers.set(id, fn); return id },
     clearTimeout: id => timers.delete(id),
-    buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch, applyDefaultVolume: () => {}, ContentText: {}, AppIcon: {}, PlatformLogo: {}, ActivityProgress: {}, MediaThumbnail: {}, Avatar: {}, SchedulePanel: {}, SubscriptionFilterPanel: {}, parseDownloadTags: value => ({tags: []}), downloadFilterLabel: () => '全部新内容',
+    buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch, scanCoverageNotice, scanStatusText, applyDefaultVolume: () => {}, ContentText: {}, AppIcon: {}, PlatformLogo: {}, ActivityProgress: {}, MediaThumbnail: {}, Avatar: {}, SchedulePanel: {}, SubscriptionFilterPanel: {}, parseDownloadTags: value => ({tags: []}), downloadFilterLabel: () => '全部新内容',
   }
   const source = script.content.replace(/^import .*$/gm, '').replace('export default', 'return')
   const component = new Function(...Object.keys(env), source)(...Object.values(env))

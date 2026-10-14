@@ -238,6 +238,178 @@ class SubscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(sensitive, watcher.list_scans()[0]["error"])
         self.assertNotIn(sensitive, watcher.list_subs()[0]["last_error"])
 
+    async def test_new_scan_clears_previous_coverage_and_counters_before_fetch(self):
+        coverage = {'complete': True, 'reason': 'overlap_covered', 'pages': 2, 'items': 1}
+        response = {'items': [self.item('old')], 'coverage': coverage,
+                    'profile': {'blogger_id': 'sample', 'nickname': 'Platform Name',
+                                'avatar_source': 'https://tvax1.sinaimg.cn/avatar.jpg'}}
+        with patch.dict(watcher.SCANNERS, weibo=AsyncMock(return_value=response)):
+            await watcher.scan_sub(self.sub)
+        previous = dict(watcher.SCAN_STATES[self.sub['id']])
+        self.assertIn('filter_counts', previous)
+        with db.connect() as conn:
+            old_snapshot = conn.execute('SELECT snapshot_json FROM subscription_scans WHERE id=?',
+                                        (previous['scan_id'],)).fetchone()[0]
+
+        async def failing_scanner(_):
+            current = watcher.SCAN_STATES[self.sub['id']]
+            self.assertEqual(current['status'], 'running')
+            self.assertGreater(current['revision'], previous['revision'])
+            self.assertNotEqual(current['scan_id'], previous['scan_id'])
+            self.assertNotIn('coverage', current)
+            self.assertNotIn('filter_counts', current)
+            self.assertNotIn('completed', current['progress'])
+            self.assertIsNone(current['progress']['percent'])
+            self.assertEqual(storage.latest_snapshots()[self.sub['id']], current)
+            self.assertEqual(task_manager.broadcast.await_args.args[0]['scan'], current)
+            raise RuntimeError('current request failed')
+
+        with patch.dict(watcher.SCANNERS, weibo=failing_scanner):
+            result = await watcher.scan_sub(self.sub)
+        self.assertEqual(result['error'], 'current request failed')
+        latest = watcher.SCAN_STATES[self.sub['id']]
+        self.assertEqual(latest['status'], 'failed')
+        self.assertEqual(latest['last_error'], result['error'])
+        self.assertNotIn('coverage', latest)
+        self.assertNotIn('filter_counts', latest)
+        history = watcher.list_scans(self.sub['id'])
+        self.assertEqual(history[0]['coverage'], {})
+        self.assertEqual(history[0]['items_count'], 0)
+        self.assertEqual(history[1]['coverage'], coverage)
+        with db.connect() as conn:
+            self.assertEqual(conn.execute('SELECT snapshot_json FROM subscription_scans WHERE id=?',
+                                          (previous['scan_id'],)).fetchone()[0], old_snapshot)
+        # Clearing run-local profile fields does not erase saved author metadata.
+        self.assertEqual(watcher.list_subs()[0]['nickname'], 'Platform Name')
+        self.assertEqual(watcher.list_subs()[0]['avatar_url'], f"/api/subs/{self.sub['id']}/avatar")
+        watcher.init_db()
+        self.assertEqual(watcher.SCAN_STATES[self.sub['id']]['status'], 'failed')
+        self.assertNotIn('coverage', watcher.SCAN_STATES[self.sub['id']])
+
+    async def test_new_scan_clears_previous_error_in_live_and_saved_start_snapshot(self):
+        with patch.dict(watcher.SCANNERS, weibo=AsyncMock(side_effect=RuntimeError('previous failure'))):
+            await watcher.scan_sub(self.sub)
+
+        async def successful_scanner(_):
+            current = watcher.SCAN_STATES[self.sub['id']]
+            self.assertEqual(current['last_error'], '')
+            self.assertNotIn('last_status', current)
+            self.assertNotIn('last_scan_at', current)
+            self.assertEqual(storage.latest_snapshots()[self.sub['id']]['last_error'], '')
+            return []
+
+        with patch.dict(watcher.SCANNERS, weibo=successful_scanner):
+            result = await watcher.scan_sub(self.sub)
+        self.assertIsNone(result['error'])
+        self.assertEqual(watcher.list_scans(self.sub['id'])[1]['error'], 'previous failure')
+
+    async def test_begin_scan_failure_cannot_overwrite_previous_run(self):
+        await self.scan('baseline')
+        previous = dict(watcher.SCAN_STATES[self.sub['id']])
+        history = watcher.list_scans(self.sub['id'])
+        saved = storage.latest_snapshots()
+        with patch.object(storage, 'begin_scan', side_effect=OSError('cannot create scan record')):
+            with self.assertRaisesRegex(OSError, 'cannot create scan record'):
+                await watcher.scan_sub(self.sub)
+        current = watcher.SCAN_STATES[self.sub['id']]
+        self.assertEqual(current['status'], 'failed')
+        self.assertEqual(current['last_error'], 'cannot create scan record')
+        self.assertGreater(current['revision'], previous['revision'])
+        self.assertNotIn('scan_id', current)
+        self.assertEqual(watcher.list_scans(self.sub['id']), history)
+        self.assertEqual(storage.latest_snapshots(), saved)
+
+    async def test_outer_scan_failure_saves_current_redacted_error_snapshot(self):
+        await self.scan('baseline')
+        previous_revision = watcher.SCAN_STATES[self.sub['id']]['revision']
+        sensitive = 'fixture' + '-private-value'
+        with patch.dict(watcher.SCANNERS, weibo=AsyncMock(return_value=[])), \
+                patch.object(watcher, '_connect', side_effect=OSError('Cookie: ' + sensitive)):
+            with self.assertRaises(OSError):
+                await watcher.scan_sub(self.sub)
+        current = watcher.SCAN_STATES[self.sub['id']]
+        self.assertEqual(current['status'], 'failed')
+        self.assertEqual(current['last_status'], 'error')
+        self.assertGreater(current['revision'], previous_revision)
+        self.assertNotIn(sensitive, current['last_error'])
+        self.assertEqual(storage.latest_snapshots()[self.sub['id']], current)
+        history = watcher.list_scans(self.sub['id'])[0]
+        self.assertEqual(history['status'], 'failed')
+        self.assertEqual(history['error'], current['last_error'])
+        self.assertEqual(history['coverage'], {'complete': True, 'reason': 'legacy_scanner'})
+
+    async def test_terminal_scan_events_follow_completed_history_records(self):
+        published = []
+
+        async def broadcast(message):
+            state = message['scan']
+            if state['status'] == 'running':
+                return
+            saved = watcher.list_scans(self.sub['id'])[0]
+            self.assertEqual(saved['id'], state['scan_id'])
+            self.assertEqual(saved['status'], state['status'])
+            self.assertIsNotNone(saved['finished_at'])
+            self.assertEqual(saved['error'], state.get('last_error', ''))
+            if state['status'] == 'success':
+                self.assertEqual(saved['items_count'], 1)
+            published.append(state['status'])
+
+        with patch.object(task_manager, 'broadcast', side_effect=broadcast):
+            await self.scan('baseline')
+            with patch.dict(watcher.SCANNERS, weibo=AsyncMock(side_effect=RuntimeError('network failed'))):
+                await watcher.scan_sub(self.sub)
+            started = asyncio.Event()
+
+            async def scanner(_):
+                started.set()
+                await asyncio.Event().wait()
+
+            with patch.dict(watcher.SCANNERS, weibo=scanner):
+                running = asyncio.create_task(watcher.scan_sub(self.sub))
+                await started.wait()
+                running.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await running
+        self.assertEqual(published, ['success', 'failed', 'cancelled'])
+
+    async def test_scheduled_scan_republishes_after_plan_record_finishes(self):
+        for outcome in ('success', 'failed', 'cancelled'):
+            with self.subTest(outcome=outcome):
+                with db.connect() as conn:
+                    conn.execute("UPDATE subscription_schedules SET next_due='2000-01-01T00:00:00Z'")
+                group = watcher.scheduling.claim_group(self.sub['id'])
+                published = []
+                started = asyncio.Event()
+
+                async def broadcast(message):
+                    if message['scan']['status'] != 'running':
+                        run = next(row for row in watcher.scheduling.list_runs(self.sub['id'])
+                                   if row['id'] == group['id'])
+                        published.append((message['scan']['revision'], run['status'], run['scan_id']))
+
+                async def scanner(_):
+                    if outcome == 'cancelled':
+                        started.set()
+                        await asyncio.Event().wait()
+                    if outcome == 'failed':
+                        raise RuntimeError('network unavailable')
+                    return []
+
+                with patch.dict(watcher.SCANNERS, weibo=scanner), \
+                        patch.object(task_manager, 'broadcast', side_effect=broadcast):
+                    if outcome == 'cancelled':
+                        running = asyncio.create_task(watcher._scheduled_scan(self.sub, group, None))
+                        await started.wait()
+                        running.cancel()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await running
+                    else:
+                        await watcher._scheduled_scan(self.sub, group, None)
+                expected = 'interrupted' if outcome == 'cancelled' else outcome
+                self.assertEqual([row[1] for row in published], ['running', expected])
+                self.assertGreater(published[1][0], published[0][0])
+                self.assertEqual(published[1][2], watcher.SCAN_STATES[self.sub['id']]['scan_id'])
+
     async def test_weibo_profile_refresh_survives_list_failure_without_baseline(self):
         response = {'items': [], 'profile': {'blogger_id': 'sample', 'nickname': 'Platform Name',
                     'avatar_source': 'https://tvax1.sinaimg.cn/avatar.jpg'},

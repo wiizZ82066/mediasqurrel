@@ -148,7 +148,8 @@ def _scan_sync(sub):
         # A readable profile is independent of list access. The watcher may
         # refresh it, but must never create a baseline from an error response.
         return {'items': [], 'profile': profile, 'error': redact_text(str(error)),
-                'coverage': {'complete': False, 'reason': getattr(error, 'reason', 'platform_error'),
+                'coverage': {'complete': False, 'reason': 'time_limit' if isinstance(error, TimeoutError)
+                             else getattr(error, 'reason', 'platform_error'),
                              'pages': collector.pages, 'items': len(collector.items)}}
     result['profile'] = profile
     result['avatar_source'] = profile.get('avatar_source') if profile else None
