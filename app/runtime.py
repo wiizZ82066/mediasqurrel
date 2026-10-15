@@ -28,7 +28,10 @@ def runtime_identity(source=None):
     files = {root / name for name in (
         'run.py', 'weibo_downloader.py', 'douyin_downloader.py',
         'package.json', 'requirements.txt', 'app/weibo_emoticons.json',
+        'app/assets/squirrel-tray.png',
     )}
+    files.update(root / 'app' / 'assets' / 'tray' / (name + '.png')
+                 for name in ('download', 'library', 'tasks', 'subs', 'settings', 'folder', 'close'))
     for directory, pattern in (('app', '*.py'), ('scripts_manifest', '*.json')):
         files.update(path for path in (root / directory).rglob(pattern)
                      if not any(part.startswith('.') or part in ('tests', '__pycache__')

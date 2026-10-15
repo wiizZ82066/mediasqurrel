@@ -196,15 +196,9 @@ def _wait_and_open(url: str, expected_identity=None):
 
 
 def _make_tray_icon():
-    """生成托盘图标（松鼠棕圆点 + 白色 S）。"""
-    from PIL import Image, ImageDraw
-
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse((4, 4, 60, 60), fill=(140, 95, 60, 255))       # 松鼠棕
-    d.ellipse((14, 14, 50, 50), outline=(255, 255, 255, 230), width=3)
-    d.text((26, 20), "S", fill=(255, 255, 255, 255))
-    return img
+    """Use the same squirrel artwork as the application and README."""
+    from app.tray_menu import load_brand_icon
+    return load_brand_icon()
 
 
 def _watch_backend(worker, icon, stopped, refresh=None):
@@ -239,6 +233,8 @@ def _tray_status(server):
     if not server.started:
         return '正在启动本地服务…'
     state = _tray_activity()
+    if not any(state.values()):
+        return '服务运行中 · 当前空闲'
     return f"下载 {state['running']} · 排队 {state['queued']} · 扫描 {state['scanning']}"
 
 
@@ -258,41 +254,32 @@ def _request_tray_exit(server, icon):
 
 def _run_tray(url: str, server, worker):
     """Keep the tray present until normal backend/child cleanup finishes."""
-    import pystray
-    from pystray import Menu, MenuItem
+    from app.tray_menu import build_menu
+    from app.tray_windows import create_icon
     from app.windows_runtime import message_box, open_directory
 
-    def open_page(icon, item):
-        webbrowser.open(url)
+    def open_page(path):
+        webbrowser.open(url.rstrip('/') + path)
 
-    def quit_app(icon, item):
+    def quit_app(icon):
         _request_tray_exit(server, icon)
 
     def open_folder(target):
-        def open_selected(icon, item):
-            try:
-                open_directory(target)
-            except (OSError, RuntimeError, ValueError) as error:
-                print('[tray] ' + str(error))
-                message_box(str(error))
-        return open_selected
+        try:
+            open_directory(target)
+        except (OSError, RuntimeError, ValueError) as error:
+            print('[tray] ' + str(error))
+            message_box(str(error))
 
     def status_text(item=None):
         return _tray_status(server)
 
-    icon = pystray.Icon(
+    icon = create_icon(
         "media_squirrel",
         icon=_make_tray_icon(),
         title=f"Media Squirrel — {url}",
-        menu=Menu(
-            MenuItem(status_text, None, enabled=False),
-            MenuItem(f"打开页面 ({url})", open_page, default=True),
-            MenuItem('打开媒体目录', open_folder('library')),
-            MenuItem('打开数据目录', open_folder('data')),
-            MenuItem('打开日志目录', open_folder('logs')),
-            Menu.SEPARATOR,
-            MenuItem("退出", quit_app, enabled=lambda item: not server.should_exit),
-        ),
+        menu=build_menu(status_text, open_page, open_folder, quit_app,
+                        enabled=lambda item: not server.should_exit),
     )
     stopped = threading.Event()
     monitor = None
@@ -301,8 +288,13 @@ def _run_tray(url: str, server, worker):
         nonlocal monitor
         tray.visible = True
         def refresh():
-            tray.title = 'Media Squirrel — ' + status_text()
-            tray.update_menu()
+            title = 'Media Squirrel — ' + status_text()
+            if tray.title != title:
+                tray.title = title
+                # Windows refreshes on its own UI thread before opening the
+                # popup. Rebuilding an open menu from this monitor can race.
+                if os.name != 'nt':
+                    tray.update_menu()
         refresh()
         monitor = threading.Thread(target=_watch_backend, args=(worker, tray, stopped, refresh),
                                    name='media-squirrel-tray-watch', daemon=True)

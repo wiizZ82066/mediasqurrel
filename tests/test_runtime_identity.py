@@ -46,7 +46,8 @@ class RuntimeIdentityTests(unittest.TestCase):
             self.write(filename, 'private fixture - must not affect identity')
         self.assertEqual(runtime.runtime_identity(self.source), before)
         for filename in ('app/main.py', 'weibo_downloader.py', 'scripts_manifest/weibo.json',
-                         'frontend/src/main.js'):
+                         'frontend/src/main.js', 'app/assets/squirrel-tray.png',
+                         'app/assets/tray/folder.png'):
             with self.subTest(filename=filename):
                 current = runtime.runtime_identity(self.source)
                 self.write(filename, 'updated fixture')
