@@ -249,7 +249,38 @@ def _request_tray_exit(server, icon):
         return
     server.should_exit = True
     icon.title = 'Media Squirrel — 正在退出并清理子进程'
-    icon.update_menu()
+    if os.name != 'nt':
+        icon.update_menu()
+
+
+def _tray_exit_handler(server):
+    """Keep native modal waits out of pystray's notification callback.
+
+    A busy confirmation can stay open indefinitely while the tray thread keeps
+    pumping messages. Only one prompt may be open, and No leaves work running.
+    """
+    pending = threading.Lock()
+
+    def request(icon):
+        if server.should_exit or not pending.acquire(blocking=False):
+            return
+
+        def confirm():
+            try:
+                _request_tray_exit(server, icon)
+            except Exception as error:
+                from app.redaction import redact_text
+                print('[tray] 无法完成退出请求：' + redact_text(str(error)))
+            finally:
+                pending.release()
+
+        try:
+            threading.Thread(target=confirm, name='media-squirrel-exit-confirm', daemon=True).start()
+        except BaseException:
+            pending.release()
+            raise
+
+    return request
 
 
 def _run_tray(url: str, server, worker):
@@ -261,8 +292,7 @@ def _run_tray(url: str, server, worker):
     def open_page(path):
         webbrowser.open(url.rstrip('/') + path)
 
-    def quit_app(icon):
-        _request_tray_exit(server, icon)
+    quit_app = _tray_exit_handler(server)
 
     def open_folder(target):
         try:
@@ -287,6 +317,7 @@ def _run_tray(url: str, server, worker):
     def ready(tray):
         nonlocal monitor
         tray.visible = True
+        print('[startup] 托盘已就绪')
         def refresh():
             title = 'Media Squirrel — ' + status_text()
             if tray.title != title:
@@ -318,8 +349,11 @@ def main():
     ap.add_argument('--background', action='store_true', help='Windows 隐藏控制台并保留托盘')
     ap.add_argument('--console', action='store_true', help='保留控制台（可用于 start.bat 排错）')
     ap.add_argument('--background-child', action='store_true', help=argparse.SUPPRESS)
+    ap.add_argument('--autostart', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--paths-file', help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.autostart:
+        print('[startup] 启动方式：Windows 自启动入口')
 
     if args.background and not (args.console or args.no_tray or args.reload or _BACKGROUND):
         from app.windows_runtime import launch_background

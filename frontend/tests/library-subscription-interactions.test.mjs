@@ -51,7 +51,7 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
   const store = sharedStore || vue.reactive({ tasks: [], subs: [], libraryState: savedState, libraryAuthorsCollapsed: false })
   const scope = vue.effectScope()
   const env = {
-    ...vue, api, store, toast: () => {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},
+    ...vue, api, store, toast: () => {}, upsertTaskSummary: () => {}, MaintenancePanel: {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},
     onTaskEvent: () => () => {}, onMounted: fn => mounted.push(fn),
     onBeforeUnmount: fn => cleanups.push(fn),
     useRoute: () => ({ query: {} }), useRouter: () => ({ replace: () => {} }),
@@ -89,6 +89,47 @@ function gallery() {
     { live: true, type: 'video', rel: 'two.mov', poster: 'two.jpg' },
   ] }
 }
+
+test('startup repair saves immediately and rereads the persisted registration', async t => {
+  const { state, api } = setupComponent('Settings', t)
+  let saved = { enabled: true, available: true, supported: true, method: 'legacy_run', matches_current: false }
+  api.startupSettings = async () => ({ ...saved })
+  api.saveStartup = async enabled => {
+    saved = { ...saved, enabled, method: enabled ? 'shortcut' : null, matches_current: enabled }
+    return { ...saved }
+  }
+  await state.loadStartup()
+  assert.equal(state.startup.value.matches_current, false)
+  await state.changeStartup(true)
+  assert.equal(state.startup.value.method, 'shortcut')
+  await state.loadStartup()
+  assert.equal(state.startup.value.enabled, true)
+  assert.equal(state.startup.value.matches_current, true)
+  const checkbox = { checked: false }
+  await state.toggleStartup({ target: checkbox })
+  assert.equal(state.startup.value.enabled, false)
+  await state.loadStartup()
+  assert.equal(state.startup.value.enabled, false)
+})
+
+test('startup save prevents duplicate requests and retains last known state on failure', async t => {
+  const { state, api } = setupComponent('Settings', t)
+  state.startup.value = { enabled: false, available: true, supported: true }
+  const request = deferred()
+  let saves = 0
+  api.saveStartup = () => { saves++; return request.promise }
+  const checkbox = { checked: true }
+  const saving = state.toggleStartup({ target: checkbox })
+  assert.equal(checkbox.checked, false)
+  assert.equal(state.startupSaving.value, true)
+  await state.changeStartup(true)
+  assert.equal(saves, 1)
+  request.reject(new Error('startup folder is read-only'))
+  await saving
+  assert.equal(state.startup.value.enabled, false)
+  assert.match(state.startupError.value, /read-only/)
+  assert.equal(state.startupSaving.value, false)
+})
 
 test('collapsed library controls preserve filters without fetching date choices', async t => {
   const { state, api } = setupComponent('Library', t)

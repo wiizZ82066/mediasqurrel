@@ -10,6 +10,7 @@ import sys
 import threading
 
 from .redaction import redact_text
+from . import startup_shortcut
 
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 RUN_NAME = 'MediaSquirrel'
@@ -50,7 +51,7 @@ def launch_background(arguments):
                             creationflags=subprocess.CREATE_NO_WINDOW, close_fds=True)
 
 
-def startup_command():
+def _startup_arguments():
     from . import config
     if any(os.environ.get(name) for name in PATH_OVERRIDES):
         raise RuntimeError('当前使用临时路径环境变量；请先改用持久路径配置再启用自启动，避免登录后打开另一份数据')
@@ -64,12 +65,24 @@ def startup_command():
     paths_file = Path(config.PATHS_FILE).resolve()
     if paths_file != source / '.mediasquirrel.local.json':
         args += ['--paths-file', str(paths_file)]
-    command = subprocess.list2cmdline(args)
+    return args
+
+
+def startup_command():
+    """Legacy Run registration; retained for detection and rollback."""
+    command = subprocess.list2cmdline(_startup_arguments())
     # HKCU Run documents a 260-character limit; count UTF-16 code units.
     # https://learn.microsoft.com/windows/win32/setupapi/run-and-runonce-registry-keys
     if len(command.encode('utf-16-le')) // 2 > 260:
         raise RuntimeError('自启动命令超过 Windows 的 260 字符限制；请缩短源码、Python 或路径配置的位置')
     return command
+
+
+def _startup_shortcut():
+    from . import config
+    args = _startup_arguments()
+    return {'target': args[0], 'arguments': subprocess.list2cmdline([*args[1:], '--autostart']),
+            'working_directory': str(Path(config.SOURCE_DIR).resolve())}
 
 
 def _registry():
@@ -89,22 +102,40 @@ def _registered_command():
 
 def startup_status():
     status = {'supported': IS_WINDOWS and not getattr(sys, 'frozen', False), 'available': False,
-              'enabled': False, 'matches_current': False,
+              'enabled': False, 'matches_current': False, 'method': None,
               'message': '开机自启动仅支持 Windows Python 源码运行'}
     if not status['supported']:
         return status
     try:
         actual = _registered_command()
         status['enabled'] = actual is not None
-        expected = startup_command()
-        status.update(available=True, matches_current=actual == expected)
-        status['message'] = ('已登记当前用户登录后后台启动，不自动打开网页；Windows 启动应用设置仍可禁用它'
-                             if actual == expected else
-                             '自启动指向旧的源码或 Python 位置，请重新启用以更新' if actual is not None else
+        link = startup_shortcut.shortcut()
+        status['enabled'] = status['enabled'] or link is not None
+        status['method'] = 'shortcut' if link else 'legacy_run' if actual is not None else None
+        expected = _startup_shortcut()
+        current = startup_shortcut.matches(link, expected) and actual is None
+        status.update(available=True, matches_current=current)
+        status['message'] = ('已核验 Windows 启动快捷方式，登录后在托盘运行，不自动打开网页；可在 Windows 启动应用中管理'
+                             if current else
+                             '检测到旧版自启动登记或重复入口，请点击“重新登记”更新' if actual is not None else
+                             '自启动快捷方式指向旧位置，请点击“重新登记”修复' if link else
                              '默认关闭；开启后在当前用户登录 Windows 时后台运行，不会唤醒电脑')
     except (OSError, RuntimeError) as error:
         status['message'] = redact_text(str(error))
     return status
+
+
+def _restore_registered_command(command):
+    registry = _registry()
+    if command is not None:
+        with registry.CreateKeyEx(registry.HKEY_CURRENT_USER, RUN_KEY, 0, registry.KEY_SET_VALUE) as key:
+            registry.SetValueEx(key, RUN_NAME, 0, registry.REG_SZ, command)
+    else:
+        try:
+            with registry.OpenKey(registry.HKEY_CURRENT_USER, RUN_KEY, 0, registry.KEY_SET_VALUE) as key:
+                registry.DeleteValue(key, RUN_NAME)
+        except FileNotFoundError:
+            pass
 
 
 def set_startup(enabled):
@@ -113,21 +144,25 @@ def set_startup(enabled):
     if not IS_WINDOWS or getattr(sys, 'frozen', False):
         raise RuntimeError('开机自启动仅支持 Windows Python 源码运行')
     with _startup_lock:
-        registry = _registry()
-        if enabled:
-            command = startup_command()
-            with registry.CreateKeyEx(registry.HKEY_CURRENT_USER, RUN_KEY, 0, registry.KEY_SET_VALUE) as key:
-                registry.SetValueEx(key, RUN_NAME, 0, registry.REG_SZ, command)
-        else:
-            # Disabling remains possible after the Python/source directory moves.
+        expected = _startup_shortcut() if enabled else None
+        previous_link = startup_shortcut.shortcut()
+        previous_command = _registered_command()
+        try:
+            current = startup_shortcut.shortcut('write', value=expected) if enabled else startup_shortcut.shortcut('remove')
+            if (current is not None) != enabled or (enabled and not startup_shortcut.matches(current, expected)):
+                raise RuntimeError('无法核实自启动快捷方式是否已保存')
+            # Replace the legacy entry only after the shortcut has been read back.
+            _restore_registered_command(None)
+            if _registered_command() is not None:
+                raise RuntimeError('无法移除旧自启动登记，已取消修改以避免重复启动')
+        except Exception:
             try:
-                with registry.OpenKey(registry.HKEY_CURRENT_USER, RUN_KEY, 0, registry.KEY_SET_VALUE) as key:
-                    registry.DeleteValue(key, RUN_NAME)
-            except FileNotFoundError:
-                pass
-        actual = _registered_command()
-        if (actual is not None) != enabled or (enabled and actual != command):
-            raise RuntimeError('无法核实自启动设置是否已保存，请检查 Windows 权限或安全策略')
+                startup_shortcut.shortcut('restore', content=previous_link['content'] if previous_link else None)
+                if _registered_command() != previous_command:
+                    _restore_registered_command(previous_command)
+            except Exception as rollback_error:
+                raise RuntimeError('自启动修改失败且未能完整还原，请重新检查启动状态') from rollback_error
+            raise
         return startup_status()
 
 
@@ -156,6 +191,9 @@ def message_box(message, *, question=False):
     show.restype = ctypes.c_int
     # Questions default to No; failures are explicit startup dialogs, not notifications.
     flags = 0x00000004 | 0x00000030 | 0x00000100 if question else 0x00000010
+    # The tray calls this on a separate thread so its own message loop stays
+    # responsive. Do not attach to pystray's invisible cross-thread window.
+    flags |= 0x00010000  # MB_SETFOREGROUND
     result = show(None, redact_text(str(message))[:3500], 'Media Squirrel', flags)
     return result == 6 if question else True
 

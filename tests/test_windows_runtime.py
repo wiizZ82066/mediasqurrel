@@ -1,5 +1,6 @@
 """Windows integration uses temporary files and mocked OS effects only."""
 from contextlib import ExitStack
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -40,6 +41,17 @@ class WindowsRuntimeTests(unittest.TestCase):
         self.registry.SetValueEx.side_effect = lambda _key, name, _reserved, _kind, value: self.values.__setitem__(name, value)
         self.registry.DeleteValue.side_effect = lambda _key, name: self.values.pop(name, None)
         self.stack.enter_context(patch.object(windows, '_registry', return_value=self.registry))
+        self.link = None
+        self.shortcut = self.stack.enter_context(patch.object(windows.startup_shortcut, 'shortcut', side_effect=self.manage_shortcut))
+
+    def manage_shortcut(self, action='read', *, value=None, content=None):
+        if action == 'write':
+            self.link = {**value, 'content': json.dumps(value)}
+        elif action == 'remove':
+            self.link = None
+        elif action == 'restore':
+            self.link = {**json.loads(content), 'content': content} if content else None
+        return self.link
 
     def query(self, _key, name):
         if name not in self.values:
@@ -58,12 +70,15 @@ class WindowsRuntimeTests(unittest.TestCase):
         status = windows.set_startup(True)
         self.assertTrue(status['enabled'])
         self.assertTrue(status['matches_current'])
-        command = self.values[windows.RUN_NAME]
+        self.assertEqual(status['method'], 'shortcut')
+        self.assertNotIn(windows.RUN_NAME, self.values)
+        command = self.link['target'] + ' ' + self.link['arguments']
         self.assertIn('pythonw.exe', command)
         self.assertIn('"' + str(self.source / 'run.py') + '"', command)
         self.assertIn('--no-browser', command)
         self.assertNotIn('--paths-file', command)
-        self.assertEqual(self.registry.CreateKeyEx.call_args.args[0], 'current-user')
+        self.assertIn('--autostart', command)
+        self.assertEqual(self.link['working_directory'], str(self.source))
         self.assertFalse(windows.set_startup(False)['enabled'])
         self.assertEqual(self.values, {'UnrelatedApp': 'untouched'})
 
@@ -86,7 +101,9 @@ class WindowsRuntimeTests(unittest.TestCase):
                 windows.set_startup(invalid)
         with patch.object(config, 'PATHS_FILE', str(self.root / ('x' * 220 + '.json'))):
             with self.assertRaisesRegex(RuntimeError, '260'):
-                windows.set_startup(True)
+                windows.startup_command()
+            # Startup shortcuts do not inherit the legacy Run value limit.
+            self.assertTrue(windows.set_startup(True)['matches_current'])
         self.registry.SetValueEx.assert_not_called()
 
     def test_temporary_path_override_rejects_enable_but_allows_disable(self):
@@ -113,6 +130,35 @@ class WindowsRuntimeTests(unittest.TestCase):
         self.assertFalse(windows.startup_status()['available'])
         with self.assertRaises(PermissionError):
             windows.set_startup(False)
+
+    def test_legacy_removal_failure_restores_shortcut_and_preserves_registration(self):
+        self.values[windows.RUN_NAME] = 'old-launcher'
+        self.link = {'target': 'old-python', 'arguments': 'old-args', 'working_directory': 'old-source'}
+        self.link['content'] = json.dumps(self.link)
+        previous = dict(self.link)
+        self.registry.DeleteValue.side_effect = PermissionError('cannot remove legacy entry')
+        with self.assertRaises(PermissionError):
+            windows.set_startup(True)
+        self.assertEqual(self.link, previous)
+        self.assertEqual(self.values[windows.RUN_NAME], 'old-launcher')
+
+    def test_incorrect_shortcut_readback_rolls_back_before_removing_legacy_entry(self):
+        self.values[windows.RUN_NAME] = 'old-launcher'
+        def incorrect(action='read', **kwargs):
+            result = self.manage_shortcut(action, **kwargs)
+            return {**result, 'working_directory': 'wrong-directory'} if action == 'write' else result
+        self.shortcut.side_effect = incorrect
+        with self.assertRaisesRegex(RuntimeError, '核实'):
+            windows.set_startup(True)
+        self.assertIsNone(self.link)
+        self.registry.DeleteValue.assert_not_called()
+        self.assertEqual(self.values[windows.RUN_NAME], 'old-launcher')
+
+    def test_shortcut_with_wrong_working_directory_needs_repair(self):
+        windows.set_startup(True)
+        self.link['working_directory'] = str(self.root)
+        self.assertFalse(windows.startup_status()['matches_current'])
+        self.assertTrue(windows.set_startup(True)['matches_current'])
 
     def test_windowless_parent_downloads_use_same_environment_console_python(self):
         with patch.object(sys, 'executable', str(self.pythonw)):
@@ -206,7 +252,29 @@ class LogAndTrayTests(unittest.TestCase):
             self.assertTrue(server.should_exit)
             self.assertIn('清理', tray.title)
             tray.stop.assert_not_called()
-            tray.update_menu.assert_called_once()
+            # Windows refreshes on open, never from the confirmation thread.
+            self.assertEqual(tray.update_menu.call_count, int(windows.os.name != 'nt'))
+
+    def test_busy_confirmation_does_not_block_tray_or_open_duplicate_prompts(self):
+        import run
+        service = MagicMock(should_exit=False)
+        entered, release, completed = threading.Event(), threading.Event(), threading.Event()
+        def wait_for_choice(server, tray):
+            entered.set()
+            release.wait(3)
+            completed.set()
+        with patch.object(run, '_request_tray_exit', side_effect=wait_for_choice) as confirm:
+            handler = run._tray_exit_handler(service)
+            try:
+                handler(MagicMock())
+                self.assertTrue(entered.wait(1))
+                self.assertFalse(completed.is_set())
+                handler(MagicMock())
+                confirm.assert_called_once()
+                self.assertFalse(service.should_exit)
+            finally:
+                release.set()
+                self.assertTrue(completed.wait(1))
 
     def test_idle_tray_exit_does_not_ask_and_waits_for_worker(self):
         import run
