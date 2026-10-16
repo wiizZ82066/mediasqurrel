@@ -202,6 +202,13 @@ class WindowsRuntimeTests(unittest.TestCase):
 
 
 class LogAndTrayTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        isolated_data = patch.object(config, 'DATA_DIR', temporary.name)
+        isolated_data.start()
+        self.addCleanup(isolated_data.stop)
+
     def test_logs_redact_across_print_writes_and_bound_overlong_lines(self):
         logger = MagicMock()
         stream = windows.LogStream(logger)

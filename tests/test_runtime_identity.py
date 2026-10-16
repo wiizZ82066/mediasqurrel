@@ -128,6 +128,8 @@ class LauncherIdentityTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.dict(os.environ, {}, clear=False))
         self.stack.enter_context(patch.object(config, 'PORT', 8642))
+        temporary = self.stack.enter_context(tempfile.TemporaryDirectory())
+        self.stack.enter_context(patch.object(config, 'DATA_DIR', temporary))
         self.stack.enter_context(patch.object(sys, 'argv', ['run.py', '--no-tray']))
         self.identity = self.stack.enter_context(patch.object(runtime, 'runtime_identity', return_value=dict(self.expected)))
         self.probe = self.stack.enter_context(patch.object(runtime, 'probe_server', return_value=dict(self.expected)))
@@ -172,6 +174,20 @@ class LauncherIdentityTests(unittest.TestCase):
         self.build.assert_called_once_with(build=False)
         self.open.assert_not_called()
         self.server.assert_not_called()
+
+    def test_waited_instance_still_rejects_old_code_or_another_source(self):
+        owner = runtime.InstanceLock(filename='.startup.lock').acquire()
+        try:
+            for field, message in (('code_signature', '旧代码'), ('source_id', '另一份源码')):
+                with self.subTest(field=field), patch.object(runtime.time, 'sleep'):
+                    self.probe.side_effect = [None, {**self.expected, field: 'older-instance'}]
+                    with self.assertRaisesRegex(SystemExit, message):
+                        self.launcher.main()
+                    self.build.assert_not_called()
+                    self.open.assert_not_called()
+                    self.server.assert_not_called()
+        finally:
+            owner.release()
 
     def test_new_instance_still_builds_before_starting_service(self):
         self.probe.return_value = None

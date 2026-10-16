@@ -1,4 +1,6 @@
 """Source-launch preflight without automatic dependency installation."""
+from contextlib import contextmanager
+import errno
 import hashlib
 from html.parser import HTMLParser
 import json
@@ -8,6 +10,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 import urllib.request
 from urllib.parse import unquote, urlsplit
 
@@ -174,10 +177,14 @@ def ensure_frontend(*, build=True, frontend=None):
     return 'built'
 
 
+class InstanceBusyError(RuntimeError):
+    """A live process owns the lock, distinct from filesystem failures."""
+
+
 class InstanceLock:
     """The same data directory may only have one running writer process."""
-    def __init__(self, directory=None):
-        self.path = Path(directory or config.DATA_DIR) / '.instance.lock'
+    def __init__(self, directory=None, *, filename='.instance.lock'):
+        self.path = Path(directory or config.DATA_DIR) / filename
         self.stream = None
 
     def acquire(self):
@@ -196,7 +203,9 @@ class InstanceLock:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:
             stream.close()
-            raise RuntimeError('这份数据已有正在运行的 Media Squirrel，请打开现有实例或先正常退出。') from error
+            if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                raise
+            raise InstanceBusyError('这份数据已有正在运行的 Media Squirrel，请打开现有实例或先正常退出。') from error
         self.stream = stream
         return self
 
@@ -213,3 +222,40 @@ class InstanceLock:
             finally:
                 self.stream.close()
                 self.stream = None
+
+
+@contextmanager
+def coordinate_startup(port, *, directory=None, timeout=240):
+    """Serialize launchers before building/importing, without blocking reuse.
+
+    Keep a separate OS lock until this launcher exits. While it is held, another
+    launcher may reuse a healthy server, but must wait if startup is incomplete.
+    The lifespan's writer lock remains independent (including direct ASGI runs).
+    OS cleanup releases both locks after a crash; never delete lock files.
+    """
+    lock = InstanceLock(directory, filename='.startup.lock')
+    deadline = time.monotonic() + timeout
+    announced = False
+    try:
+        while True:
+            existing = probe_server(port)
+            if existing:
+                yield existing
+                return
+            try:
+                lock.acquire()
+            except InstanceBusyError:
+                if not announced:
+                    print('[startup] 已有进程正在启动或退出，等待服务就绪后复用…')
+                    announced = True
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('等待已有实例启动超时。原进程可能仍在构建、初始化或退出；'
+                                       '请查看最新启动日志和托盘状态，稍后重试；未启动第二个服务。') from None
+                time.sleep(.2)
+            else:
+                # The previous owner may have become ready between the probe
+                # and acquisition. Always recheck before deciding to serve.
+                yield probe_server(port)
+                return
+    finally:
+        lock.release()

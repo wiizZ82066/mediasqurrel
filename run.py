@@ -354,6 +354,9 @@ def main():
     args = ap.parse_args()
     if args.autostart:
         print('[startup] 启动方式：Windows 自启动入口')
+    if _BACKGROUND:
+        print(f'[startup] 进程 PID={os.getpid()}，父进程 PID={os.getppid()}；'
+              f'入口标记={"autostart" if args.autostart else "background"}；端口={args.port}')
 
     if args.background and not (args.console or args.no_tray or args.reload or _BACKGROUND):
         from app.windows_runtime import launch_background
@@ -369,13 +372,18 @@ def main():
         ap.error('端口必须在 1024–65535 之间')
     config.PORT = args.port
     os.environ['MS_PORT'] = str(args.port)
-    url = f"http://{config.HOST}:{args.port}"
-    from app.runtime import ensure_frontend, probe_server, port_in_use, runtime_identity, existing_instance_problem
+    from app.runtime import coordinate_startup, runtime_identity
     try:
         expected = runtime_identity()
     except (RuntimeError, OSError) as error:
         raise SystemExit(str(error))
-    existing = probe_server(args.port)
+    with coordinate_startup(args.port) as existing:
+        _serve_or_reopen(args, expected, existing)
+
+
+def _serve_or_reopen(args, expected, existing):
+    from app.runtime import ensure_frontend, port_in_use, existing_instance_problem
+    url = f"http://{config.HOST}:{args.port}"
     if existing:
         problem = existing_instance_problem(existing, expected)
         if problem:
