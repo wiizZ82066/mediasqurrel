@@ -1,11 +1,13 @@
 // 全局实时状态：任务列表 + WebSocket 订阅 + 通知中心 + toast
 import { reactive } from 'vue'
 import { api } from './api.js'
+import { newerBatch } from './subscription-homepage.js'
 
 export const store = reactive({
   tasks: [],
   subs: [],
   subScans: {},
+  subBatch: null,
   wsConnected: false,
   toasts: [],
   downloadState: { selectedId: '', drafts: {}, task: null },
@@ -78,8 +80,10 @@ export function connectWS() {
     store.wsConnected = true
     // REST restores durable snapshots; discard stale connection revisions.
     store.subScans = {}
+    store.subBatch = null
     refreshTasks()
     refreshSubs().catch(() => {})
+    api.subBatch().then(batch => { store.subBatch = newerBatch(store.subBatch, batch) }).catch(() => {})
     emitTaskEvent({ type: 'reconnect' })
   }
   ws.onclose = () => {
@@ -108,6 +112,8 @@ export function connectWS() {
       store.subScans[msg.sub_id] = msg.scan
       const sub = store.subs.find((s) => s.id === msg.sub_id)
       if (sub) applyScan(sub, msg.scan)
+    } else if (msg.type === 'sub_batch') {
+      store.subBatch = newerBatch(store.subBatch, msg.batch)
     } else if (msg.type === 'task_log') {
       // No global log retention. Open panels consume bounded, sequenced events.
     } else if (msg.type === 'notification') {

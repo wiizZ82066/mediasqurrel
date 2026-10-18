@@ -120,6 +120,8 @@ export const api = {
   preview: (dir) => req(`/api/preview?dir=${encodeURIComponent(dir)}`),
   search: (q) => req(`/api/search?q=${encodeURIComponent(q)}`),
   subs: () => req('/api/subs'),
+  subBatch: () => req('/api/subs/refresh-all'),
+  refreshAllSubs: () => req('/api/subs/refresh-all', { method: 'POST' }),
   localAuthors: () => req('/api/subs/local-authors'),
   searchBlogger: (platform, q, signal) =>
     req(`/api/subs/search?platform=${platform}&q=${encodeURIComponent(q)}`, { signal }),

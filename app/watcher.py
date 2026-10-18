@@ -61,6 +61,17 @@ def list_subs() -> list[dict]:
     return result
 
 
+def get_sub(sub_id):
+    with _connect() as conn:
+        row = conn.execute('SELECT * FROM subscriptions WHERE id=?', (sub_id,)).fetchone()
+    if not row:
+        return None
+    sub = dict(row)
+    sub['download_filter'] = json.loads(sub.pop('download_filter_json'))
+    sub.pop('avatar_source', None)
+    return sub
+
+
 def add_sub(platform: str, blogger_id: str, nickname: str = "",
             homepage: str = "", interval_minutes: int = 30, avatar_url: str = '', download_filter=None) -> dict:
     interval_minutes = scheduling.normalize_plan({'kind': 'interval', 'minutes': interval_minutes})['minutes']

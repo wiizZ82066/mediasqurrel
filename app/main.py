@@ -19,7 +19,7 @@ from .redaction import redact_text
 from .runtime import InstanceLock, runtime_identity
 from . import settings
 from . import settings_api, maintenance, db
-from . import windows_api
+from . import windows_api, subscription_batch
 from . import scanners  # noqa: F401  (import 即注册各平台扫描器)
 
 
@@ -135,7 +135,7 @@ async def lifespan(_app: FastAPI):
         try:
             from .sub_search import stop_searches
             # Each owner receives shutdown even if a different cleanup fails.
-            for stop in (settings_api.stop, stop_searches, watcher.stop_scheduler, task_manager.shutdown, library_service.stop):
+            for stop in (settings_api.stop, stop_searches, subscription_batch.stop, watcher.stop_scheduler, task_manager.shutdown, library_service.stop):
                 try:
                     await stop()
                 except Exception as error:
@@ -520,6 +520,19 @@ def api_delete_sub(sub_id: int):
 @app.get('/api/subs/{sub_id}/items')
 def api_subscription_items(sub_id: int, limit: int = 20, offset: int = 0):
     return watcher.subscription_store.list_items(sub_id, limit=limit, offset=offset)
+
+
+@app.get('/api/subs/refresh-all')
+def api_refresh_all_status():
+    return subscription_batch.snapshot()
+
+
+@app.post('/api/subs/refresh-all')
+async def api_refresh_all():
+    try:
+        return subscription_batch.start(_dispatch_new_items)
+    except ValueError as error:
+        raise HTTPException(409, str(error))
 
 
 @app.post("/api/subs/{sub_id}/scan")

@@ -1,4 +1,5 @@
 import { buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../src/library-layout.js'
+import { subscriptionHomepage, newerBatch } from '../src/subscription-homepage.js'
 import { scanCoverageNotice, scanStatusText } from '../src/subscription-scan.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -46,7 +47,7 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
   const template = compileTemplate({ id: name, filename, source: descriptor.template.content,
     compilerOptions: { bindingMetadata: script.bindings } })
   assert.deepEqual(template.errors, [])
-  const api = {}, mounted = [], cleanups = [], timers = new Map()
+  const api = { subBatch: async () => ({status:'idle'}) }, mounted = [], cleanups = [], timers = new Map()
   let timerId = 0
   const store = sharedStore || vue.reactive({ tasks: [], subs: [], libraryState: savedState, libraryAuthorsCollapsed: false })
   const scope = vue.effectScope()
@@ -57,7 +58,7 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
     useRoute: () => ({ query: {} }), useRouter: () => ({ replace: () => {} }),
     setTimeout: fn => { const id = ++timerId; timers.set(id, fn); return id },
     clearTimeout: id => timers.delete(id),
-    buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch, scanCoverageNotice, scanStatusText, applyDefaultVolume: () => {}, ContentText: {}, AppIcon: {}, PlatformLogo: {}, ActivityProgress: {}, MediaThumbnail: {}, Avatar: {}, SchedulePanel: {}, SubscriptionFilterPanel: {}, parseDownloadTags: value => ({tags: []}), downloadFilterLabel: () => '全部新内容',
+    buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch, subscriptionHomepage, newerBatch, scanCoverageNotice, scanStatusText, applyDefaultVolume: () => {}, ContentText: {}, AppIcon: {}, PlatformLogo: {}, ActivityProgress: {}, MediaThumbnail: {}, Avatar: {}, SchedulePanel: {}, SubscriptionFilterPanel: {}, parseDownloadTags: value => ({tags: []}), downloadFilterLabel: () => '全部新内容',
   }
   const source = script.content.replace(/^import .*$/gm, '').replace('export default', 'return')
   const component = new Function(...Object.keys(env), source)(...Object.values(env))

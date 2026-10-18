@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { coverageText as scanCoverageText, scanCoverageNotice, scanStatusText, terminalScanKey } from '../src/subscription-scan.js'
 
+import { subscriptionHomepage, newerBatch } from '../src/subscription-homepage.js'
+
 const require = createRequire(new URL('../package.json', import.meta.url))
 const { parse, compileScript, compileTemplate } = require('@vue/compiler-sfc')
 const vue = require('vue')
@@ -30,7 +32,7 @@ function setupComponent(name, t, sub = { id: 1, platform: 'weibo', interval_minu
   const env = { ...vue, api, store: vue.reactive({ subs: [] }),
     onMounted: () => {}, onBeforeUnmount: fn => cleanups.push(fn),
     toast: (...args) => messages.push(args), refreshSubs: async () => {},
-    scanCoverageText, scanCoverageNotice, scanStatusText, terminalScanKey,
+    scanCoverageText, scanCoverageNotice, scanStatusText, terminalScanKey, subscriptionHomepage, newerBatch,
     parseDownloadTags: () => ({ tags: [] }), downloadFilterLabel: () => '全部新内容',
     ActivityProgress: {}, AppIcon: {}, PlatformLogo: {}, Avatar: {}, SchedulePanel: {}, SubscriptionFilterPanel: {},
   }
@@ -166,4 +168,23 @@ test('closing the records panel discards its in-flight result', async t => {
   response.resolve({ items: [{ id: 'closed-panel' }] })
   await loading
   assert.deepEqual(state.scans.value, [])
+})
+
+
+test('refresh all deduplicates pending clicks and retains failure feedback for retry', async t => {
+  const { state, api, messages } = setupComponent('Subs', t)
+  const pending = deferred()
+  let calls = 0
+  api.refreshAllSubs = () => { calls++; return pending.promise }
+  const first = state.scanAll()
+  await state.scanAll()
+  assert.equal(calls, 1)
+  pending.reject(new Error('fixture offline'))
+  await first
+  assert.equal(state.batchSubmitting.value, false)
+  assert.match(messages[0][0], /fixture offline/)
+  api.refreshAllSubs = async () => ({ status:'running', total:3, paused:1, queued_ids:[1,2,3], running_ids:[] })
+  await state.scanAll()
+  assert.equal(state.batchRunning.value, true)
+  assert.equal(state.isScanning({id:2}), true)
 })
