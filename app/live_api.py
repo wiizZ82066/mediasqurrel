@@ -5,7 +5,7 @@ import sqlite3
 
 from fastapi import APIRouter, HTTPException
 
-from . import config, live_douyin, live_recorder, live_service, live_store, watcher
+from . import config, live_douyin, live_recorder, live_service, live_store, scheduling, watcher
 
 router = APIRouter()
 
@@ -47,19 +47,31 @@ async def configure(sub_id: int, body: dict):
     if config.MAINTENANCE_ACTIVE or sub_id in live_service._active or sub_id in live_service._checks:
         raise HTTPException(409, '请等待直播检查结束，或先停止当前录制')
     try:
-        if set(body) != {'room_url', 'enabled', 'interval_seconds'} or type(body['enabled']) is not bool:
-            raise ValueError('请填写直播链接、录播开关与检查间隔')
+        if not {'enabled','interval_seconds'} <= set(body) or not set(body) <= {'room_url','enabled','interval_seconds','source','interval_enabled','plan','quality'} or type(body['enabled']) is not bool:
+            raise ValueError('请填写录播开关与检查计划')
         interval = body['interval_seconds']
-        if type(interval) is not int or not 60 <= interval <= 3600:
-            raise ValueError('检查间隔需为 60–3600 秒')
-        url = live_douyin.room_url(body['room_url'])
+        if type(interval) is not int or not 60 <= interval <= 86400:
+            raise ValueError('检查间隔需为 1 分钟至 24 小时')
+        source = body.get('source', 'room' if body.get('room_url') else 'profile')
+        quality = body.get('quality','best')
+        if quality not in ('best','origin','uhd','hd','sd','ld'):
+            raise ValueError('不支持的录制画质')
+        if source not in ('profile','room') or type(body.get('interval_enabled',True)) is not bool:
+            raise ValueError('直播检查方式无效')
+        url = live_douyin.room_url(body.get('room_url')) if source == 'room' else ''
+        plan = scheduling.normalize_plan(body['plan']) if body.get('plan') else None
+        if plan and (plan['kind']=='interval' or not plan['enabled']):
+            raise ValueError('请选择有效的固定时间计划')
+        if not body.get('interval_enabled',True) and not plan:
+            raise ValueError('请至少选择间隔检查或固定时间计划')
         if body['enabled']:
             await asyncio.to_thread(live_recorder.ffmpeg_exe)
             if config.MAINTENANCE_ACTIVE or sub_id in live_service._active or sub_id in live_service._checks:
                 raise ValueError('当前操作状态已改变，请等待后重试')
-            if any(m['sub_id'] != sub_id and m['enabled'] and m['room_url'] == url for m in live_store.monitors()):
+            if url and any(m['sub_id'] != sub_id and m['enabled'] and m['room_url'] == url for m in live_store.monitors()):
                 raise ValueError('该直播间已在另一订阅中启用录播')
-        return live_store.configure(sub_id, url, body['enabled'], interval)
+        return live_store.configure(sub_id, url, body['enabled'], interval, source=source,
+                                    interval_enabled=body.get('interval_enabled',True),plan=plan,quality=quality)
     except (ValueError, sqlite3.IntegrityError) as error:
         raise HTTPException(400, str(error) if isinstance(error, ValueError) else '直播间配置冲突') from None
 

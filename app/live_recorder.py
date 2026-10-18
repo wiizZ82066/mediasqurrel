@@ -117,14 +117,16 @@ def finalize(record, status, reason):
         if source == part:
             part.rename(final)
         title = record['title'].replace('\r', ' ').replace('\n', ' ')
+        quality = {'origin':'原画','uhd':'超清','hd':'高清','sd':'标清','ld':'流畅'}.get(record.get('quality'),'未记录')
         label = {'completed': '下播后结束', 'stopped': '手动停止', 'interrupted': '录制中断，可能缺少部分内容'}[status]
         body = (f"# 抖音直播录播\n\n- **作者**: {record['author']}\n"
                 f"- **发布时间**: {record['started_at']}\n- **视频标题**: {title}\n"
                 f"- **来源**: {record['room_url']}\n- **录制状态**: {label}\n"
+                f"- **实际画质档位**: {quality}（分辨率、帧率及编码沿用直播源）\n"
                 f"- **时间说明**: 使用开始录制时间，非直播真实开始时间\n\n{label}。{reason}\n")
         archive.atomic_write_text(folder / 'context.md', body)
         files = ['context.md', 'recording.mp4']
-        for name in ('chat.jsonl', 'chat.jsonl.part', 'chat.meta.json'):
+        for name in ('chat.jsonl', 'chat.jsonl.part', 'chat.meta.json', 'chat.events.jsonl', 'chat.events.jsonl.part'):
             path = folder / name
             if path.is_file() and path.stat().st_size:
                 files.append(name)

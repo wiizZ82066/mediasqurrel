@@ -127,7 +127,7 @@ def _inventory(folder, *, include_unfinished=False):
     live = bool(re.search(r'_douyin_live[0-9a-f]{32}$', folder.name))
     if live and archive.entry_status(folder) != 'complete' and not include_unfinished:
         return []
-    sidecars = {'chat.jsonl', 'chat.jsonl.part', 'chat.meta.json'} if live else set()
+    sidecars = {'chat.jsonl', 'chat.jsonl.part', 'chat.meta.json', 'chat.events.jsonl', 'chat.events.jsonl.part'} if live else set()
     if live and include_unfinished:
         sidecars.add('recording.mp4.part')
     result = []

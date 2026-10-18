@@ -160,7 +160,7 @@ class SubscriptionFilterStateTests(unittest.TestCase):
         with db.connect(legacy) as connection:
             connection.execute("INSERT INTO subscriptions(platform,blogger_id) VALUES ('weibo','legacy')")
             connection.execute("INSERT INTO subscription_items(platform,blogger_id,item_id,status,discovered_at,updated_at) VALUES ('weibo','legacy','post','failed','before','before')")
-        self.assertEqual(db.migrate(legacy), 8)
+        self.assertEqual(db.migrate(legacy), 9)
         with db.connect(legacy) as connection:
             self.assertEqual(connection.execute('PRAGMA quick_check').fetchone()[0], 'ok')
             self.assertEqual(connection.execute('SELECT status FROM subscription_items').fetchone()[0], 'failed')

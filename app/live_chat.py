@@ -1,7 +1,7 @@
 """Local, append-only public chat capture alongside a recording.
 
 Uses the normal page's WebSocket connection (the page handles signing/ACKs).
-Only chat text, public numeric ID/nickname and timestamps are retained. Protocol
+Only chat text and timestamps are retained. Message IDs are used in memory for deduplication. Protocol
 field numbers cross-checked against opedium/douyin-live-proto's field reference;
 the bounded wire decoder below is independently implemented, not generated code.
 """
@@ -93,7 +93,7 @@ def decode_frame(frame):
         if text(message, 1) != 'WebcastChatMessage':
             continue
         chat = fields(one(message, 2))
-        common, user = fields(one(chat, 1)), fields(one(chat, 2))
+        common = fields(one(chat, 1))
         raw_time = one(common, 4, 0)
         created_at = None
         if isinstance(raw_time, int) and raw_time:
@@ -102,7 +102,7 @@ def decode_frame(frame):
             except (OSError, OverflowError, ValueError):
                 pass
         messages.append({'type': 'chat', 'message_id': str(one(common, 2, one(message, 3, 0))),
-            'user': {'id': str(one(user, 1, 0)), 'nickname': text(user, 3)}, 'text': text(chat, 3),
+            'text': text(chat, 3),
             'platform_created_at': created_at, 'platform_created_raw': raw_time})
     return messages
 
@@ -116,10 +116,12 @@ class Journal:
         self.queue = queue.Queue(maxsize=16)
         self.closing = threading.Event()
         self.failed = threading.Event()
-        self.stats = dict(schema_version=1, session_id=session_id, recording_started_at=started_at,
+        self.video_clock = None
+        self.clock_lock = threading.Lock()
+        self.stats = dict(schema_version=2, session_id=session_id, recording_started_at=started_at,
                           messages=0, duplicates=0, dropped_frames=0, parse_errors=0, connections=0,
                           disconnects=0, status='connecting',
-                          alignment='receipt time relative to recording start; network/buffer delay applies')
+                          alignment='video_time_ms estimates output media position at receipt, from FFmpeg progress; network/buffer delay applies')
         self.thread = threading.Thread(target=self._write, daemon=True)
         self.thread.start()
 
@@ -127,8 +129,13 @@ class Journal:
         if isinstance(value, bytes) and len(value) > MAX_FRAME:
             self.stats['dropped_frames'] += 1
             return
+        now = time.monotonic()
+        with self.clock_lock:
+            anchor = self.video_clock
+        # Do not invent a moving video clock while the input stream is stalled.
+        video_ms = round((anchor[1] + min(2, max(0, now-anchor[0]))) * 1000) if anchor else None
         item = (datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
-                round((time.monotonic() - self.base) * 1000), value)
+                round((now - self.base) * 1000), video_ms, value)
         try:
             self.queue.put_nowait(item)
         except queue.Full:
@@ -137,14 +144,19 @@ class Journal:
     def event(self, name, **values):
         self.offer({'type': 'capture_event', 'event': name, **values})
 
+    def video_progress(self, seconds):
+        with self.clock_lock:
+            self.video_clock = (time.monotonic(), max(0, seconds))
+
     def _write(self):
         seen = OrderedDict()
         last_sync = 0
         try:
-            with (self.folder / 'chat.jsonl.part').open('x', encoding='utf-8', newline='\n') as stream:
+            with (self.folder / 'chat.jsonl.part').open('x', encoding='utf-8', newline='\n') as stream, \
+                    (self.folder / 'chat.events.jsonl.part').open('x', encoding='utf-8', newline='\n') as events:
                 while not self.closing.is_set() or not self.queue.empty():
                     try:
-                        received, elapsed, value = self.queue.get(timeout=.5)
+                        received, elapsed, video_ms, value = self.queue.get(timeout=.5)
                     except queue.Empty:
                         value = None
                     if value is not None:
@@ -155,7 +167,7 @@ class Journal:
                             rows = [{'type': 'capture_event', 'event': 'decode_gap'}]
                         for row in rows:
                             if row['type'] == 'chat':
-                                identity = row['message_id']
+                                identity = row.pop('message_id')
                                 if identity != '0' and identity in seen:
                                     self.stats['duplicates'] += 1
                                     continue
@@ -164,19 +176,26 @@ class Journal:
                                     if len(seen) > 10000:
                                         seen.popitem(last=False)
                                 self.stats['messages'] += 1
-                            row.update(schema_version=1, session_id=self.session_id, received_at=received,
-                                       recording_elapsed_ms=elapsed)
-                            stream.write(json.dumps(row, ensure_ascii=False, separators=(',', ':')) + '\n')
+                            row.pop('platform_created_raw', None)
+                            row.update(schema_version=2, received_at=received,
+                                       recording_elapsed_ms=elapsed, video_time_ms=video_ms)
+                            destination = stream if row['type'] == 'chat' else events
+                            destination.write(json.dumps(row, ensure_ascii=False, separators=(',', ':')) + '\n')
                     if time.monotonic() - last_sync >= 2:
                         stream.flush()
                         os.fsync(stream.fileno())
+                        events.flush()
+                        os.fsync(events.fileno())
                         archive.atomic_write_text(self.folder / 'chat.meta.json', json.dumps(self.stats, ensure_ascii=False, indent=2))
                         last_sync = time.monotonic()
                 stream.flush()
                 os.fsync(stream.fileno())
+                events.flush()
+                os.fsync(events.fileno())
                 self.stats['status'] = 'captured_with_gaps' if (self.stats['disconnects'] or self.stats['parse_errors']
                     or self.stats['dropped_frames'] or not self.stats['connections']) else 'captured'
             (self.folder / 'chat.jsonl.part').rename(self.folder / 'chat.jsonl')
+            (self.folder / 'chat.events.jsonl.part').rename(self.folder / 'chat.events.jsonl')
         except OSError:
             self.failed.set()
             self.stats['status'] = 'write_failed'

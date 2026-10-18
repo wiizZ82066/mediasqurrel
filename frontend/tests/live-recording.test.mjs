@@ -1,3 +1,4 @@
+import { planDraft, planPayload } from '../src/schedule-ui.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -15,7 +16,7 @@ function setup(t) {
     compilerOptions:{bindingMetadata:script.bindings} }).errors, [])
   const mounted=[], cleanups=[], notifications=[]
   const api={liveStatus:async()=>({monitor:{room_url:'https://live.douyin.com/123',enabled:1,interval_seconds:60},records:[]})}
-  const env={...vue,api,toast:(...args)=>notifications.push(args),AppIcon:{},ActivityProgress:{},
+  const env={...vue,planDraft,planPayload,api,toast:(...args)=>notifications.push(args),CalendarPlanFields:{},IntervalPicker:{},AppIcon:{},ActivityProgress:{},
     onMounted:fn=>mounted.push(fn),onBeforeUnmount:fn=>cleanups.push(fn),setInterval:()=>1,clearInterval:()=>{}}
   const component=new Function(...Object.keys(env), script.content.replace(/^import .*$/gm,'').replace('export default','return'))(...Object.values(env))
   const scope=vue.effectScope()

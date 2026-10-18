@@ -39,7 +39,7 @@ def chat_frame(identity=123):
 class ChatTests(unittest.TestCase):
     def test_chat_unicode_ids_and_times_without_private_profile(self):
         value = live_chat.decode_frame(chat_frame())[0]
-        self.assertEqual(value['user'], {'id': '456', 'nickname': '示例用户🌰'})
+        self.assertNotIn('user', value)
         self.assertEqual(value['text'], '这是测试弹幕 👋')
         self.assertEqual(value['message_id'], '123')
         self.assertIsNotNone(value['platform_created_at'])
@@ -55,6 +55,7 @@ class ChatTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             journal = live_chat.Journal(folder, '123', db.utc_now())
             journal.stats['connections'] = 1
+            journal.video_progress(12)
             journal.offer(chat_frame())
             journal.offer(chat_frame())
             journal.offer(b'\x80')
@@ -62,6 +63,12 @@ class ChatTests(unittest.TestCase):
             path = Path(folder)
             rows = [json.loads(line) for line in (path/'chat.jsonl').read_text(encoding='utf-8').splitlines()]
             self.assertEqual(sum(row['type'] == 'chat' for row in rows), 1)
+            self.assertEqual(len(rows), 1)
+            self.assertNotIn('message_id', rows[0])
+            self.assertNotIn('user', rows[0])
+            self.assertGreaterEqual(rows[0]['video_time_ms'],12000)
+            self.assertLessEqual(rows[0]['video_time_ms'],14000)
+            self.assertTrue((path/'chat.events.jsonl').is_file())
             meta = json.loads((path/'chat.meta.json').read_text())
             self.assertEqual(meta['duplicates'], 1)
             self.assertEqual(meta['parse_errors'], 1)
@@ -70,6 +77,15 @@ class ChatTests(unittest.TestCase):
 
 
 class RoomTests(unittest.TestCase):
+    def test_selected_quality_never_silently_upgrades_and_reports_actual_fallback(self):
+        room={'id_str':'123','status':2,'owner':{'sec_uid':'owner'},'stream_url':{'flv_pull_url':{
+            'ORIGIN':'https://test.douyincdn.com/origin.flv','HD1':'https://test.douyincdn.com/hd.flv','SD2':'https://test.douyincdn.com/sd.flv'}}}
+        payload={'status_code':0,'data':{'data':[room]}}
+        self.assertEqual(live_douyin.parse_room(payload)['quality'],'origin')
+        self.assertEqual(live_douyin.parse_room(payload,'uhd')['quality'],'hd')
+        self.assertTrue(live_douyin.parse_room(payload,'sd')['stream_url'].endswith('/sd.flv'))
+        with self.assertRaises(live_douyin.LiveError):live_douyin.parse_room(payload,'ld')
+
     def test_known_live_offline_and_unknown_are_distinct(self):
         base = {'id_str':'123456', 'status':2, 'title':'测试直播', 'owner':{'sec_uid':'owner'},
                 'stream_url':{'flv_pull_url':{'ORIGIN':'https://example.douyincdn.com/live.flv?token=private'}}}
@@ -137,11 +153,11 @@ class LiveTests(unittest.IsolatedAsyncioTestCase):
         db.migrate()
         self.assertEqual(live_store.get_record(record['id'])['status'], 'interrupted')
         with db.connect() as connection:
-            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], 8)
+            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], 9)
 
     async def test_disable_during_lookup_cannot_start_a_recording(self):
         gate = threading.Event()
-        def lookup(_url):
+        def lookup(_url, **_options):
             gate.wait(2)
             return self.info
         with patch.object(live_douyin,'lookup',side_effect=lookup), patch.object(live_store,'create_record') as create:

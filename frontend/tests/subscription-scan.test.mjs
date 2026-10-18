@@ -34,7 +34,7 @@ function setupComponent(name, t, sub = { id: 1, platform: 'weibo', interval_minu
     toast: (...args) => messages.push(args), refreshSubs: async () => {},
     scanCoverageText, scanCoverageNotice, scanStatusText, terminalScanKey, subscriptionHomepage, newerBatch,
     parseDownloadTags: () => ({ tags: [] }), downloadFilterLabel: () => '全部新内容',
-    ActivityProgress: {}, AppIcon: {}, PlatformLogo: {}, Avatar: {}, SchedulePanel: {}, SubscriptionFilterPanel: {}, LiveRecordingPanel: {},
+    ActivityProgress: {}, CalendarPlanFields: {}, IntervalPicker: {}, AppIcon: {}, PlatformLogo: {}, Avatar: {}, SchedulePanel: {}, SubscriptionFilterPanel: {}, LiveRecordingPanel: {},
   }
   const source = script.content.replace(/^import .*$/gm, '').replace('export default', 'return')
   const component = new Function(...Object.keys(env), source)(...Object.values(env))

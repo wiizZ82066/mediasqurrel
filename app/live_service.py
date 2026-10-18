@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import shutil
 import threading
 
-from . import catalog, config, db, library_service, live_douyin, live_recorder, live_store, task_manager, watcher
+from . import catalog, config, db, library_service, live_douyin, live_recorder, live_store, live_scheduling, task_manager, watcher
 
 MAX_RECORDINGS = 2
 MAX_CHECKS = 2
@@ -121,7 +121,7 @@ async def _record(record, info, owner):
                     _failure(sub_id, REASONS[reason] if published else '未完成入库，请查看录播记录；原始文件保留')
                 else:
                     live_store.update_monitor(sub_id, status='waiting' if monitor['enabled'] else 'disabled',
-                        error='', failures=0, next_check_at=_later(monitor['interval_seconds']))
+                        error='', failures=0, **live_scheduling.cursors(monitor))
             await _notify(record, status if published else 'interrupted', reason)
         finally:
             _active.pop(sub_id, None)
@@ -135,13 +135,18 @@ async def check(sub_id):
     if not monitor or not monitor['enabled'] or not sub or sub['platform'] != 'douyin':
         return
     try:
-        info = await asyncio.to_thread(live_douyin.lookup, monitor['room_url'])
+        if sub_id in _active:
+            info = await asyncio.to_thread(live_douyin.lookup, _active[sub_id]['room_url'])
+        elif monitor['source'] == 'profile':
+            info = await asyncio.to_thread(live_douyin.lookup_blogger, sub['blogger_id'], quality=monitor['quality'])
+        else:
+            info = await asyncio.to_thread(live_douyin.lookup, monitor['room_url'], quality=monitor['quality'])
         # Re-read after network wait: disable/delete/shutdown may have happened.
         latest = live_store.monitor(sub_id)
         if _stopping or config.MAINTENANCE_ACTIVE or not latest or not latest['enabled'] or latest['room_url'] != monitor['room_url']:
             return
-        live_store.update_monitor(sub_id, checked_at=db.utc_now(), next_check_at=_later(monitor['interval_seconds']),
-                                  error='', failures=0)
+        live_store.update_monitor(sub_id, checked_at=db.utc_now(),
+                                  **live_scheduling.cursors(monitor, active=sub_id in _active), error='', failures=0)
         if sub_id in _active:
             live_store.update_monitor(sub_id, status='recording')
             if not info['live'] or info['session_id'] != _active[sub_id]['session_id']:
@@ -157,16 +162,17 @@ async def check(sub_id):
             live_store.update_monitor(sub_id, status='waiting')
             return
         if len(_active) >= MAX_RECORDINGS:
-            live_store.update_monitor(sub_id, status='capacity', error='已有 2 路录制，稍后重新检查')
+            live_store.update_monitor(sub_id, status='capacity', error='已有 2 路录制，稍后重新检查', next_check_at=_later(60))
             return
         if shutil.disk_usage(config.LIBRARY_ROOT).free < live_recorder.MIN_FREE:
             live_store.update_monitor(sub_id, enabled=0)
             raise live_douyin.LiveError(REASONS['disk_full'])
         live_recorder.ffmpeg_exe()
-        record = live_store.create_record(sub, monitor['room_url'], info)
-        owner = {'stop': threading.Event(), 'reason': '', 'session_id': info['session_id']}
+        url = live_douyin.room_url(info.get('room_url') or monitor['room_url'])
+        record = live_store.create_record(sub, url, info)
+        owner = {'stop': threading.Event(), 'reason': '', 'session_id': info['session_id'], 'room_url':url}
         _active[sub_id] = owner
-        live_store.update_monitor(sub_id, status='recording')
+        live_store.update_monitor(sub_id, status='recording', **live_scheduling.cursors(live_store.monitor(sub_id), active=True))
         owner['task'] = asyncio.create_task(_record(record, info, owner))
     except live_douyin.LiveError as error:
         _failure(sub_id, str(error), limited=error.limited)
@@ -184,7 +190,7 @@ def request_check(sub_id):
     if sub_id in _checks or now < _manual_due.get(sub_id, 0):
         return {'already_running': True}
     _manual_due[sub_id] = now + 30
-    live_store.update_monitor(sub_id, next_check_at='')
+    live_store.update_monitor(sub_id, next_check_at=db.utc_now())
     return {'queued': True}
 
 
@@ -238,7 +244,7 @@ async def _loop():
                 identity = monitor['sub_id']
                 if len(_checks) >= MAX_CHECKS:
                     break
-                if monitor['enabled'] and identity not in _checks and (not monitor['next_check_at'] or monitor['next_check_at'] <= now):
+                if monitor['enabled'] and identity not in _checks and monitor['next_check_at'] and monitor['next_check_at'] <= now:
                     task = asyncio.create_task(check(identity))
                     _checks[identity] = task
                     task.add_done_callback(lambda _task, key=identity: _checks.pop(key, None))

@@ -4,13 +4,19 @@ import { api } from '../api.js'
 import { toast } from '../store.js'
 import ActivityProgress from './ActivityProgress.vue'
 import AppIcon from './AppIcon.vue'
+import IntervalPicker from './IntervalPicker.vue'
+import CalendarPlanFields from './CalendarPlanFields.vue'
+import { planDraft, planPayload } from '../schedule-ui.js'
 
 const props = defineProps({ sub: { type: Object, required: true } })
 const emit = defineEmits(['updated'])
 const room = ref(''), enabled = ref(false), interval = ref(60), monitor = ref(null), records = ref([])
+const source=ref('profile'), intervalEnabled=ref(true), calendarEnabled=ref(false), draft=ref(planDraft())
+const quality=ref('best')
+const qualities={best:'最高可用（默认）',origin:'原画',uhd:'超清',hd:'高清',sd:'标清',ld:'流畅'}
 const loading = ref(true), saving = ref(false), error = ref(''), offset = ref(0)
 let timer, disposed = false, inFlight = false
-const active = computed(() => records.value.some(item => ['recording','finalizing'].includes(item.status)))
+const active = computed(() => ['recording','finalizing'].includes(monitor.value?.status) || records.value.some(item => ['recording','finalizing'].includes(item.status)))
 const labels = { disabled:'已关闭', waiting:'等待检查', offline:'当前未开播', capacity:'等待录制空位', error:'检查失败', recording:'正在录制', finalizing:'正在保存', completed:'下播后结束', stopped:'已手动停止', interrupted:'已中断' }
 function time(value) { return value ? new Date(value).toLocaleString('zh-CN', {hour12:false}) : '—' }
 function size(value) { return ((Number(value)||0)/1024/1024).toFixed(1)+' MB' }
@@ -22,14 +28,14 @@ async function load(initial = false) {
     const data = await api.liveStatus(props.sub.id, offset.value)
     if (disposed) return
     monitor.value = data.monitor; records.value = data.records; error.value = ''
-    if (initial) { room.value=data.monitor?.room_url || ''; enabled.value=!!data.monitor?.enabled; interval.value=data.monitor?.interval_seconds || 60 }
+    if (initial) { room.value=data.monitor?.room_url || ''; enabled.value=!!data.monitor?.enabled; interval.value=data.monitor?.interval_seconds || 60; source.value=data.monitor?.source || (data.monitor?.room_url?'room':'profile'); intervalEnabled.value=!!(data.monitor?.interval_enabled ?? true); calendarEnabled.value=!!data.monitor?.plan; draft.value=planDraft(data.monitor?.plan||{}); quality.value=data.monitor?.quality||'best' }
   } catch(e) { if(!disposed) error.value=e.message }
   finally { loading.value=false; inFlight=false }
 }
 async function save() {
   if(saving.value) return
   saving.value=true
-  try { await api.saveLive(props.sub.id,{room_url:room.value.trim(),enabled:enabled.value,interval_seconds:Number(interval.value)}); await load(true); emit('updated'); toast('录播设置已保存','success') }
+  try { await api.saveLive(props.sub.id,{room_url:source.value==='room'?room.value.trim():'',source:source.value,quality:quality.value,enabled:enabled.value,interval_seconds:Number(interval.value),interval_enabled:intervalEnabled.value,plan:calendarEnabled.value?planPayload(draft.value):null}); await load(true); emit('updated'); toast('录播设置已保存','success') }
   catch(e) { toast(e.message,'error') }
   finally { saving.value=false }
 }
@@ -54,26 +60,34 @@ onBeforeUnmount(()=>{disposed=true;clearInterval(timer)})
     <p class="live-help">独立于作品扫描与下载标签。开启后定期检查，整场保存一个视频和配套弹幕；下播或停止后进入媒体库。</p>
     <p v-if="loading" class="live-help" role="status">正在读取录播设置…</p>
     <form v-else @submit.prevent="save">
-      <label :for="`live-room-${sub.id}`">直播间链接</label>
-      <input :id="`live-room-${sub.id}`" v-model="room" class="input" type="url" placeholder="https://live.douyin.com/房间号" required :disabled="active" maxlength="100">
+      <label :for="`live-source-${sub.id}`">检查对象</label>
+      <select :id="`live-source-${sub.id}`" v-model="source" class="select" :disabled="active"><option value="profile">跟随这位订阅博主（推荐）</option><option value="room">指定直播间链接</option></select>
+      <p v-if="source==='profile'" class="live-help">自动从博主主页获取直播入口，核对身份后录制，无需填写直播间链接。</p>
+      <label :for="`live-quality-${sub.id}`">录制画质</label><select :id="`live-quality-${sub.id}`" v-model="quality" class="select" :disabled="active"><option v-for="(label,key) in qualities" :key="key" :value="key">{{label}}</option></select>
+      <p class="live-help">档位由直播源提供，分辨率和帧率沿用原流，不额外转码。指定档位不可用时尝试更低档位，实际使用的档位记入录播记录。</p>
+      <template v-if="source==='room'"><label :for="`live-room-${sub.id}`">直播间链接</label><input :id="`live-room-${sub.id}`" v-model="room" class="input" type="url" placeholder="https://live.douyin.com/房间号" required :disabled="active" maxlength="100"></template>
       <div class="live-options">
         <label class="live-toggle"><input v-model="enabled" type="checkbox" :disabled="active">自动录制这位博主</label>
-        <label>每 <input v-model="interval" type="number" class="input interval" min="60" max="3600" step="1" :disabled="active" required> 秒检查</label>
       </div>
+      <div class="live-options"><label><input v-model="intervalEnabled" type="checkbox" :disabled="active">间隔检查</label><label><input v-model="calendarEnabled" type="checkbox" :disabled="active">固定时间检查</label></div>
+      <IntervalPicker v-if="intervalEnabled" v-model="interval" :disabled="active"/>
+      <div v-if="calendarEnabled" class="live-calendar"><CalendarPlanFields v-model="draft" :disabled="active"/></div>
+      <p class="live-help">间隔与固定时间可以同时启用；手动检查不推迟计划。固定时间仅在所选时点检查，可能错过两次检查之间的短直播。录制期间每分钟确认是否下播。</p>
       <div class="live-actions">
         <button class="btn btn-primary btn-sm" :disabled="saving || active">{{ saving?'处理中…':'保存录播设置' }}</button>
         <button type="button" class="btn btn-ghost btn-sm" :disabled="!monitor?.enabled || saving" @click="check">立即检查</button>
         <button v-if="monitor?.enabled || active" type="button" class="btn btn-danger-ghost btn-sm" :disabled="saving" @click="stop">{{ active?'停止并保存':'关闭自动录播' }}</button>
       </div>
     </form>
-    <p class="live-help">上次检查 {{ time(monitor?.checked_at) }} · 下次 {{ time(monitor?.next_check_at) }}（本地时间）</p>
+    <p class="live-help">上次检查 {{ time(monitor?.checked_at) }} · 下次 {{ monitor?.enabled ? (monitor.next_check_at ? time(monitor.next_check_at) : '计划已结束') : '已关闭' }}（本地时间）</p>
     <p class="live-help">最多同时录制 2 位博主，剩余空间不足 2 GiB 时停止。关闭网页可继续；退出程序后停止检查。断线重试另存新文件，不覆盖前一段。</p>
     <p v-if="error || monitor?.error" class="live-error" role="alert">{{ error || monitor.error }}</p>
     <h4>录播记录</h4>
-    <p v-if="!records.length" class="live-help">尚无录播。弹幕保存为 JSONL，保留时间、文本及公开发送者信息；连接缺口单独记录，不自动删除。</p>
+    <p v-if="!records.length" class="live-help">尚无录播。弹幕保存为 JSONL，仅保留文字、Emoji 和时间，不保存发送者身份。以视频播放位置估算时间轴；采集缺口另存记录，不自动删除。</p>
     <article v-for="item in records" :key="item.id" class="live-record">
       <strong>{{ item.title }}</strong>
       <p>{{ labels[item.status] || item.status }} · {{ time(item.started_at) }} · {{ duration(item.duration_seconds) }} · {{ size(item.bytes) }}</p>
+      <p v-if="item.quality">实际画质：{{qualities[item.quality] || item.quality}}</p>
       <ActivityProgress v-if="['recording','finalizing'].includes(item.status)" status="running" :progress="{label:item.status==='finalizing'?'正在保存视频与弹幕…':`已录制 ${duration(item.duration_seconds)} · ${size(item.bytes)}`}" label="直播录制进度"/>
       <p v-if="item.chat">弹幕 {{ item.chat.messages || 0 }} 条 · {{ item.chat.status==='captured'?'采集已结束':item.chat.status==='connected'?'采集中':item.chat.status==='captured_with_gaps'?'存在采集缺口':item.chat.status==='write_failed'?'写入失败，已有数据保留':['interrupted','unavailable'].includes(item.chat.status)?'采集未正常结束，已有数据保留':'正在连接或恢复' }}</p>
       <p v-if="item.previous_id">这是同场直播中断后的新记录，前一记录保留。</p>
@@ -89,6 +103,7 @@ onBeforeUnmount(()=>{disposed=true;clearInterval(timer)})
 </template>
 
 <style scoped>
+.live-calendar { margin:14px 0;padding:14px;background:#eef3f5;border-radius:12px; }
 .live-panel { margin-top:18px;padding-top:18px;border-top:1px solid var(--border); }
 .live-heading,.live-options,.live-actions { display:flex;align-items:center;gap:12px;flex-wrap:wrap; }
 .live-heading { justify-content:space-between; }.live-heading h3 { font-size:15px; }.live-state { color:var(--blue);font-size:12px; }

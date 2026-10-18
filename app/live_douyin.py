@@ -44,7 +44,7 @@ def stream_url(value):
     return ''
 
 
-def parse_room(payload):
+def parse_room(payload, quality='best'):
     if not isinstance(payload, dict) or payload.get('status_code', 0) not in (0, '0'):
         raise LiveError('平台未返回有效直播状态，请检查登录态后重试')
     data = payload.get('data') or {}
@@ -70,6 +70,11 @@ def parse_room(payload):
         except ValueError:
             sdk = {}
     qualities = (('origin', 'ORIGIN'), ('uhd', 'FULL_HD1'), ('hd', 'HD1'), ('sd', 'SD2'), ('ld', 'SD1'))
+    if quality != 'best':
+        names = [item[0] for item in qualities]
+        if quality not in names:
+            raise LiveError('不支持的录制画质')
+        qualities = qualities[names.index(quality):]
     for sdk_key, legacy_key in qualities:
         main = ((sdk.get('data') or {}).get(sdk_key) or {}).get('main') or {}
         candidates = [main.get('flv'), main.get('hls'), (streams.get('flv_pull_url') or {}).get(legacy_key),
@@ -80,11 +85,11 @@ def parse_room(payload):
                 session_id = str(room.get('id_str') or room.get('id') or '')
                 if not re.fullmatch(r'[0-9]{1,32}', session_id):
                     raise LiveError('直播场次标识缺失，暂不开始录制')
-                return {'live': True, 'session_id': session_id, 'stream_url': url,
+                return {'live': True, 'session_id': session_id, 'stream_url': url, 'quality':sdk_key,
                         'title': str(room.get('title') or '抖音直播')[:500],
                         'nickname': str(owner.get('nickname') or '')[:200],
                         'owner_id': str(owner.get('sec_uid') or '')}
-    raise LiveError('正在直播，但没有受支持的直播流地址；请稍后重试')
+    raise LiveError('正在直播，但所选或更低画质没有可用直播流；可改选最高可用或稍后重试')
 
 
 def _read_response(response):
@@ -100,7 +105,7 @@ def _read_response(response):
     return bytes(result)
 
 
-def lookup(url):
+def lookup(url, quality='best'):
     identity = room_url(url).rsplit('/', 1)[-1]
     try:
         with requests.Session() as session:
@@ -122,9 +127,72 @@ def lookup(url):
             with session.get(REFERER + 'webcast/room/web/enter/', params=params, timeout=(5, 15),
                              stream=True, allow_redirects=False) as response:
                 raw = _read_response(response)
-            return parse_room(json.loads(raw))
+            return parse_room(json.loads(raw), quality)
     except LiveError:
         raise
     except (requests.RequestException, ValueError, TypeError, AttributeError, KeyError):
         # Raw HTTP/JSON exceptions may contain signed URLs or cookies.
         raise LiveError('无法读取直播状态，请检查网络、房间链接和本地登录态') from None
+
+
+def parse_profile(payload, identity):
+    if not isinstance(payload, dict) or payload.get('status_code') != 0:
+        raise LiveError('无法读取博主直播状态，请检查抖音登录态或稍后重试')
+    user = payload.get('user') or {}
+    if user.get('sec_uid') != identity:
+        raise LiveError('主页身份无法核实，未开始录制')
+    status = user.get('live_status')
+    if status == 0:
+        return None
+    if status != 1:
+        raise LiveError('博主直播状态未知，未将其误判为下播')
+    room = user.get('room_data') or {}
+    if isinstance(room, str):
+        try:
+            room = json.loads(room)
+        except ValueError:
+            raise LiveError('博主直播信息格式已变化') from None
+    rid = (room.get('owner') or {}).get('web_rid') if isinstance(room, dict) else None
+    if not rid:
+        raise LiveError('博主已开播，但主页未提供直播入口；可改用直播间链接')
+    return room_url(f'https://live.douyin.com/{rid}')
+
+
+def lookup_blogger(identity, quality='best'):
+    """Read the normal profile response; never search by an ambiguous nickname."""
+    from . import browser
+    if not re.fullmatch(r'[A-Za-z0-9_.-]{1,200}', str(identity)):
+        raise LiveError('订阅博主身份格式无效')
+    try:
+        with browser.sync_playwright() as p:
+            try:
+                owned = p.chromium.launch(channel='chrome', headless=True, timeout=10000)
+            except Exception:
+                owned = p.chromium.launch(headless=True, timeout=10000)
+            try:
+                context = browser.stealth_context(owned)
+                douyin_auth.attach_cookies(context)
+                page = context.new_page()
+                page.route('**/*', lambda route: route.abort() if route.request.resource_type in
+                           ('media', 'image', 'font') else route.continue_())
+                with page.expect_response(lambda r: urlsplit(r.url).hostname == 'www.douyin.com' and
+                        urlsplit(r.url).path.rstrip('/') == '/aweme/v1/web/user/profile/other', timeout=25000) as pending:
+                    page.goto(f'https://www.douyin.com/user/{identity}', wait_until='domcontentloaded', timeout=25000)
+                response = pending.value
+                if response.status in (403, 429, 444):
+                    raise LiveError('平台限制了主页检查，已降低频率', limited=True)
+                raw = response.body()
+                if response.status != 200 or len(raw) > 2*1024*1024:
+                    raise LiveError('博主主页响应不可用，请检查登录态')
+                url = parse_profile(json.loads(raw), identity)
+            finally:
+                owned.close()
+        if not url:
+            return {'live': False}
+        info = lookup(url, quality)
+        info['room_url'] = url
+        return info
+    except LiveError:
+        raise
+    except Exception:
+        raise LiveError('博主主页直播检查失败，请检查登录态、网络或改用直播间链接') from None

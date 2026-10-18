@@ -85,6 +85,8 @@ def main():
                     except ValueError:
                         pass
                 if key == 'progress':
+                    if journal:
+                        journal.video_progress(values.get('out_time_us', 0) / 1000000)
                     emit({'seconds': values.get('out_time_us', 0) / 1000000,
                           'bytes': values.get('total_size', 0)})
                     if journal and time.monotonic() - last_anchor >= 10:
