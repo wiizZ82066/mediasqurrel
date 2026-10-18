@@ -121,17 +121,25 @@ def _folders(root, cancel=None):
         pending.extend(reversed(children))
 
 
-def _inventory(folder):
+def _inventory(folder, *, include_unfinished=False):
+    # Live sessions are published only after the recorder has closed its video
+    # and chat files. A manual/full scan must not expose a half-written session.
+    live = bool(re.search(r'_douyin_live[0-9a-f]{32}$', folder.name))
+    if live and archive.entry_status(folder) != 'complete' and not include_unfinished:
+        return []
+    sidecars = {'chat.jsonl', 'chat.jsonl.part', 'chat.meta.json'} if live else set()
+    if live and include_unfinished:
+        sidecars.add('recording.mp4.part')
     result = []
     for child in sorted(folder.iterdir(), key=lambda p: p.name):
-        if child.name.startswith(".") or child.name.endswith(".part"):
+        if child.name.startswith(".") or (child.name.endswith(".part") and child.name not in sidecars):
             continue
         paths = sorted(child.iterdir()) if child.name in ("photo", "live") and child.is_dir() else [child]
         for path in paths:
             if not path.is_file():
                 continue
             _safe(folder, path.relative_to(folder).as_posix())
-            if path.suffix.lower() not in _IMAGES | _VIDEOS | {".mov"} and path.name not in ("context.md", "entry.json"):
+            if path.suffix.lower() not in _IMAGES | _VIDEOS | {".mov"} and path.name not in {'context.md', 'entry.json'} | sidecars:
                 continue
             stat = path.stat()
             result.append({"path": path.relative_to(folder).as_posix(), "size": stat.st_size,

@@ -1,0 +1,98 @@
+<script setup>
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { api } from '../api.js'
+import { toast } from '../store.js'
+import ActivityProgress from './ActivityProgress.vue'
+import AppIcon from './AppIcon.vue'
+
+const props = defineProps({ sub: { type: Object, required: true } })
+const emit = defineEmits(['updated'])
+const room = ref(''), enabled = ref(false), interval = ref(60), monitor = ref(null), records = ref([])
+const loading = ref(true), saving = ref(false), error = ref(''), offset = ref(0)
+let timer, disposed = false, inFlight = false
+const active = computed(() => records.value.some(item => ['recording','finalizing'].includes(item.status)))
+const labels = { disabled:'已关闭', waiting:'等待检查', offline:'当前未开播', capacity:'等待录制空位', error:'检查失败', recording:'正在录制', finalizing:'正在保存', completed:'下播后结束', stopped:'已手动停止', interrupted:'已中断' }
+function time(value) { return value ? new Date(value).toLocaleString('zh-CN', {hour12:false}) : '—' }
+function size(value) { return ((Number(value)||0)/1024/1024).toFixed(1)+' MB' }
+function duration(value) { const seconds=Math.max(0,Math.floor(Number(value)||0)); return `${Math.floor(seconds/3600)}:${String(Math.floor(seconds/60)%60).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}` }
+async function load(initial = false) {
+  if (inFlight) return
+  inFlight = true
+  try {
+    const data = await api.liveStatus(props.sub.id, offset.value)
+    if (disposed) return
+    monitor.value = data.monitor; records.value = data.records; error.value = ''
+    if (initial) { room.value=data.monitor?.room_url || ''; enabled.value=!!data.monitor?.enabled; interval.value=data.monitor?.interval_seconds || 60 }
+  } catch(e) { if(!disposed) error.value=e.message }
+  finally { loading.value=false; inFlight=false }
+}
+async function save() {
+  if(saving.value) return
+  saving.value=true
+  try { await api.saveLive(props.sub.id,{room_url:room.value.trim(),enabled:enabled.value,interval_seconds:Number(interval.value)}); await load(true); emit('updated'); toast('录播设置已保存','success') }
+  catch(e) { toast(e.message,'error') }
+  finally { saving.value=false }
+}
+async function stop() {
+  if(saving.value) return
+  saving.value=true
+  try { await api.stopLive(props.sub.id); enabled.value=false; await load(); emit('updated'); toast('已关闭自动录播，正在保存已有视频和弹幕','info') }
+  catch(e) { toast(e.message,'error') }
+  finally { saving.value=false }
+}
+async function check() { try { const result=await api.checkLive(props.sub.id); toast(result.already_running?'检查已安排，请稍候':'已安排直播检查','info'); await load() } catch(e) { toast(e.message,'error') } }
+async function publish(item) { saving.value=true; try { const result=await api.publishLive(item.id); toast(result.published?'已重新加入媒体库':'仍未完成入库，请查看错误说明',result.published?'success':'error'); await load() } catch(e){toast(e.message,'error')} finally{saving.value=false} }
+async function reveal(item) { try { await api.libraryReveal(item.entry_id) } catch(e){toast(e.message,'error')} }
+async function page(delta) { offset.value=Math.max(0,offset.value+delta*20); await load() }
+onMounted(async()=>{await load(true);if(!disposed)timer=setInterval(()=>load(),5000)})
+onBeforeUnmount(()=>{disposed=true;clearInterval(timer)})
+</script>
+
+<template>
+  <section class="live-panel" aria-label="直播录制设置与记录">
+    <div class="live-heading"><h3>直播与弹幕</h3><span class="live-state">{{ labels[monitor?.status] || '尚未设置' }}</span></div>
+    <p class="live-help">独立于作品扫描与下载标签。开启后定期检查，整场保存一个视频和配套弹幕；下播或停止后进入媒体库。</p>
+    <p v-if="loading" class="live-help" role="status">正在读取录播设置…</p>
+    <form v-else @submit.prevent="save">
+      <label :for="`live-room-${sub.id}`">直播间链接</label>
+      <input :id="`live-room-${sub.id}`" v-model="room" class="input" type="url" placeholder="https://live.douyin.com/房间号" required :disabled="active" maxlength="100">
+      <div class="live-options">
+        <label class="live-toggle"><input v-model="enabled" type="checkbox" :disabled="active">自动录制这位博主</label>
+        <label>每 <input v-model="interval" type="number" class="input interval" min="60" max="3600" step="1" :disabled="active" required> 秒检查</label>
+      </div>
+      <div class="live-actions">
+        <button class="btn btn-primary btn-sm" :disabled="saving || active">{{ saving?'处理中…':'保存录播设置' }}</button>
+        <button type="button" class="btn btn-ghost btn-sm" :disabled="!monitor?.enabled || saving" @click="check">立即检查</button>
+        <button v-if="monitor?.enabled || active" type="button" class="btn btn-danger-ghost btn-sm" :disabled="saving" @click="stop">{{ active?'停止并保存':'关闭自动录播' }}</button>
+      </div>
+    </form>
+    <p class="live-help">上次检查 {{ time(monitor?.checked_at) }} · 下次 {{ time(monitor?.next_check_at) }}（本地时间）</p>
+    <p class="live-help">最多同时录制 2 位博主，剩余空间不足 2 GiB 时停止。关闭网页可继续；退出程序后停止检查。断线重试另存新文件，不覆盖前一段。</p>
+    <p v-if="error || monitor?.error" class="live-error" role="alert">{{ error || monitor.error }}</p>
+    <h4>录播记录</h4>
+    <p v-if="!records.length" class="live-help">尚无录播。弹幕保存为 JSONL，保留时间、文本及公开发送者信息；连接缺口单独记录，不自动删除。</p>
+    <article v-for="item in records" :key="item.id" class="live-record">
+      <strong>{{ item.title }}</strong>
+      <p>{{ labels[item.status] || item.status }} · {{ time(item.started_at) }} · {{ duration(item.duration_seconds) }} · {{ size(item.bytes) }}</p>
+      <ActivityProgress v-if="['recording','finalizing'].includes(item.status)" status="running" :progress="{label:item.status==='finalizing'?'正在保存视频与弹幕…':`已录制 ${duration(item.duration_seconds)} · ${size(item.bytes)}`}" label="直播录制进度"/>
+      <p v-if="item.chat">弹幕 {{ item.chat.messages || 0 }} 条 · {{ item.chat.status==='captured'?'采集已结束':item.chat.status==='connected'?'采集中':item.chat.status==='captured_with_gaps'?'存在采集缺口':item.chat.status==='write_failed'?'写入失败，已有数据保留':['interrupted','unavailable'].includes(item.chat.status)?'采集未正常结束，已有数据保留':'正在连接或恢复' }}</p>
+      <p v-if="item.previous_id">这是同场直播中断后的新记录，前一记录保留。</p>
+      <p v-if="item.error" class="live-error">{{ item.error }}</p>
+      <div class="live-actions">
+        <RouterLink v-if="item.entry_id" class="btn btn-ghost btn-sm" :to="{path:'/library',query:{entry_id:item.entry_id}}">查看媒体库</RouterLink>
+        <button v-if="item.entry_id" class="btn btn-ghost btn-sm" @click="reveal(item)"><AppIcon name="folder" :size="18"/>视频与弹幕文件夹</button>
+        <button v-if="item.status==='interrupted' && !item.entry_id && item.output_rel" class="btn btn-ghost btn-sm" :disabled="saving || active" @click="publish(item)">重试入库</button>
+      </div>
+    </article>
+    <div v-if="offset || records.length===20" class="live-actions live-help"><button class="btn btn-ghost btn-sm" :disabled="offset===0 || inFlight" @click="page(-1)">上一页</button><span>第 {{ offset/20+1 }} 页</span><button class="btn btn-ghost btn-sm" :disabled="records.length<20 || inFlight" @click="page(1)">下一页</button></div>
+  </section>
+</template>
+
+<style scoped>
+.live-panel { margin-top:18px;padding-top:18px;border-top:1px solid var(--border); }
+.live-heading,.live-options,.live-actions { display:flex;align-items:center;gap:12px;flex-wrap:wrap; }
+.live-heading { justify-content:space-between; }.live-heading h3 { font-size:15px; }.live-state { color:var(--blue);font-size:12px; }
+.live-help,.live-record p { font-size:12px;line-height:1.8;color:var(--text-2);overflow-wrap:anywhere; }.live-help { margin:10px 0; }
+.live-panel label { font-size:13px; }.live-panel form>label { display:block;margin:12px 0 8px; }.live-options { margin:14px 0;justify-content:space-between; }.live-options label { display:flex;align-items:center;gap:8px; }.interval { width:85px; }.live-toggle input { accent-color:var(--blue); }
+.live-panel h4 { margin-top:22px;font-size:13px; }.live-record { padding:14px 0;border-bottom:1px solid var(--border); }.live-record strong { font-size:13px;overflow-wrap:anywhere; }.live-record p { margin:6px 0; }.live-error { color:#b13c30!important;font-size:12px;line-height:1.7;overflow-wrap:anywhere; }.live-actions a { text-decoration:none; }
+</style>

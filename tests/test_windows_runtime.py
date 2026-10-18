@@ -353,7 +353,7 @@ class LogAndTrayTests(unittest.TestCase):
             self.assertIn('正在启动', run._tray_status(service))
             activity.assert_not_called()
             service.started = True
-            self.assertEqual(run._tray_status(service), '下载 1 · 排队 2 · 扫描 3')
+            self.assertEqual(run._tray_status(service), '下载 1 · 排队 2 · 扫描 3 · 录播 0')
             service.should_exit = True
             self.assertIn('正在退出', run._tray_status(service))
 

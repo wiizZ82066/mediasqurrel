@@ -84,10 +84,11 @@ def _migrations():
     from .scheduling import SCHEMA as schedules
     from .path_transition import SCHEMA as paths
     from .subscription_filters import SCHEMA as filters
+    from .live_store import SCHEMA as live
     return [(1, "subscription-history", subscriptions), (2, "task-history", tasks),
             (3, "media-catalog", catalog), (4, "data-maintenance", maintenance),
             (5, "subscription-schedules", schedules), (6, "restart-path-transitions", paths),
-            (7, "subscription-topic-filters", filters)]
+            (7, "subscription-topic-filters", filters), (8, "douyin-live-recording", live)]
 
 
 def migrate(path=None, *, migrations=None):

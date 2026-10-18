@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 
 from . import catalog, config, db, library_service, maintenance, scheduling, settings, task_manager, watcher
 from .archive import atomic_write_text
-from . import media_jobs, path_transition
+from . import media_jobs, path_transition, live_service
 from .redaction import redact_value, redact_text
 
 router = APIRouter()
@@ -177,8 +177,8 @@ def get_plan(plan_id: str):
 async def execute(plan_id: str, body: dict):
     if _paths_pending:
         raise HTTPException(409, '路径配置待重启，请先退出并重启')
-    if config.MAINTENANCE_ACTIVE or watcher.has_active_scans() or task_manager.update_state()['active']:
-        raise HTTPException(409, '请先等待下载和扫描结束，再执行数据维护')
+    if config.MAINTENANCE_ACTIVE or watcher.has_active_scans() or task_manager.update_state()['active'] or live_service.busy():
+        raise HTTPException(409, '请先等待下载、扫描和录播结束，再执行数据维护')
     plan = get_plan(plan_id)
     token = str(body.get('confirmation_token') or '')
     if not secrets.compare_digest(token, plan['confirmation_token']):
@@ -240,7 +240,7 @@ async def apply_paths(body: dict):
         raise HTTPException(409, '路径切换已准备，请先退出并重启')
     if body.get('confirmed') is not True:
         raise HTTPException(400, '需要确认下次启动使用准备好的新目录')
-    if config.MAINTENANCE_ACTIVE or watcher.has_active_scans() or task_manager.update_state()['active']:
+    if config.MAINTENANCE_ACTIVE or watcher.has_active_scans() or task_manager.update_state()['active'] or live_service.busy():
         raise HTTPException(409, '请等待当前操作完成后再切换路径')
     data_plan = get_plan(body['data_plan_id']) if body.get('data_plan_id') else None
     library_plan = get_plan(body['library_plan_id']) if body.get('library_plan_id') else None

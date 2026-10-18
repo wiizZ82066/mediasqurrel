@@ -14,3 +14,10 @@ Simple Icons 项目采用 CC0-1.0（完整文本：`simple-icons-cc0.txt`），�
 这些是所查看内容的表情，不属于本项目的操作图标。`app/weibo_emoticons.json` 保存 2026-10-10 核验的 338 项名称与静态资源地址：337 项来自微博官方公开配置 https://weibo.com/ajax/statuses/config ，另一个 `[指定能行]` 由官方公开帖子响应 https://weibo.com/ajax/statuses/show?id=PvSWpaoG9 中明确配对的图片补充。图片来源为 `https://face.t.sinajs.cn/t4/appstyle/expression/ext/normal/`。图片版权属于各自权利人，不声明为开源或可自由商用，也不随仓库分发。
 
 本机服务仅在显示已收录表情时读取明确映射的官方 PNG 地址，缓存透明静态图像供后续浏览；不提交缓存、不读取登录态、不把正文发给第三方。未知名称和加载失败均保留原始表情代码。
+
+
+## 直播录制参考与依赖
+
+- 房间状态接口及清晰度字段映射参考 [SplashedWhite/douyin-recorder](https://github.com/SplashedWhite/douyin-recorder)，MIT，Copyright (c) 2026 SplashedWhite；许可文本保留在 `douyin-recorder-mit.txt`。本项目使用 Python 实现，不引入其 Tauri/Rust 应用。
+- 弹幕字段编号参照 [opedium/douyin-live-proto 的协议字段文档](https://github.com/opedium/douyin-live-proto/blob/master/docs/complete_payload_reference.md)，并以真实直播消息验证。使用自行实现的有限字段解析器，不复制生成的协议库；消息传输由 Playwright 打开的正常页面处理。
+- [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) 通过依赖安装提供 FFmpeg；其包与 FFmpeg 的各自许可证、构建选项随依赖分发。仓库不包含 FFmpeg 二进制。

@@ -156,11 +156,11 @@ class SubscriptionFilterStateTests(unittest.TestCase):
 
     def test_v6_upgrade_preserves_existing_records_and_creates_recoverable_backup(self):
         legacy = Path(self.temp.name) / 'legacy.db'
-        db.migrate(legacy, migrations=db._migrations()[:-1])
+        db.migrate(legacy, migrations=[step for step in db._migrations() if step[0] <= 6])
         with db.connect(legacy) as connection:
             connection.execute("INSERT INTO subscriptions(platform,blogger_id) VALUES ('weibo','legacy')")
             connection.execute("INSERT INTO subscription_items(platform,blogger_id,item_id,status,discovered_at,updated_at) VALUES ('weibo','legacy','post','failed','before','before')")
-        self.assertEqual(db.migrate(legacy), 7)
+        self.assertEqual(db.migrate(legacy), 8)
         with db.connect(legacy) as connection:
             self.assertEqual(connection.execute('PRAGMA quick_check').fetchone()[0], 'ok')
             self.assertEqual(connection.execute('SELECT status FROM subscription_items').fetchone()[0], 'failed')

@@ -219,12 +219,12 @@ def _watch_backend(worker, icon, stopped, refresh=None):
 
 
 def _tray_activity():
-    from app import task_manager, watcher
+    from app import task_manager, watcher, live_service
     # Copy the in-memory dictionaries before iterating on the tray thread.
     tasks = list(task_manager.TASKS.values())
     return {'running': sum(task.get('status') == 'running' for task in tasks),
             'queued': sum(task.get('status') == 'queued' for task in tasks),
-            'scanning': len(watcher._SCANNING)}
+            'scanning': len(watcher._SCANNING), 'recording': live_service.active_count()}
 
 
 def _tray_status(server):
@@ -235,7 +235,7 @@ def _tray_status(server):
     state = _tray_activity()
     if not any(state.values()):
         return '服务运行中 · 当前空闲'
-    return f"下载 {state['running']} · 排队 {state['queued']} · 扫描 {state['scanning']}"
+    return f"下载 {state['running']} · 排队 {state['queued']} · 扫描 {state['scanning']} · 录播 {state.get('recording', 0)}"
 
 
 def _request_tray_exit(server, icon):
@@ -244,8 +244,8 @@ def _request_tray_exit(server, icon):
         return
     state = _tray_activity()
     if any(state.values()) and not message_box(
-            f"当前有 {state['running']} 个下载、{state['queued']} 个排队任务和 {state['scanning']} 个扫描。\n"
-            '退出会中断正在运行的工作；排队任务下次启动继续，已中断的下载需重试。确定退出？', question=True):
+            f"当前有 {state['running']} 个下载、{state['queued']} 个排队任务和 {state['scanning']} 个扫描、{state.get('recording', 0)} 路录播。\n"
+            '退出会中断正在运行的工作；排队任务下次启动继续，已中断的下载需重试，录播会保存已收到的部分。确定退出？', question=True):
         return
     server.should_exit = True
     icon.title = 'Media Squirrel — 正在退出并清理子进程'

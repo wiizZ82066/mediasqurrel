@@ -122,7 +122,7 @@ def _file(path, relative, action="copy", expected_sha256=None):
 
 def _recognized_files(root):
     for _author, folder in catalog._folders(root):
-        for item in catalog._inventory(folder):
+        for item in catalog._inventory(folder, include_unfinished=True):
             relative = (folder.relative_to(root) / item["path"]).as_posix()
             yield _file(_safe(root, relative), relative)
 

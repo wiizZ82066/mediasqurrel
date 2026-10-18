@@ -86,7 +86,7 @@ def save(changes):
 
 def versions():
     result = {'python': sys.version.split()[0]}
-    for name in ('fastapi', 'uvicorn', 'playwright', 'opencv-python', 'requests', 'pystray', 'Pillow', 'tzdata'):
+    for name in ('fastapi', 'uvicorn', 'playwright', 'opencv-python', 'requests', 'pystray', 'Pillow', 'tzdata', 'imageio-ffmpeg'):
         try:
             result[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
@@ -123,6 +123,16 @@ def diagnostics():
     checks = []
     def add(identity, label, status, reason, suggestion=''):
         checks.append(dict(id=identity, label=label, status=status, reason=reason, suggestion=suggestion))
+    try:
+        from .live_recorder import ffmpeg_exe
+        executable = ffmpeg_exe()
+        tested = subprocess.run([executable, '-version'], capture_output=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        if tested.returncode:
+            raise ValueError('FFmpeg execution failed')
+        add('live_recorder', '直播录制组件', 'passed', 'FFmpeg 已实际启动；直播和弹幕联网可用性需在指定房间另行验证')
+    except (ValueError, OSError, subprocess.SubprocessError):
+        add('live_recorder', '直播录制组件', 'failed', 'FFmpeg 不可用或启动失败', '运行 python -m pip install -r requirements.txt 后重试')
     try:
         code = 'import fastapi, uvicorn, playwright.sync_api, requests, cv2, PIL, pystray, browserforge; import weibo_downloader, douyin_downloader'
         tested = subprocess.run([console_python(), '-B', '-c', code], cwd=config.RESOURCE_DIR,

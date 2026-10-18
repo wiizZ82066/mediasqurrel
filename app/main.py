@@ -19,7 +19,8 @@ from .redaction import redact_text
 from .runtime import InstanceLock, runtime_identity
 from . import settings
 from . import settings_api, maintenance, db
-from . import windows_api, subscription_batch
+from . import windows_api, subscription_batch, live_service
+from .live_api import router as live_router
 from . import scanners  # noqa: F401  (import 即注册各平台扫描器)
 
 
@@ -130,12 +131,13 @@ async def lifespan(_app: FastAPI):
         await task_manager.initialize()
         watcher.reconcile_tasks(task_manager.iter_subscription_tasks())
         watcher.start_scheduler(_dispatch_new_items)
+        live_service.start()
         yield
     finally:
         try:
             from .sub_search import stop_searches
             # Each owner receives shutdown even if a different cleanup fails.
-            for stop in (settings_api.stop, stop_searches, subscription_batch.stop, watcher.stop_scheduler, task_manager.shutdown, library_service.stop):
+            for stop in (settings_api.stop, stop_searches, subscription_batch.stop, live_service.stop, watcher.stop_scheduler, task_manager.shutdown, library_service.stop):
                 try:
                     await stop()
                 except Exception as error:
@@ -153,6 +155,7 @@ app.router.lifespan_context = lifespan
 app.include_router(library_router)
 app.include_router(settings_api.router)
 app.include_router(windows_api.router)
+app.include_router(live_router)
 
 
 # ---------------------------------------------------------------- 健康检查
@@ -512,7 +515,9 @@ def api_update_sub(sub_id: int, body: dict):
 
 
 @app.delete("/api/subs/{sub_id}")
-def api_delete_sub(sub_id: int):
+async def api_delete_sub(sub_id: int):
+    if sub_id in live_service._active or sub_id in live_service._checks:
+        raise HTTPException(409, '请先停止此博主的直播录制并等待检查结束')
     ok = watcher.remove_sub(sub_id)
     return {"ok": ok}
 
