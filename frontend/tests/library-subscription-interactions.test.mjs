@@ -674,3 +674,23 @@ test('tasks identify pending subscriptions and recordings without guessing names
   assert.equal(taskPlatform({script_id:'douyin_live',metadata:{live:{}}}),'douyin')
   assert.equal(taskTitle({metadata:{live:{}}}),'直播录制')
 })
+
+test('task pagination reaches fifth page, shows the end, and returns to earlier pages', async t => {
+  const {state,api}=setupComponent('Tasks',t)
+  api.taskPage=async ({cursor}) => {
+    const start=Number(cursor || 0)
+    return {items:Array.from({length:Math.min(50,234-start)},(_,i)=>({id:String(start+i),status:'success'})),
+      next_cursor:start+50<234 ? String(start+50):null,total:234}
+  }
+  await state.loadPage()
+  for(let i=0;i<4;i++) await state.nextPage()
+  assert.equal(state.previous.value.length,4)
+  assert.equal(state.tasks.value.length,34)
+  assert.equal(state.nextCursor.value,null)
+  assert.equal(state.total.value,234)
+  await state.nextPage()
+  assert.equal(state.previous.value.length,4)
+  await state.previousPage()
+  assert.equal(state.tasks.value[0].id,'150')
+  assert.equal(state.previous.value.length,3)
+})

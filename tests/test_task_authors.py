@@ -5,7 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from app import catalog, config, db, task_authors
+from app import catalog, config, db, task_authors, task_history_repair
+from app.task_store import TaskStore
 
 
 class TaskAuthorTests(unittest.TestCase):
@@ -15,7 +16,7 @@ class TaskAuthorTests(unittest.TestCase):
         self.root = Path(temporary.name) / 'media'
         self.root.mkdir()
         for key, value in (('DB_PATH', str(Path(temporary.name) / 'app.db')),
-                           ('LIBRARY_ROOT', str(self.root))):
+                           ('LIBRARY_ROOT', str(self.root)), ('LOG_DIR', str(self.root.parent/'logs'))):
             replacement = patch.object(config, key, value)
             replacement.start()
             self.addCleanup(replacement.stop)
@@ -75,7 +76,8 @@ class TaskAuthorTests(unittest.TestCase):
         tasks = [dict(id='linked'), dict(id='absolute',output_dir=str(folder)),
                  dict(id='relative',output_rel=folder.relative_to(self.root).as_posix())]
         task_authors.enrich(tasks)
-        self.assertTrue(all(task['author'] == 'ExampleAuthor' for task in tasks))
+        self.assertTrue(all(task['author'] == '完整博主名字 🐿️' for task in tasks))
+        self.assertTrue(all(task['author_avatar_url'] == '/api/subs/1/avatar' for task in tasks))
         self.assertTrue(all('已索引的内容' in task['display_title'] for task in tasks))
 
     def test_unknown_external_or_diagnostic_paths_are_not_guessed(self):
@@ -103,3 +105,53 @@ class TaskAuthorTests(unittest.TestCase):
         self.assertEqual(result['author'], '录播博主')
         self.assertEqual(result['display_title'], '直播标题')
         self.assertEqual(result['author_avatar_url'], '/api/subs/1/avatar')
+
+    def test_diagnostic_metadata_repair_is_idempotent_and_does_not_index_or_modify_files(self):
+        folder = self.root.parent/'diagnostics'/'Author'/'2026-10-09'
+        folder.mkdir(parents=True)
+        source = folder/'context.md'
+        source.write_text('- **作者**: 原博主\n- **原文链接**: https://weibo.com/123/post\n## 页面文本\n```\n原正文 🎉\n```\n',encoding='utf-8')
+        original = source.read_bytes()
+        store = TaskStore()
+        store.save(dict(id='diagnostic',script_id='weibo',script_name='检测',script_icon='',status='success',
+            created_at='2026-10-09T00:00:00Z',params={'out':str(folder.parents[1])},progress={},
+            output_dir=str(folder),metadata={'diagnostic':True}))
+        store.delete_record('diagnostic')
+        result = task_history_repair.repair()
+        self.assertEqual((result['checked'],result['updated'],result['unresolved']),(1,1,0))
+        saved = store.get('diagnostic', include_deleted=True)
+        self.assertTrue(saved['hidden'])
+        self.assertEqual(saved['metadata']['content']['author'], '原博主')
+        self.assertEqual(task_history_repair.repair()['updated'], 0)
+        self.assertEqual(source.read_bytes(), original)
+        with db.connect() as connection:
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM media_entries').fetchone()[0],0)
+        task_authors.enrich([saved])
+        self.assertEqual(saved['author_avatar_url'], '/api/subs/1/avatar')
+
+    def test_manual_unsubscribed_author_uses_exact_identity_not_duplicate_nickname(self):
+        folder, root, entry = self.fixture_entry()
+        with db.connect() as connection:
+            connection.execute('UPDATE media_entries SET meta_json=? WHERE id=?',
+                               ('{"原文链接":"https://weibo.com/456/post"}',entry['id']))
+            connection.execute('INSERT INTO task_media VALUES (?,?,?)', ('manual',entry['id'],root['id']))
+        task = task_authors.enrich([dict(id='manual',script_id='weibo')])[0]
+        self.assertEqual(task['author_avatar_url'], '/api/authors/weibo/456/avatar')
+
+    def test_repair_does_not_read_context_resolving_outside_verified_output(self):
+        folder = self.root / 'verified-output'
+        folder.mkdir()
+        store = TaskStore()
+        store.save(dict(id='diagnostic',script_id='weibo',script_name='检测',script_icon='',status='success',
+            created_at='2026-10-09T00:00:00Z',params={},progress={},metadata={'diagnostic':True}))
+        original_resolve = Path.resolve
+        def redirected(path, *args, **kwargs):
+            if path == folder / 'context.md':
+                return self.root.parent / 'private.md'
+            return original_resolve(path, *args, **kwargs)
+        with patch('app.task_files.output_directory',return_value=str(folder)), \
+             patch.object(Path,'resolve',autospec=True,side_effect=redirected), \
+             patch('app.catalog._context') as read:
+            result = task_history_repair.repair()
+        read.assert_not_called()
+        self.assertEqual(result['unresolved'],1)

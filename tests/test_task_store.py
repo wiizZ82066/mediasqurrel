@@ -42,6 +42,25 @@ class TaskStoreTests(StoreFixture, unittest.TestCase):
     def setUp(self):
         self.setup_store()
 
+    def test_history_continues_beyond_four_pages_and_counts_match_filters(self):
+        for index in range(235):
+            item = task(f'task{index:03}',status='success')
+            self.store.save(item)
+        self.store.delete_record('task000')
+        cursor, received, pages = None, [], 0
+        while True:
+            page = self.store.list_page(cursor=cursor)
+            self.assertEqual(page['total'],234)
+            received.extend(item['id'] for item in page['items'])
+            pages += 1
+            cursor = page['next_cursor']
+            if not cursor:
+                break
+        self.assertEqual((pages,len(set(received))),(5,234))
+        self.assertEqual(self.store.list_page(include_hidden=True)['total'],235)
+        self.assertEqual(self.store.list_page(status='failed')['total'],0)
+        self.assertEqual(self.store.list_page(q='task234')['total'],1)
+
     def test_summary_cursor_filters_and_archive_roundtrip(self):
         for index in range(105):
             item = task(f'task{index:03}')

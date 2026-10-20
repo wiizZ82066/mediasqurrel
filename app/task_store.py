@@ -136,6 +136,7 @@ class TaskStore:
             clauses.append("(script_name LIKE ? ESCAPE '\\' OR params_json LIKE ? ESCAPE '\\' OR id LIKE ? ESCAPE '\\')")
             escaped = str(q).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             args.extend(["%" + escaped + "%"] * 3)
+        count_where, count_args = " AND ".join(clauses), list(args)
         if cursor:
             try:
                 created, task_id = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
@@ -146,6 +147,7 @@ class TaskStore:
             clauses.append("(created_at < ? OR (created_at = ? AND id < ?))")
             args.extend([created, created, task_id])
         with self._lock, self._db() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM tasks WHERE " + count_where, count_args).fetchone()[0]
             rows = conn.execute("SELECT * FROM tasks WHERE " + " AND ".join(clauses) +
                                 " ORDER BY created_at DESC,id DESC LIMIT ?", [*args, limit + 1]).fetchall()
         items = [self._decode(row) for row in rows[:limit]]
@@ -153,7 +155,7 @@ class TaskStore:
         if len(rows) > limit:
             last = items[-1]
             next_cursor = base64.urlsafe_b64encode(json.dumps([last["created_at"], last["id"]]).encode()).decode()
-        return {"items": items, "next_cursor": next_cursor}
+        return {"items": items, "next_cursor": next_cursor, "total": total}
 
     def active_count(self):
         with self._lock, self._db() as conn:

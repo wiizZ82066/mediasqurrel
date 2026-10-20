@@ -20,6 +20,7 @@ const status = ref(saved.status)
 const includeHidden = ref(!!saved.includeHidden)
 const cursor = ref(saved.cursor)
 const nextCursor = ref(saved.nextCursor)
+const total = ref(saved.total ?? null)
 const previous = ref([...saved.previous])
 const loading = ref(false)
 const error = ref('')
@@ -84,6 +85,7 @@ function closeLogs(id) {
 function rememberList() {
   Object.assign(saved, {
     items: [...tasks.value], cursor: cursor.value, nextCursor: nextCursor.value,
+    total: total.value,
     previous: [...previous.value], status: status.value, q: query.value, includeHidden: includeHidden.value,
     scrollTop: contentElement?.scrollTop || 0, loaded: true,
   })
@@ -110,6 +112,7 @@ async function loadPage({ target = cursor.value, reset = false, restore = false 
       .filter(visibleTask)
     cursor.value = target
     nextCursor.value = result.next_cursor
+    total.value = result.total ?? null
     if (reset) previous.value = []
     const visible = new Set(tasks.value.map((task) => task.id))
     for (const id of Object.keys(logs)) if (!visible.has(id)) closeLogs(id)
@@ -400,7 +403,7 @@ onBeforeUnmount(() => {
     <div class="card task-filters">
       <label class="search-field">搜索任务<input v-model="query" class="input" type="search" placeholder="任务 ID、平台或链接" /></label>
       <label>状态<select v-model="status" class="select"><option value="">全部状态</option><option v-for="(label, value) in statusText" :key="value" :value="value">{{ label }}</option></select></label>
-      <label class="hidden-filter"><input v-model="includeHidden" type="checkbox"> 包含隐藏任务</label>
+      <label class="hidden-filter"><input v-model="includeHidden" type="checkbox"> 包含隐藏及合并记录</label>
       <button class="btn btn-ghost" :disabled="loading" @click="loadPage({ target: '', reset: true })">刷新列表</button>
     </div>
     <p v-if="changed" class="update-note" role="status">任务有更新。刷新列表以查看新增任务。</p>
@@ -470,7 +473,7 @@ onBeforeUnmount(() => {
         </section>
       </article>
     </div>
-    <nav v-if="tasks.length || previous.length" class="pagination" aria-label="任务分页"><button class="btn btn-ghost" :disabled="loading || !previous.length" @click="previousPage">上一页</button><span>第 {{ previous.length + 1 }} 页 · 本页 {{ tasks.length }} 条</span><button class="btn btn-ghost" :disabled="loading || !nextCursor" @click="nextPage">下一页</button></nav>
+    <nav v-if="tasks.length || previous.length" class="pagination" aria-label="任务分页"><button class="btn btn-ghost" :disabled="loading || !previous.length" @click="previousPage">上一页</button><span>第 {{ previous.length + 1 }} 页 · 本页 {{ tasks.length }} 条<span v-if="total != null"> · 共 {{ total }} 条</span><small v-if="!loading && !nextCursor">已到最后一页</small></span><button class="btn btn-ghost" :disabled="loading || !nextCursor" @click="nextPage">下一页</button></nav>
   </div>
 </template>
 
@@ -509,6 +512,7 @@ onBeforeUnmount(() => {
 .line-number { color: #939aad; margin-right: 9px; }
 .log-notice, .update-note, .list-message { font-size: 12.5px; color: var(--text-2); margin: 10px 0; }
 .pagination { display: flex; align-items: center; justify-content: center; gap: 18px; margin: 24px 0; font-size: 12.5px; color: var(--text-2); }
+.pagination>span { text-align:center; }.pagination small { display:block;margin-top:5px;font-size:12px; }
 .empty-mark { width: 48px; height: 48px; margin-bottom: 12px; }
 .empty a { text-decoration: none; }
 .task-view :deep(.btn), .task-card { transition: none; }

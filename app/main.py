@@ -484,6 +484,15 @@ def api_avatar(sub_id: int):
     return FileResponse(path, media_type='image/jpeg', headers={'Cache-Control': 'private, max-age=3600'})
 
 
+@app.get('/api/authors/{platform}/{identity}/avatar')
+def api_author_avatar(platform: str, identity: str):
+    from .author_profiles import get_avatar
+    path = get_avatar(platform, identity)
+    if not path:
+        raise HTTPException(404, '暂无可用头像')
+    return FileResponse(path, media_type='image/jpeg', headers={'Cache-Control': 'private, max-age=3600'})
+
+
 @app.post("/api/subs/login-douyin")
 async def api_login_douyin():
     """打开可见浏览器窗口：用户完成滑块验证 + 扫码登录（最长 180 秒）。

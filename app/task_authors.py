@@ -3,7 +3,7 @@ import json
 import os
 from pathlib import Path
 
-from . import config, db
+from . import author_profiles, config, db
 from .redaction import redact_text
 
 
@@ -29,9 +29,10 @@ def enrich(tasks):
                 json_extract(value,'$.item_id') item_id,
                 json_extract(value,'$.live_id') live_id, json_extract(value,'$.entry_id') entry_id
               FROM json_each(?))
-            SELECT r.id, e.author linked_author, e.text_preview, l.author live_author, l.title live_title,
+            SELECT r.id, e.author linked_author, e.text_preview, e.meta_json, e.platform entry_platform,
+                l.author live_author, l.title live_title,
                 s.nickname, s.blogger_id, s.id sub_id, s.avatar_source,
-                ls.id live_sub_id, ls.avatar_source live_avatar_source, i.title item_title
+                ls.id live_sub_id, ls.blogger_id live_blogger_id, ls.avatar_source live_avatar_source, i.title item_title
             FROM refs r LEFT JOIN task_media tm ON tm.task_id=r.id
             LEFT JOIN media_entries e ON e.id=COALESCE(tm.entry_id,r.entry_id)
             LEFT JOIN live_recordings l ON l.id=r.live_id
@@ -41,15 +42,21 @@ def enrich(tasks):
             """, (json.dumps(references),)).fetchall()
         details = {row['id']: row for row in rows}
         roots = None
+        subscriptions = None
         for task in tasks:
             metadata = task.get('metadata') or {}
             sub, live = metadata.get('subscription') or {}, metadata.get('live') or {}
+            content = metadata.get('content') or {}
             row = details[task['id']]
+            entry_meta = json.loads(row['meta_json']) if row['meta_json'] else {}
+            platform = row['entry_platform'] or sub.get('platform') or content.get('platform') or ('douyin' if live else task.get('script_id'))
+            identity = (row['blogger_id'] or row['live_blogger_id'] or
+                        author_profiles.from_metadata(platform, entry_meta) or content.get('blogger_id') or '')
             name = ((_name(row['nickname']) if row['nickname'] != row['blogger_id'] else '') or
                     _name(row['live_author']) or _name(row['linked_author']) or
-                    _name(sub.get('author')) or _name(live.get('author')))
+                    _name(sub.get('author')) or _name(live.get('author')) or _name(content.get('author')))
             title = (_name(row['live_title']) or _name(row['item_title']) or _name(row['text_preview']) or
-                     _name(sub.get('title')) or _name((task.get('params') or {}).get('title')))
+                     _name(sub.get('title')) or _name((task.get('params') or {}).get('title')) or _name(content.get('title')))
             avatar_id = row['sub_id'] if row['avatar_source'] else row['live_sub_id'] if row['live_avatar_source'] else None
             if (not name or not title) and not metadata.get('diagnostic'):
                 # Legacy tasks may have no task_media link. Match an exact
@@ -65,13 +72,26 @@ def enrich(tasks):
                         base = Path(root['path']).resolve()
                         if path != base and path.is_relative_to(base):
                             relative = path.relative_to(base).as_posix()
-                            entry = connection.execute('SELECT author,text_preview FROM media_entries WHERE root_id=? AND rel_dir=?',
+                            entry = connection.execute('SELECT author,text_preview,meta_json,platform FROM media_entries WHERE root_id=? AND rel_dir=?',
                                                        (root['id'], relative)).fetchone()
                             if entry:
                                 name = name or _name(entry['author'])
                                 title = title or _name(entry['text_preview'])
+                                platform = entry['platform'] or platform
+                                identity = identity or author_profiles.from_metadata(platform, json.loads(entry['meta_json']))
                                 break
+            if not avatar_id and author_profiles.valid_identity(platform, identity):
+                if subscriptions is None:
+                    subscriptions = {(r['platform'], r['blogger_id']): dict(r) for r in connection.execute(
+                        'SELECT id,platform,blogger_id,nickname,avatar_source FROM subscriptions')}
+                matched = subscriptions.get((platform, identity))
+                if matched:
+                    avatar_id = matched['id'] if matched['avatar_source'] else None
+                    name = _name(matched['nickname']) or name
             task['author'] = name or None
-            task['author_avatar_url'] = f'/api/subs/{avatar_id}/avatar' if avatar_id else None
+            task['author_platform'] = platform
+            task['author_id'] = identity if author_profiles.valid_identity(platform, identity) else None
+            task['author_avatar_url'] = (f'/api/subs/{avatar_id}/avatar' if avatar_id else
+                                         author_profiles.avatar_url(platform, identity))
             task['display_title'] = title[:500] or None
     return tasks
