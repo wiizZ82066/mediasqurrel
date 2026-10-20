@@ -40,6 +40,19 @@ def chat_frame(identity=123):
 
 
 class ChatTests(unittest.TestCase):
+    def test_http_retry_limits_follow_ffmpeg_capabilities(self):
+        options = dict(ffmpeg='fixture-ffmpeg',url='https://example.invalid/live',ua='test',output='fixture.mp4')
+        for help_text, expected in ((b' -reconnect_delay_max ', False),
+                                    (b' -reconnect_max_retries <int>\n -reconnect_delay_total_max <int>', True)):
+            live_worker._optional_http_limits.cache_clear()
+            with patch.object(live_worker.subprocess, 'run', return_value=type('Help', (), {'stdout':help_text})()):
+                args = live_worker.command(options)
+            self.assertEqual('-reconnect_max_retries' in args, expected)
+            self.assertEqual('-reconnect_delay_total_max' in args, expected)
+            self.assertIn('-reconnect_on_http_error', args)
+            self.assertIn('-reconnect_delay_max', args)
+        live_worker._optional_http_limits.cache_clear()
+
     def test_chat_unicode_ids_and_times_without_private_profile(self):
         value = live_chat.decode_frame(chat_frame())[0]
         self.assertNotIn('user', value)

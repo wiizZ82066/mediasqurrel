@@ -4,6 +4,7 @@ Credentials arrive over stdin, never this worker's command line or logs. The
 parent consumes only numeric progress and fixed result codes. No HTTP API.
 """
 import json
+from functools import lru_cache
 from pathlib import Path
 import shutil
 import subprocess
@@ -48,6 +49,23 @@ def error_code(line):
     return ''
 
 
+@lru_cache(maxsize=4)
+def _optional_http_limits(ffmpeg):
+    """Bundled FFmpeg builds do not all support the newer retry-limit flags."""
+    try:
+        result = subprocess.run([ffmpeg, '-hide_banner', '-h', 'protocol=http'],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                timeout=5, creationflags=CREATE_HIDDEN)
+        supported = result.stdout.decode('utf-8', errors='replace').split()
+    except (OSError, subprocess.TimeoutExpired):
+        supported = []
+    args = []
+    for flag, value in (('-reconnect_max_retries', '2'), ('-reconnect_delay_total_max', '10')):
+        if flag in supported:
+            args.extend((flag, value))
+    return args
+
+
 def command(options):
     args = [options['ffmpeg'], '-hide_banner', '-loglevel', 'error', '-n', '-rw_timeout', '20000000']
     if options.get('realtime'):
@@ -56,8 +74,8 @@ def command(options):
         args += ['-user_agent', options['ua'], '-referer', 'https://live.douyin.com/',
                  '-protocol_whitelist', 'http,https,tcp,tls,crypto',
                  '-reconnect_on_network_error', '1', '-reconnect_on_http_error', '500,502,503,504',
-                 '-reconnect_max_retries', '2', '-reconnect_delay_max', '3',
-                 '-reconnect_delay_total_max', '10']
+                 '-reconnect_delay_max', '3']
+        args += _optional_http_limits(options['ffmpeg'])
     args += ['-i', options['url'], '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy',
              '-map_metadata', '-1', '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
              '-frag_duration', '5000000', '-f', 'mp4', '-progress', 'pipe:1', '-nostats', options['output']]

@@ -58,11 +58,11 @@ def enrich(tasks):
                 if not output and task.get('output_rel'):
                     output = os.path.join(config.LIBRARY_ROOT, task['output_rel'])
                 if isinstance(output, str) and os.path.isabs(output):
-                    path = Path(os.path.abspath(output))
+                    path = Path(output).resolve()
                     if roots is None:
                         roots = list(connection.execute('SELECT id,path FROM media_roots'))
                     for root in roots:
-                        base = Path(os.path.abspath(root['path']))
+                        base = Path(root['path']).resolve()
                         if path != base and path.is_relative_to(base):
                             relative = path.relative_to(base).as_posix()
                             entry = connection.execute('SELECT author,text_preview FROM media_entries WHERE root_id=? AND rel_dir=?',

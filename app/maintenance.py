@@ -121,6 +121,9 @@ def _file(path, relative, action="copy", expected_sha256=None):
 
 
 def _recognized_files(root):
+    # Windows temporary roots may use an 8.3 alias while child resolution uses
+    # the long name. Compare canonical paths before enforcing containment.
+    root = Path(root).resolve()
     for _author, folder in catalog._folders(root):
         for item in catalog._inventory(folder, include_unfinished=True):
             relative = (folder.relative_to(root) / item["path"]).as_posix()
