@@ -1,4 +1,4 @@
-import { planDraft, planPayload } from '../src/schedule-ui.js'
+import { planDraft, planPayload, addLiveTime } from '../src/schedule-ui.js'
 import { liveLabels, liveState } from '../src/live-status.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -17,7 +17,7 @@ function setup(t) {
     compilerOptions:{bindingMetadata:script.bindings} }).errors, [])
   const mounted=[], cleanups=[], notifications=[]
   const api={liveStatus:async()=>({monitor:{room_url:'https://live.douyin.com/123',enabled:1,interval_seconds:60},records:[]})}
-  const env={...vue,planDraft,planPayload,liveLabels,liveState,api,toast:(...args)=>notifications.push(args),CalendarPlanFields:{},IntervalPicker:{},AppIcon:{},ActivityProgress:{},
+  const env={...vue,planDraft,planPayload,addLiveTime,liveLabels,liveState,api,toast:(...args)=>notifications.push(args),CalendarPlanFields:{},IntervalPicker:{},AppIcon:{},ActivityProgress:{},
     onMounted:fn=>mounted.push(fn),onBeforeUnmount:fn=>cleanups.push(fn),setInterval:()=>1,clearInterval:()=>{}}
   const component=new Function(...Object.keys(env), script.content.replace(/^import .*$/gm,'').replace('export default','return'))(...Object.values(env))
   const scope=vue.effectScope()
@@ -59,4 +59,23 @@ test('closing the live panel discards a delayed status response',async t=>{
   await pending
   assert.equal(state.monitor.value,null)
   assert.deepEqual(state.records.value,[])
+})
+
+test('adding a recording time expands the unified plan and preserves existing options until save',async t=>{
+  const {state,api}=setup(t)
+  await state.load(true)
+  state.calendarEnabled.value=true
+  state.draft.value={...state.draft.value,times:'09:00',kind:'weekly',weekdays:[1,3]}
+  let saves=0
+  api.saveLive=async()=>{saves++}
+  assert.equal(state.planOpen.value,false)
+  state.addTime({started_at:'2026-10-20T13:41:40Z'})
+  assert.equal(state.planOpen.value,true)
+  assert.equal(state.intervalEnabled.value,true)
+  assert.equal(state.calendarEnabled.value,true)
+  assert.equal(state.draft.value.times,'09:00, 21:41')
+  assert.equal(state.draft.value.kind,'weekly')
+  assert.deepEqual(state.draft.value.weekdays,[1,3])
+  assert.match(state.planNotice.value,/历史记录未保存真实开播时间/)
+  assert.equal(saves,0)
 })

@@ -5,7 +5,7 @@ import shutil
 import threading
 import time
 
-from . import catalog, config, db, library_service, live_douyin, live_recorder, live_store, live_scheduling, live_tasks, task_manager, watcher
+from . import catalog, config, db, library_service, live_douyin, live_recorder, live_store, live_scheduling, live_tasks, task_manager, watcher, live_merge
 from .live_worker import ERRORS
 
 MAX_RECORDINGS = 2
@@ -21,7 +21,7 @@ _recovering = False
 REASONS = {
     'offline': '平台已确认下播。', 'manual': '用户停止录制，自动录播已关闭。',
     'shutdown': '程序退出，已保留收到的内容；下次启动重新检查。',
-    'disconnect': '直播流中断，未确认下播；稍后重新检查，重试会另建文件。',
+    'disconnect': '直播连接提前结束，平台未确认下播；已有片段保留，将自动重试并按天合并。',
     'disk_full': '剩余空间不足 2 GiB，已停止录制并关闭此博主自动录播。',
     'worker_error': '录制未正常结束，请检查网络和录播组件；已有文件保留。',
     'restart': '上次程序异常退出，恢复了已收到的内容，不代表完整直播。',
@@ -33,7 +33,7 @@ def active_count():
 
 
 def busy():
-    return bool(_active or _checks or _publishing or _recovering)
+    return bool(_active or _checks or _publishing or _recovering or live_merge.busy())
 
 
 def _later(seconds):
@@ -132,8 +132,10 @@ async def _record(record, info, owner):
             live_store.update_record(record['id'], error=ERRORS.get(code, ERRORS['ffmpeg_error']))
         elif not result.get('seconds') and not owner.get('reason'):
             live_store.update_record(record['id'], error=ERRORS['no_video'])
+        elif status == 'interrupted':
+            live_store.update_record(record['id'], error=ERRORS.get(code) or REASONS[reason])
     except Exception:
-        pass
+        live_store.update_record(record['id'], error=REASONS['worker_error'])
     finally:
         try:
             record = live_store.get_record(record['id'])
@@ -279,6 +281,7 @@ async def _loop():
             except Exception:
                 print('[live] 录播任务摘要同步暂未完成，将在后台重试')
             next_sync = time.monotonic() + 30
+            live_merge.tick(_active)
         if not config.MAINTENANCE_ACTIVE:
             now = db.utc_now()
             for monitor in live_store.monitors():
@@ -313,4 +316,5 @@ async def stop():
         _runner = None
         await asyncio.gather(*list(_checks.values()), return_exceptions=True)
         await asyncio.gather(*(owner['task'] for owner in list(_active.values())), return_exceptions=True)
+        await live_merge.stop()
         _manual_due.clear()

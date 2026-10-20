@@ -6,7 +6,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from . import config, live_douyin, live_recorder, live_service, live_store, scheduling, watcher
+from . import config, db, live_douyin, live_recorder, live_service, live_store, scheduling, watcher, live_merge
 
 router = APIRouter()
 
@@ -82,7 +82,14 @@ def status(sub_id: int, offset: int = 0):
     _sub(sub_id)
     records = enrich_records(live_store.recordings(sub_id, limit=20, offset=offset))
     latest = records[0] if records and offset == 0 else next(iter(live_store.recordings(sub_id, limit=1)), None)
-    return {'monitor': monitor_status(live_store.monitor(sub_id), latest), 'records': records}
+    with db.connect() as c:
+        for record in records:
+            if record.get('is_aggregate'):
+                record['parts']=[{k:r[k] for k in ('id','status','started_at','finished_at','duration_seconds','chat_messages','reason','error','entry_id')}
+                    for r in c.execute('SELECT * FROM live_recordings WHERE merged_into=? AND is_aggregate=0 ORDER BY started_at',(record['id'],))]
+        errors=[dict(r) for r in c.execute("SELECT day,error FROM live_day_merges WHERE sub_id=? AND error<>'' ORDER BY day DESC LIMIT 10",(sub_id,))]
+    return {'monitor': monitor_status(live_store.monitor(sub_id), latest), 'records': records,
+            'merge_errors':errors, 'merging':live_merge.busy()}
 
 
 @router.patch('/api/subs/{sub_id}/live')

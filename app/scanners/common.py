@@ -28,6 +28,26 @@ class ScanCancelled(Exception):
     pass
 
 
+SCROLL_LIST = '''() => {
+    const list = document.querySelector('[data-e2e="user-post-list"] [data-e2e="scroll-list"]')
+        || document.querySelector('[data-e2e="user-post-list"]')
+        || document.querySelector('[data-e2e="scroll-list"]');
+    // Douyin uses an internal scroll container; scrolling window alone does nothing.
+    let target = list;
+    while (target && target !== document.body) {
+        const css = getComputedStyle(target);
+        if (/(auto|scroll)/.test(css.overflowY) && target.scrollHeight > target.clientHeight + 4) break;
+        target = target.parentElement;
+    }
+    target = target && target !== document.body ? target
+        : (document.scrollingElement || document.documentElement || document.body);
+    if (!target) return false;
+    if (list?.lastElementChild) list.lastElementChild.scrollIntoView({block:'end'});
+    target.scrollBy(0, Math.max(600, target.clientHeight * .85));
+    return true;
+}'''
+
+
 class Collector:
     def __init__(self, sub, parser):
         self.options = {**DEFAULT_LIMITS, **sub.get('scan_options', {})}
@@ -176,17 +196,9 @@ def collect_browser(sub, parser, launch, setup_context, url, url_pattern):
                         unchanged = unchanged + 1 if collector.pages == previous else 0
                         if (collector.valid and unchanged >= 3) or collector.remaining() <= 0:
                             break
-                        # The first list can be delayed by page scripts. Give it
-                        # the configured total budget without sending repeated
-                        # scrolls while no usable page has arrived yet.
-                        if not collector.valid:
-                            continue
-                        page.evaluate('''() => {
-                            const root = document.scrollingElement || document.documentElement || document.body;
-                            if (!root) return false;
-                            window.scrollTo(0, root.scrollHeight);
-                            return true;
-                        }''')
+                        # Server-rendered profiles may only request an API page
+                        # after the first scroll. Keep the total time/cancel bound.
+                        page.evaluate(SCROLL_LIST)
                     except ScanCancelled:
                         raise
                     except Exception as error:

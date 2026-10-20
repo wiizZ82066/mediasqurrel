@@ -8,6 +8,18 @@ from app import config, db, live_api, live_douyin, live_scheduling, live_service
 
 
 class ProfileTests(unittest.TestCase):
+    def test_streamed_profile_without_xhr_requires_exact_identity_and_explicit_room_state(self):
+        from urllib.parse import quote
+        from app.live_douyin import profile_from_scripts
+        live=dict(secUid='owner',roomData={'status':2,'owner':{'web_rid':'123'}},roomIdStr='987')
+        frame='self.__pace_f.push('+json.dumps([1,'7:'+json.dumps({'user':live})])+');'
+        self.assertEqual(profile_from_scripts([frame],'owner')['room_url'],'https://live.douyin.com/123')
+        self.assertIsNone(profile_from_scripts([frame],'other'))
+        offline={'secUid':'owner','roomData':{},'roomIdStr':'0'}
+        self.assertIsNone(profile_from_scripts([quote(json.dumps(offline))],'owner')['room_url'])
+        self.assertIsNone(profile_from_scripts([json.dumps({'secUid':'owner'})],'owner'))
+        self.assertIsNone(profile_from_scripts(['self.__pace_f.push(alert("bad"))'],'owner'))
+
     def test_profile_requires_exact_identity_explicit_status_and_safe_room(self):
         user=dict(sec_uid='owner',live_status=1,room_data=json.dumps({'owner':{'web_rid':'123456'}}))
         self.assertEqual(live_douyin.parse_profile({'status_code':0,'user':user},'owner'),'https://live.douyin.com/123456')

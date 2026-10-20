@@ -577,7 +577,7 @@ def list_entries(*, root_id=None, author=None, q="", date_from=None, date_to=Non
                  page=1, page_size=60, status=None, sort="desc", platform=None,
                  media_type=None, cursor=None, database=None):
     page, page_size = _page(page, page_size)
-    conditions, params = [], []
+    conditions, params = ["superseded_by IS NULL"], []
     if root_id:
         conditions.append("root_id=?")
         params.append(root_id)
@@ -652,7 +652,7 @@ def date_groups(*, root_id=None, author=None, q="", group="month", limit=240, da
     formats = {"year": "%Y", "month": "%Y-%m", "day": "%Y-%m-%d"}
     if group not in formats:
         raise ValueError("日期分组必须是year、month或day")
-    conditions, params = ["availability='present'"], []
+    conditions, params = ["availability='present'", "superseded_by IS NULL"], []
     for column, value in (("root_id", root_id), ("author", author)):
         if value:
             conditions.append(f"{column}=?")
@@ -671,7 +671,7 @@ def date_groups(*, root_id=None, author=None, q="", group="month", limit=240, da
 
 def list_authors(*, root_id=None, page=1, page_size=60, q="", database=None):
     page, page_size = _page(page, page_size)
-    conditions, params = ["availability='present'"], []
+    conditions, params = ["availability='present'", "superseded_by IS NULL"], []
     if root_id:
         conditions.append("root_id=?")
         params.append(root_id)

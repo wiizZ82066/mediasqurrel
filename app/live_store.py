@@ -88,7 +88,7 @@ def update_monitor(sub_id, **changes):
 def recordings(sub_id, *, limit=20, offset=0):
     with db.connect() as connection:
         return [dict(row) for row in connection.execute('''SELECT * FROM live_recordings
-            WHERE sub_id=? ORDER BY started_at DESC,id DESC LIMIT ? OFFSET ?''',
+            WHERE sub_id=? AND merged_into IS NULL ORDER BY started_at DESC,id DESC LIMIT ? OFFSET ?''',
             (sub_id, min(100, max(1, limit)), max(0, offset)))]
 
 
@@ -101,20 +101,21 @@ def get_record(identity):
 def latest_for_monitors():
     with db.connect() as connection:
         rows = connection.execute('''SELECT r.* FROM live_monitors m JOIN live_recordings r ON r.id=(
-            SELECT id FROM live_recordings WHERE sub_id=m.sub_id ORDER BY started_at DESC,id DESC LIMIT 1)''')
+            SELECT id FROM live_recordings WHERE sub_id=m.sub_id AND merged_into IS NULL ORDER BY started_at DESC,id DESC LIMIT 1)''')
         return {row['sub_id']: dict(row) for row in rows}
 
 
 def create_record(sub, room, info):
     identity = uuid.uuid4().hex
     with db.connect() as connection:
-        previous = connection.execute('''SELECT id FROM live_recordings WHERE sub_id=? AND session_id=?
+        previous = connection.execute('''SELECT id FROM live_recordings WHERE sub_id=? AND session_id=? AND is_aggregate=0
             ORDER BY started_at DESC,id DESC LIMIT 1''', (sub['id'], info['session_id'])).fetchone()
         connection.execute('''INSERT INTO live_recordings
-            (id,sub_id,room_url,session_id,previous_id,author,title,status,started_at,quality)
-            VALUES (?,?,?,?,?,?,?,'recording',?,?)''',
+            (id,sub_id,room_url,session_id,previous_id,author,title,status,started_at,quality,broadcast_started_at)
+            VALUES (?,?,?,?,?,?,?,'recording',?,?,?)''',
             (identity, sub['id'], room, info['session_id'], previous['id'] if previous else None,
-             sub['nickname'] or info.get('nickname') or '抖音直播', info['title'][:500], db.utc_now(), info.get('quality','')))
+             sub['nickname'] or info.get('nickname') or '抖音直播', info['title'][:500], db.utc_now(), info.get('quality',''),
+             info.get('broadcast_started_at','')))
     return get_record(identity)
 
 

@@ -16,6 +16,7 @@ async def sync_record(record):
     old = store.get(identity, include_deleted=True)
     live = {key: record[key] for key in ('id', 'sub_id', 'status', 'entry_id', 'quality',
                                         'duration_seconds', 'bytes', 'chat_status', 'chat_messages', 'reason')}
+    live.update(is_aggregate=record.get('is_aggregate',0),merged_into=record.get('merged_into'))
     if old and old.get('metadata', {}).get('live') == live and old.get('error', '') == record['error']:
         return
     parent_id = 'live-' + record['previous_id'] if record['previous_id'] else None
@@ -62,6 +63,7 @@ async def reconcile():
                 WHERE r.status IN ('completed','stopped','interrupted') AND r.id>?
                 AND (t.id IS NULL OR json_extract(t.metadata_json,'$.live.status') IS NOT r.status
                      OR json_extract(t.metadata_json,'$.live.entry_id') IS NOT r.entry_id
+                     OR json_extract(t.metadata_json,'$.live.merged_into') IS NOT r.merged_into
                      OR t.error IS NOT r.error)
                 ORDER BY r.id LIMIT 50''', (after,))]
         if not records:

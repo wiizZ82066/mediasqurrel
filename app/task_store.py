@@ -127,6 +127,8 @@ class TaskStore:
     def list_page(self, *, limit=50, cursor=None, status=None, q=None, include_hidden=False):
         limit = max(1, min(100, int(limit)))
         clauses, args = ["1=1" if include_hidden else "deleted=0"], []
+        if not include_hidden and not q:
+            clauses.append("json_extract(metadata_json,'$.live.merged_into') IS NULL")
         if status:
             clauses.append("status=?")
             args.append(status)
@@ -244,7 +246,7 @@ class TaskStore:
                             self._sequences.pop(task_id, None)
                     return
                 # IDs are generated internally, still reject caller-controlled path components.
-                if not task_id.isalnum():
+                if not task_id.replace('-', '').isalnum() or len(task_id)>80:
                     raise ValueError("非法任务标识")
                 relative = f"{task_id}/{rows[0]['seq']:012d}-{rows[-1]['seq']:012d}.jsonl.gz"
                 target = self._archive_path(relative)

@@ -43,6 +43,8 @@ const statusText = {
   cancelled: '已取消', interrupted: '运行中断',
 }
 const isActive = (task) => ['queued', 'running'].includes(task.status)
+const visibleTask = (task) => (!status.value || task.status === status.value)
+  && (includeHidden.value || query.value.trim() || !task.metadata?.live?.merged_into)
 const noTaskOutputYet = (task) => (task.status === 'queued' || task.metadata?.live) && !task.entry_id && !task.output_rel && !task.output_dir
 
 async function revealTask(task) {
@@ -99,7 +101,7 @@ async function loadPage({ target = cursor.value, reset = false, restore = false 
       const latest = liveUpdates.get(task.id) || task
       return progressUpdates.has(task.id) ? { ...latest, progress: progressUpdates.get(task.id) } : latest
     })
-      .filter((task) => !status.value || task.status === status.value)
+      .filter(visibleTask)
     cursor.value = target
     nextCursor.value = result.next_cursor
     if (reset) previous.value = []
@@ -267,9 +269,10 @@ const unsubscribe = onTaskEvent((event) => {
     if (loading.value) liveUpdates.set(event.task.id, event.task)
     const index = tasks.value.findIndex((task) => task.id === event.task.id)
     if (index >= 0) {
-      if (status.value && status.value !== event.task.status) {
+      if (!visibleTask(event.task)) {
         tasks.value.splice(index, 1)
         closeLogs(event.task.id)
+        changed.value = true
       } else tasks.value.splice(index, 1, event.task)
     } else changed.value = true
   } else if (event.type === 'task_progress') {

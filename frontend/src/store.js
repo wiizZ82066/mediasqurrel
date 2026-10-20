@@ -96,7 +96,7 @@ export function connectWS() {
     try { msg = JSON.parse(ev.data) } catch { return }
     if (msg.type === 'task_update') {
       upsertTaskSummary(msg.task)
-      if (['success', 'failed', 'interrupted'].includes(msg.task.status) && terminalEvents.get(msg.task.id) !== msg.task.status) {
+      if (!msg.task.metadata?.live && ['success', 'failed', 'interrupted'].includes(msg.task.status) && terminalEvents.get(msg.task.id) !== msg.task.status) {
         terminalEvents.set(msg.task.id, msg.task.status)
         if (terminalEvents.size > 1000) terminalEvents.delete(terminalEvents.keys().next().value)
         const success = msg.task.status === 'success'

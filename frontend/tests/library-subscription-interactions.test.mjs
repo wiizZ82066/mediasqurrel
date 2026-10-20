@@ -1,6 +1,7 @@
 import { buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../src/library-layout.js'
 import { subscriptionHomepage, newerBatch } from '../src/subscription-homepage.js'
 import { scanCoverageNotice, scanStatusText } from '../src/subscription-scan.js'
+import { liveLabels, liveDuration, liveSize } from '../src/live-status.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -49,13 +50,15 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
   assert.deepEqual(template.errors, [])
   const api = { subBatch: async () => ({status:'idle'}) }, mounted = [], cleanups = [], timers = new Map()
   let timerId = 0
-  const store = sharedStore || vue.reactive({ tasks: [], subs: [], libraryState: savedState, libraryAuthorsCollapsed: false })
+  const store = sharedStore || vue.reactive({ tasks: [], subs: [], libraryState: savedState, libraryAuthorsCollapsed: false,
+    taskListState: {items:[],previous:[],q:'',status:'',cursor:''} })
+  let taskListener
   const scope = vue.effectScope()
   const env = {
-    ...vue, api, store, liveState: monitor => monitor?.runtime_status || monitor?.status, LiveStatus: {},
+    ...vue, api, store, liveLabels, liveDuration, liveSize, removeTaskSummary: () => {}, liveState: monitor => monitor?.runtime_status || monitor?.status, LiveStatus: {},
     setInterval: () => 0, clearInterval: () => {},
     toast: () => {}, upsertTaskSummary: () => {}, MaintenancePanel: {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},
-    onTaskEvent: () => () => {}, onMounted: fn => mounted.push(fn),
+    onTaskEvent: fn => { taskListener=fn; return () => {} }, onMounted: fn => mounted.push(fn),
     onBeforeUnmount: fn => cleanups.push(fn),
     useRoute: () => ({ query: {} }), useRouter: () => ({ replace: () => {} }),
     setTimeout: fn => { const id = ++timerId; timers.set(id, fn); return id },
@@ -75,7 +78,7 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
   }
   t.after(unmount)
   return {
-    state, api, store, timers, unmount,
+    state, api, store, timers, unmount, event: value => taskListener?.(value),
     async mount() { await Promise.all(mounted.map(fn => fn())); await vue.nextTick() },
     async runTimers() {
       const pending = [...timers.values()]
@@ -612,4 +615,30 @@ test('desktop author collapse does not block narrow-window author selection', as
   library.state.updateViewport()
   assert.equal(library.state.authorsInline.value, false)
   assert.equal(app.store.libraryAuthorsCollapsed, true)
+})
+
+test('daily merge updates remove original cards but preserve explicit task lookup', async t => {
+  const { state, event } = setupComponent('Tasks', t)
+  const original = {id:'live-first',status:'success',metadata:{live:{merged_into:null}}}
+  state.tasks.value = [original]
+  const updated = {...original,metadata:{live:{merged_into:'daily-result'}}}
+  event({type:'task_update',task:updated})
+  assert.equal(state.tasks.value.length,0)
+  assert.equal(state.changed.value,true)
+  state.query.value = 'live-first'
+  state.tasks.value = [original]
+  event({type:'task_update',task:updated})
+  assert.equal(state.tasks.value[0].metadata.live.merged_into,'daily-result')
+})
+
+test('daily merge during a pending task query cannot restore the old separate card', async t => {
+  const { state, api, event } = setupComponent('Tasks', t)
+  const original = {id:'live-first',status:'success',metadata:{live:{merged_into:null}}}
+  const result = deferred()
+  api.taskPage = () => result.promise
+  const loading = state.loadPage()
+  event({type:'task_update',task:{...original,metadata:{live:{merged_into:'daily-result'}}}})
+  result.resolve({items:[original],next_cursor:null})
+  await loading
+  assert.equal(state.tasks.value.length,0)
 })

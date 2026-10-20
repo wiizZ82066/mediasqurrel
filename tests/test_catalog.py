@@ -25,6 +25,7 @@ class CatalogTests(unittest.TestCase):
         self.database = self.base / "isolated.db"
         with contextlib.closing(sqlite3.connect(self.database)) as connection:
             connection.executescript(catalog.SCHEMA)
+            connection.execute("ALTER TABLE media_entries ADD COLUMN superseded_by TEXT")
             connection.commit()
         self.root_record = catalog.register_root(str(self.root), database=self.database)
         self.root_id = self.root_record["id"]

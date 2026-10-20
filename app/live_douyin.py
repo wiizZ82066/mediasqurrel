@@ -5,6 +5,8 @@ Room endpoint and quality mappings informed by SplashedWhite/douyin-recorder
 """
 import json
 import re
+import time
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 import requests
@@ -13,6 +15,21 @@ from . import douyin_auth
 
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 REFERER = 'https://live.douyin.com/'
+
+
+def broadcast_time(room):
+    """Only a platform timestamp is a broadcast start; never substitute record time."""
+    value = room.get('create_time') or room.get('start_time')
+    try:
+        value = float(value)
+        if value > 1e12:
+            value /= 1000
+        now = datetime.now(timezone.utc).timestamp()
+        if 946684800 <= value <= now + 300:
+            return datetime.fromtimestamp(value, timezone.utc).isoformat(timespec='seconds')
+    except (ValueError, TypeError, OverflowError):
+        pass
+    return ''
 
 
 class LiveError(ValueError):
@@ -86,6 +103,7 @@ def parse_room(payload, quality='best'):
                 if not re.fullmatch(r'[0-9]{1,32}', session_id):
                     raise LiveError('直播场次标识缺失，暂不开始录制')
                 return {'live': True, 'session_id': session_id, 'stream_url': url, 'quality':sdk_key,
+                        'broadcast_started_at': broadcast_time(room),
                         'title': str(room.get('title') or '抖音直播')[:500],
                         'nickname': str(owner.get('nickname') or '')[:200],
                         'owner_id': str(owner.get('sec_uid') or '')}
@@ -158,6 +176,26 @@ def parse_profile(payload, identity):
     return room_url(f'https://live.douyin.com/{rid}')
 
 
+def profile_from_scripts(scripts, identity):
+    from .douyin_page import find_script_data
+    def normalize(value):
+        if value.get('secUid', value.get('sec_uid')) != identity:
+            return None
+        status = value.get('liveStatus', value.get('live_status'))
+        room = value.get('roomData', value.get('room_data'))
+        if status is None and isinstance(room, dict):
+            if room.get('status') == 2:
+                status = 1
+            elif room.get('status') in (3,4) or (not room and str(value.get('roomIdStr', value.get('roomId'))) == '0'):
+                status = 0
+        if status is None:
+            return None  # An author in a recommended post is not a profile.
+        user = {'sec_uid': identity, 'live_status': status,
+                'room_data': room}
+        return {'room_url': parse_profile({'status_code': 0, 'user': user}, identity)}
+    return find_script_data(scripts, normalize)
+
+
 def lookup_blogger(identity, quality='best'):
     """Read the normal profile response; never search by an ambiguous nickname."""
     from . import browser
@@ -175,16 +213,40 @@ def lookup_blogger(identity, quality='best'):
                 page = context.new_page()
                 page.route('**/*', lambda route: route.abort() if route.request.resource_type in
                            ('media', 'image', 'font') else route.continue_())
-                with page.expect_response(lambda r: urlsplit(r.url).hostname == 'www.douyin.com' and
-                        urlsplit(r.url).path.rstrip('/') == '/aweme/v1/web/user/profile/other', timeout=25000) as pending:
-                    page.goto(f'https://www.douyin.com/user/{identity}', wait_until='domcontentloaded', timeout=25000)
-                response = pending.value
-                if response.status in (403, 429, 444):
-                    raise LiveError('平台限制了主页检查，已降低频率', limited=True)
-                raw = response.body()
-                if response.status != 200 or len(raw) > 2*1024*1024:
-                    raise LiveError('博主主页响应不可用，请检查登录态')
-                url = parse_profile(json.loads(raw), identity)
+                responses = []
+                def response(value):
+                    parsed = urlsplit(value.url)
+                    if (parsed.hostname == 'www.douyin.com' and
+                            parsed.path.rstrip('/') == '/aweme/v1/web/user/profile/other' and len(responses) < 8):
+                        responses.append(value)
+                page.on('response', response)
+                deadline = time.monotonic() + 30
+                try:
+                    page.goto(f'https://www.douyin.com/user/{identity}', wait_until='domcontentloaded', timeout=20000)
+                except Exception as error:
+                    if type(error).__name__ != 'TimeoutError':
+                        raise
+                found = None
+                while time.monotonic() < deadline:
+                    if responses:
+                        value = responses.pop(0)
+                        if value.status in (403, 429, 444):
+                            raise LiveError('平台限制了主页检查，已降低频率', limited=True)
+                        raw = value.body()
+                        if value.status == 200 and len(raw) <= 2*1024*1024:
+                            payload = json.loads(raw)
+                            if (payload.get('user') or {}).get('sec_uid') == identity:
+                                found = {'room_url': parse_profile(payload, identity)}
+                    if found is None:
+                        scripts = page.locator('script').evaluate_all(
+                            '(els)=>els.map(e=>e.textContent).filter(t=>t && (t.startsWith("self.__pace_f.push(") || t.startsWith("%7B") || t.startsWith("{")))')
+                        found = profile_from_scripts(scripts, identity)
+                    if found is not None:
+                        break
+                    page.wait_for_timeout(500)
+                if found is None:
+                    raise LiveError('主页未返回可核实的直播状态，请检查登录或平台验证后重试')
+                url = found['room_url']
             finally:
                 owned.close()
         if not url:

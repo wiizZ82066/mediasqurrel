@@ -1,6 +1,6 @@
 export const liveLabels = {
-  disabled:'未开启录播', waiting:'等待检查', offline:'等待开播', capacity:'等待录制空位',
-  error:'等待重试', checking:'检查直播中', connecting:'正在连接直播', recording:'正在录制',
+  disabled:'未开启录播', waiting:'开播状态待检查', offline:'未开播', capacity:'已开播 · 等待录制空位',
+  error:'开播状态待确认', checking:'检查直播中', connecting:'已开播 · 正在连接', recording:'已开播 · 录制中',
   stalled:'视频暂未更新', finalizing:'正在保存', recovering:'正在恢复录播',
   completed:'下播后结束', stopped:'已手动停止', interrupted:'录制中断',
 }

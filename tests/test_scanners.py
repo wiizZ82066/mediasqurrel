@@ -200,7 +200,16 @@ class BrowserCollectionTests(unittest.TestCase):
         result = self.collect(page, {'timeout_seconds': 15})
         self.assertTrue(result['coverage']['complete'])
         self.assertGreater(result['coverage']['elapsed_seconds'], 9)
-        self.assertEqual(page.scrolls, 0)
+        self.assertLessEqual(page.scrolls, 3)
+
+    def test_first_api_list_can_be_triggered_by_scrolling_server_rendered_profile(self):
+        def response_after_scroll(page,script):
+            self.assertIn('user-post-list',script)
+            page.callback(self.response)
+        page=self.Page(self.clock,on_scroll=response_after_scroll)
+        result=self.collect(page)
+        self.assertTrue(result['coverage']['complete'])
+        self.assertEqual(len(result['items']),1)
 
     def test_network_change_keeps_available_list_as_incomplete(self):
         page = self.Page(self.clock, initial=[self.response], error=RuntimeError(

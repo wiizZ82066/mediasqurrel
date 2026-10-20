@@ -20,6 +20,7 @@ class MaintenanceTests(unittest.TestCase):
         self.control = self.base / "control.db"
         with contextlib.closing(sqlite3.connect(self.control)) as connection:
             connection.executescript(catalog.SCHEMA + maintenance.SCHEMA)
+            connection.execute("ALTER TABLE media_entries ADD COLUMN superseded_by TEXT")
             connection.commit()
         self.media = self.base / "source-media"
         folder = self.media / "Example" / "26-10-09"

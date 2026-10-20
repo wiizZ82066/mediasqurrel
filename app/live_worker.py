@@ -26,6 +26,7 @@ ERRORS = {
     'disk_full': '视频写入失败：磁盘空间不足；已有文件保留',
     'ffmpeg_error': '录制进程异常退出；已有文件保留，稍后重新检查直播源',
     'no_video': '直播连接结束前未收到视频；稍后重新获取直播地址',
+    'stream_stalled': '直播流长时间没有新画面，已保存当前片段并重新检查',
 }
 
 
@@ -70,6 +71,7 @@ def main():
     chat_thread = None
     error_reader = None
     diagnostic = ['']
+    last_progress = [time.monotonic(), 0]
     stop = threading.Event()
     reason = ['source_end']
     stdout_lock = threading.Lock()
@@ -129,6 +131,9 @@ def main():
                     except ValueError:
                         pass
                 if key == 'progress':
+                    seconds = values.get('out_time_us', 0) / 1000000
+                    if seconds > last_progress[1]:
+                        last_progress[:] = [time.monotonic(), seconds]
                     if journal:
                         journal.video_progress(values.get('out_time_us', 0) / 1000000)
                     emit({'seconds': values.get('out_time_us', 0) / 1000000,
@@ -144,6 +149,9 @@ def main():
             if shutil.disk_usage(output.parent).free < options['min_free']:
                 reason[0] = 'disk_full'
                 break
+            if time.monotonic() - last_progress[0] > 60:
+                reason[0], diagnostic[0] = 'stalled', 'stream_stalled'
+                break
         if proc.poll() is None:
             try:
                 proc.stdin.write(b'q\n')
@@ -157,7 +165,7 @@ def main():
         reader.join(timeout=3)
         error_reader.join(timeout=3)
         emit({'result': reason[0], 'code': proc.returncode,
-              'error_code': (diagnostic[0] or 'ffmpeg_error') if proc.returncode else ''})
+              'error_code': diagnostic[0] or ('ffmpeg_error' if proc.returncode else '')})
     except Exception:
         # No arbitrary exception text: it can contain URLs, filesystem paths or headers.
         emit({'result': 'worker_error', 'code': -1})

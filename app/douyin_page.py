@@ -63,8 +63,12 @@ def _normalize(value, identity):
 
 
 def detail_from_scripts(scripts, identity):
+    return find_script_data(scripts, lambda item: _normalize(item, identity)) if identity else None
+
+
+def find_script_data(scripts, normalize):
     """Parse bounded JSON/Flight records; never eval arbitrary script content."""
-    if not identity or not isinstance(scripts, list):
+    if not isinstance(scripts, list):
         return None
     used = visited = 0
     decoder = json.JSONDecoder()
@@ -103,8 +107,8 @@ def detail_from_scripts(scripts, identity):
                 if depth > 24:
                     continue  # Deep unrelated app configuration is not post data.
                 if isinstance(item, dict):
-                    found = _normalize(item, identity)
-                    if found:
+                    found = normalize(item)
+                    if found is not None:
                         return found
                     pending.extend((value, depth + 1) for value in reversed(list(item.values())) if isinstance(value, (dict, list)))
                 elif isinstance(item, list):
