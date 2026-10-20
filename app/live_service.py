@@ -3,8 +3,10 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import shutil
 import threading
+import time
 
-from . import catalog, config, db, library_service, live_douyin, live_recorder, live_store, live_scheduling, task_manager, watcher
+from . import catalog, config, db, library_service, live_douyin, live_recorder, live_store, live_scheduling, live_tasks, task_manager, watcher
+from .live_worker import ERRORS
 
 MAX_RECORDINGS = 2
 MAX_CHECKS = 2
@@ -38,19 +40,28 @@ def _later(seconds):
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec='milliseconds')
 
 
-def _failure(sub_id, message, *, limited=False):
+def _failure(sub_id, message, *, limited=False, recording=False):
     monitor = live_store.monitor(sub_id)
     if not monitor:
         return
     failures = monitor['failures'] + 1
-    delay = 1800 if limited else min(900, monitor['interval_seconds'] * 2 ** min(failures, 5))
+    base = 30 if recording else monitor['interval_seconds']
+    delay = 1800 if limited else min(900, base * 2 ** min(failures, 5))
     live_store.update_monitor(sub_id, status='error' if monitor['enabled'] else 'disabled', error=message,
                               failures=failures, checked_at=db.utc_now(), next_check_at=_later(delay))
 
 
 async def _notify(record, status, reason):
+    saved = live_store.get_record(record['id'])
     await task_manager.broadcast({'type': 'notification', 'level': 'error' if status == 'interrupted' else 'info',
-        'title': '直播录制结果', 'text': f"{record['author']}：{REASONS[reason]}", 'time': db.utc_now()})
+        'title': '直播录制结果', 'text': f"{record['author']}：{saved['error'] or REASONS[reason]}", 'time': db.utc_now()})
+
+
+async def _sync_task(record):
+    try:
+        await live_tasks.sync_record(record)
+    except Exception:
+        print('[live] 录播任务摘要同步暂未完成，将在后台重试；录播文件已保留')
 
 
 async def _publish(record, status, reason):
@@ -59,7 +70,7 @@ async def _publish(record, status, reason):
         ready = await asyncio.to_thread(live_recorder.finalize, record, status, REASONS[reason])
         if not ready:
             live_store.update_record(record['id'], status='interrupted', reason=reason, finished_at=db.utc_now(),
-                error='未得到可播放的视频；原始临时文件保留，未加入媒体库')
+                error=live_store.get_record(record['id'])['error'] or '未得到可播放的视频；原始文件保留')
             return False
         scan = library_service.start_entry_scan({'id': 'live-' + record['id'],
                                                 'output_dir': str(live_recorder.folder_for(record))})
@@ -70,20 +81,28 @@ async def _publish(record, status, reason):
         if not entry:
             raise ValueError('index pending')
         live_store.update_record(record['id'], status=status, reason=reason, finished_at=db.utc_now(),
-                                entry_id=entry['id'], error='')
+                                entry_id=entry['id'], error=record.get('error', '') if status == 'interrupted' else '')
         await task_manager.broadcast({'type': 'library_updated'})
         return True
     except Exception:
         live_store.update_record(record['id'], status='interrupted', reason=reason, finished_at=db.utc_now(),
                                 error='收尾或入库未完成，文件保留；可在录播记录中重试入库')
         return False
+    finally:
+        await _sync_task(live_store.get_record(record['id']))
 
 
 async def _record(record, info, owner):
     sub_id = record['sub_id']
     status, reason = 'interrupted', 'worker_error'
+    result = {}
+    def progress(value):
+        seconds = max(0, float(value.get('seconds', 0)))
+        if seconds > owner.get('seconds', 0):
+            owner.update(seconds=seconds, progress_at=time.monotonic())
     try:
-        result = await asyncio.to_thread(live_recorder.record_stream, record, info['stream_url'], owner['stop'])
+        result = await asyncio.to_thread(live_recorder.record_stream, record, info['stream_url'], owner['stop'],
+                                         on_progress=progress)
         live_store.update_record(record['id'], bytes=max(0, int(result.get('bytes', 0))),
                                  duration_seconds=max(0, float(result.get('seconds', 0))),
                                  chat_status=(result.get('chat') or {}).get('status', 'unavailable'),
@@ -93,6 +112,8 @@ async def _record(record, info, owner):
             reason = 'disk_full'
             live_store.update_monitor(sub_id, enabled=0)
         elif result['result'] in ('worker_error', 'stop_timeout'):
+            reason = 'worker_error'
+        elif result['code'] != 0:
             reason = 'worker_error'
         elif result['result'] == 'source_end' and not owner.get('reason'):
             try:
@@ -104,6 +125,13 @@ async def _record(record, info, owner):
         status = 'completed' if reason == 'offline' else 'stopped' if reason == 'manual' else 'interrupted'
         if result['code'] != 0 and status in ('completed', 'stopped'):
             status, reason = 'interrupted', 'worker_error'
+        code = result.get('error_code')
+        if reason == 'disk_full':
+            live_store.update_record(record['id'], error=REASONS['disk_full'])
+        elif result['code'] != 0:
+            live_store.update_record(record['id'], error=ERRORS.get(code, ERRORS['ffmpeg_error']))
+        elif not result.get('seconds') and not owner.get('reason'):
+            live_store.update_record(record['id'], error=ERRORS['no_video'])
     except Exception:
         pass
     finally:
@@ -113,12 +141,15 @@ async def _record(record, info, owner):
             if not record['output_rel']:
                 live_store.update_record(record['id'], status='interrupted', finished_at=db.utc_now(),
                                         error=REASONS['worker_error'], reason='worker_error')
+                await _sync_task(live_store.get_record(record['id']))
             if status == 'completed' and published:
                 live_store.update_monitor(sub_id, completed_session=record['session_id'])
             monitor = live_store.monitor(sub_id)
             if monitor:
                 if status == 'interrupted' or not published:
-                    _failure(sub_id, REASONS[reason] if published else '未完成入库，请查看录播记录；原始文件保留')
+                    saved = live_store.get_record(record['id'])
+                    _failure(sub_id, saved['error'] or REASONS[reason], recording=True,
+                             limited=result.get('error_code') == 'http_limited')
                 else:
                     live_store.update_monitor(sub_id, status='waiting' if monitor['enabled'] else 'disabled',
                         error='', failures=0, **live_scheduling.cursors(monitor))
@@ -146,15 +177,17 @@ async def check(sub_id):
         if _stopping or config.MAINTENANCE_ACTIVE or not latest or not latest['enabled'] or latest['room_url'] != monitor['room_url']:
             return
         live_store.update_monitor(sub_id, checked_at=db.utc_now(),
-                                  **live_scheduling.cursors(monitor, active=sub_id in _active), error='', failures=0)
+                                  **live_scheduling.cursors(monitor, active=sub_id in _active))
         if sub_id in _active:
             live_store.update_monitor(sub_id, status='recording')
+            if _active[sub_id].get('seconds', 0) >= 30:
+                live_store.update_monitor(sub_id, error='', failures=0)
             if not info['live'] or info['session_id'] != _active[sub_id]['session_id']:
                 _active[sub_id]['reason'] = 'offline'
                 _active[sub_id]['stop'].set()
             return
         if not info['live']:
-            live_store.update_monitor(sub_id, status='offline')
+            live_store.update_monitor(sub_id, status='offline', error='', failures=0)
             return
         if info.get('owner_id') != sub['blogger_id']:
             raise live_douyin.LiveError('直播间博主身份与此订阅不匹配或无法核实，请检查链接')
@@ -172,7 +205,8 @@ async def check(sub_id):
         record = live_store.create_record(sub, url, info)
         owner = {'stop': threading.Event(), 'reason': '', 'session_id': info['session_id'], 'room_url':url}
         _active[sub_id] = owner
-        live_store.update_monitor(sub_id, status='recording', **live_scheduling.cursors(live_store.monitor(sub_id), active=True))
+        live_store.update_monitor(sub_id, status='recording', error='',
+                                  **live_scheduling.cursors(live_store.monitor(sub_id), active=True))
         owner['task'] = asyncio.create_task(_record(record, info, owner))
     except live_douyin.LiveError as error:
         _failure(sub_id, str(error), limited=error.limited)
@@ -237,7 +271,14 @@ async def _loop():
         await recover()
     finally:
         _recovering = False
+    next_sync = 0
     while not _stopping:
+        if time.monotonic() >= next_sync and not config.MAINTENANCE_ACTIVE:
+            try:
+                await live_tasks.reconcile()
+            except Exception:
+                print('[live] 录播任务摘要同步暂未完成，将在后台重试')
+            next_sync = time.monotonic() + 30
         if not config.MAINTENANCE_ACTIVE:
             now = db.utc_now()
             for monitor in live_store.monitors():

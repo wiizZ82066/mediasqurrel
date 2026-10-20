@@ -120,6 +120,7 @@ export const api = {
   preview: (dir) => req(`/api/preview?dir=${encodeURIComponent(dir)}`),
   search: (q) => req(`/api/search?q=${encodeURIComponent(q)}`),
   subs: () => req('/api/subs'),
+  liveMonitors: () => req('/api/live/monitors'),
   liveStatus: (id, offset=0) => req(`/api/subs/${id}/live?offset=${offset}`),
   saveLive: (id, body) => req(`/api/subs/${id}/live`, {method:'PATCH',body:JSON.stringify(body)}),
   checkLive: (id) => req(`/api/subs/${id}/live/check`, {method:'POST'}),

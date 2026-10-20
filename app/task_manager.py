@@ -523,6 +523,8 @@ async def retry(task_id):
     original = get_task(task_id)
     if not original:
         raise ValueError('原任务不存在')
+    if original.get('metadata', {}).get('live'):
+        raise ValueError('录播不能重放已结束的直播，请在订阅的直播录制中重新检查或重试入库')
     if original['status'] not in TERMINAL:
         raise ValueError('任务尚未结束')
     if REDACTED in str(original['params']):

@@ -2,6 +2,7 @@
 import asyncio
 import json
 import sqlite3
+import time
 
 from fastapi import APIRouter, HTTPException
 
@@ -19,17 +20,20 @@ def _sub(sub_id):
 
 @router.get('/api/live/monitors')
 def monitors():
-    return {'items': live_store.monitors(), 'active': live_service.active_count()}
+    latest = live_store.latest_for_monitors()
+    return {'items': [monitor_status(item, latest.get(item['sub_id'])) for item in live_store.monitors()],
+            'active': live_service.active_count()}
 
-
-@router.get('/api/subs/{sub_id}/live')
-def status(sub_id: int, offset: int = 0):
-    _sub(sub_id)
-    records = live_store.recordings(sub_id, limit=20, offset=offset)
+def enrich_records(records):
     for record in records:
         record['chat'] = {'status': record['chat_status'], 'messages': record['chat_messages']}
+        record['can_publish'] = False
         try:
-            path = live_recorder.folder_for(record) / 'chat.meta.json'
+            folder = live_recorder.folder_for(record)
+            record['can_publish'] = record['status'] == 'interrupted' and not record['entry_id'] and any(
+                (folder / name).is_file() and (folder / name).stat().st_size >= 1024
+                for name in ('recording.mp4', 'recording.mp4.part'))
+            path = folder / 'chat.meta.json'
             if not path.is_symlink() and path.stat().st_size <= 16384:
                 summary = json.loads(path.read_text(encoding='utf-8'))
                 record['chat'] = {key: summary.get(key) for key in
@@ -38,7 +42,47 @@ def status(sub_id: int, offset: int = 0):
                     record['chat']['status'] = record['chat_status']
         except (ValueError, OSError):
             pass
-    return {'monitor': live_store.monitor(sub_id), 'records': records}
+    return records
+
+
+def monitor_status(monitor, record=None):
+    if not monitor:
+        return None
+    result = dict(monitor)
+    state = monitor['status']
+    owner = live_service._active.get(monitor['sub_id'])
+    if owner is not None:
+        if owner['stop'].is_set() or (record and record['status'] == 'finalizing'):
+            state = 'finalizing'
+        elif not record or record['duration_seconds'] <= 0:
+            state = 'connecting'
+        elif time.monotonic() - owner.get('progress_at', time.monotonic()) > 25:
+            state = 'stalled'
+        else:
+            state = 'recording'
+    elif monitor['sub_id'] in live_service._checks:
+        state = 'checking'
+    elif not monitor['enabled']:
+        state = 'disabled'
+    elif state in ('recording', 'finalizing'):
+        state = 'recovering'
+    result['runtime_status'] = state
+    if record:
+        enrich_records([record])
+        result['record'] = {key: record[key] for key in (
+            'id', 'title', 'status', 'started_at', 'finished_at', 'bytes', 'duration_seconds',
+            'quality', 'entry_id', 'chat', 'error')}
+    else:
+        result['record'] = None
+    return result
+
+
+@router.get('/api/subs/{sub_id}/live')
+def status(sub_id: int, offset: int = 0):
+    _sub(sub_id)
+    records = enrich_records(live_store.recordings(sub_id, limit=20, offset=offset))
+    latest = records[0] if records and offset == 0 else next(iter(live_store.recordings(sub_id, limit=1)), None)
+    return {'monitor': monitor_status(live_store.monitor(sub_id), latest), 'records': records}
 
 
 @router.patch('/api/subs/{sub_id}/live')

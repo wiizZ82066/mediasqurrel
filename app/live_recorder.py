@@ -42,7 +42,7 @@ def prepare(record):
     return Path(entry.folder)
 
 
-def record_stream(record, url, stop, *, min_free=MIN_FREE, realtime=False, chat=True):
+def record_stream(record, url, stop, *, min_free=MIN_FREE, realtime=False, chat=True, on_progress=None):
     folder = prepare(record)
     options = dict(ffmpeg=ffmpeg_exe(), url=url, output=str(folder / 'recording.mp4.part'),
                    min_free=min_free, ua=UA, realtime=realtime)
@@ -63,6 +63,8 @@ def record_stream(record, url, stop, *, min_free=MIN_FREE, realtime=False, chat=
                     result['chat'] = data['chat']
                 else:
                     latest.update(data)
+                    if on_progress:
+                        on_progress(dict(latest))
             except (ValueError, TypeError):
                 pass
     reader = threading.Thread(target=read, daemon=True)
@@ -113,6 +115,8 @@ def finalize(record, status, reason):
         part, final = folder / 'recording.mp4.part', folder / 'recording.mp4'
         source = final if final.exists() else part
         if not playable(source):
+            live_store.update_record(record['id'], error=record.get('error') or
+                '未得到可播放的视频；原始临时文件保留，未加入媒体库')
             return False  # Keep the partial file for manual diagnosis/recovery.
         if source == part:
             part.rename(final)

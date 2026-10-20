@@ -98,6 +98,13 @@ def get_record(identity):
     return dict(row) if row else None
 
 
+def latest_for_monitors():
+    with db.connect() as connection:
+        rows = connection.execute('''SELECT r.* FROM live_monitors m JOIN live_recordings r ON r.id=(
+            SELECT id FROM live_recordings WHERE sub_id=m.sub_id ORDER BY started_at DESC,id DESC LIMIT 1)''')
+        return {row['sub_id']: dict(row) for row in rows}
+
+
 def create_record(sub, room, info):
     identity = uuid.uuid4().hex
     with db.connect() as connection:

@@ -6,6 +6,7 @@ import test from 'node:test'
 import { coverageText as scanCoverageText, scanCoverageNotice, scanStatusText, terminalScanKey } from '../src/subscription-scan.js'
 
 import { subscriptionHomepage, newerBatch } from '../src/subscription-homepage.js'
+import { liveState } from '../src/live-status.js'
 
 const require = createRequire(new URL('../package.json', import.meta.url))
 const { parse, compileScript, compileTemplate } = require('@vue/compiler-sfc')
@@ -30,6 +31,7 @@ function setupComponent(name, t, sub = { id: 1, platform: 'weibo', interval_minu
     subScans: async () => ({ items: [] }), scanOptions: async () => ({}),
   }
   const env = { ...vue, api, store: vue.reactive({ subs: [] }),
+    useRoute: () => ({query:{}}), liveState, LiveStatus: {},
     onMounted: () => {}, onBeforeUnmount: fn => cleanups.push(fn),
     toast: (...args) => messages.push(args), refreshSubs: async () => {},
     scanCoverageText, scanCoverageNotice, scanStatusText, terminalScanKey, subscriptionHomepage, newerBatch,

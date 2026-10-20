@@ -8,10 +8,13 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from app import config, db, catalog, library_service, live_api, live_chat, live_douyin, live_recorder, live_service, live_store, maintenance, task_manager, watcher
+from app import live_tasks, live_worker
+from app.task_store import TaskStore
 
 
 def vi(number):
@@ -77,6 +80,17 @@ class ChatTests(unittest.TestCase):
 
 
 class RoomTests(unittest.TestCase):
+    def test_worker_diagnostics_only_expose_fixed_codes_not_stream_secrets(self):
+        for line, expected in (
+            ('HTTP error 403 Forbidden https://cdn.invalid/?token=private', 'http_forbidden'),
+            ('HTTP error 503 Service Unavailable', 'http_server'),
+            ('Connection timed out', 'network'),
+            ('Invalid data found when processing input', 'invalid_media'),
+            ('arbitrary secret Cookie: private', ''),
+        ):
+            self.assertEqual(live_worker.error_code(line), expected)
+        self.assertNotIn('private', json.dumps(live_worker.ERRORS))
+
     def test_selected_quality_never_silently_upgrades_and_reports_actual_fallback(self):
         room={'id_str':'123','status':2,'owner':{'sec_uid':'owner'},'stream_url':{'flv_pull_url':{
             'ORIGIN':'https://test.douyincdn.com/origin.flv','HD1':'https://test.douyincdn.com/hd.flv','SD2':'https://test.douyincdn.com/sd.flv'}}}
@@ -116,6 +130,7 @@ class LiveTests(unittest.IsolatedAsyncioTestCase):
         for name, value in [('DB_PATH',str(self.root/'app.db')),('LIBRARY_ROOT',str(self.library)),('MAINTENANCE_ACTIVE',False)]:
             self.stack.enter_context(patch.object(config, name, value))
         self.stack.enter_context(patch.object(task_manager, 'broadcast', new=AsyncMock()))
+        self.stack.enter_context(patch.object(task_manager, '_store', None))
         live_service._stopping = False
         live_service._recovering = False
         watcher.init_db()
@@ -279,3 +294,113 @@ class LiveTests(unittest.IsolatedAsyncioTestCase):
             await live_service._record(record,self.info,owner)
         self.assertEqual(live_store.get_record(record['id'])['status'],'interrupted')
         self.assertEqual(live_service.active_count(),0)
+
+    async def test_empty_stream_retains_cause_and_backs_off_without_reset_on_lookup(self):
+        live_store.configure(self.sub['id'], self.url, True, 360)
+        def failed(record, _url, _stop, **options):
+            live_recorder.prepare(record)
+            return {'code': 1, 'result': 'source_end', 'bytes': 0, 'seconds': 0,
+                    'error_code': 'http_forbidden'}
+        with patch.object(live_douyin, 'lookup', return_value=self.info), \
+                patch.object(live_recorder, 'record_stream', side_effect=failed):
+            for failures in (1, 2):
+                await live_service.check(self.sub['id'])
+                owner = live_service._active[self.sub['id']]
+                await owner['task']
+                monitor = live_store.monitor(self.sub['id'])
+                self.assertEqual(monitor['failures'], failures)
+                self.assertIn('403', monitor['error'])
+                self.assertNotIn('入库', monitor['error'])
+                self.assertEqual(monitor['status'], 'error')
+        records = live_api.status(self.sub['id'])['records']
+        self.assertEqual(len(records), 2)
+        self.assertFalse(records[0]['can_publish'])
+        self.assertEqual(records[0]['previous_id'], records[1]['id'])
+        tasks = TaskStore().list_page()['items']
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual(sorted(task['attempt'] for task in tasks), [1, 2])
+        self.assertTrue(all(task['status'] == 'interrupted' for task in tasks))
+        self.assertNotIn('private', json.dumps(tasks))
+
+    async def test_runtime_status_tracks_progress_and_current_record_on_history_pages(self):
+        record = live_store.create_record(self.sub, self.url, self.info)
+        owner = {'stop': threading.Event(), 'progress_at': time.monotonic(), 'room_url': self.url}
+        live_service._active[self.sub['id']] = owner
+        self.assertEqual(live_api.monitors()['items'][0]['runtime_status'], 'connecting')
+        live_store.update_record(record['id'], duration_seconds=40, bytes=123456)
+        self.assertEqual(live_api.status(self.sub['id'], offset=20)['monitor']['runtime_status'], 'recording')
+        self.assertEqual(live_api.status(self.sub['id'], offset=20)['monitor']['record']['bytes'], 123456)
+        owner['progress_at'] -= 30
+        self.assertEqual(live_api.monitors()['items'][0]['runtime_status'], 'stalled')
+        owner['stop'].set()
+        self.assertEqual(live_api.monitors()['items'][0]['runtime_status'], 'finalizing')
+        live_service._active.clear()
+
+    async def test_completed_live_task_backfill_idempotence_hidden_history_and_retry_guard(self):
+        record = live_store.create_record(self.sub, self.url, self.info)
+        live_store.update_record(record['id'], status='stopped', finished_at=db.utc_now(),
+                                entry_id='fixture-entry', bytes=2000, duration_seconds=60,
+                                chat_status='captured', chat_messages=12)
+        await live_tasks.reconcile()
+        store = TaskStore()
+        task_id = 'live-' + record['id']
+        task = store.get(task_id)
+        self.assertEqual(task['status'], 'success')
+        self.assertEqual(task['metadata']['live']['status'], 'stopped')
+        self.assertEqual(task['metadata']['live']['chat_messages'], 12)
+        self.assertEqual(store.active_count(), 0)
+        await live_tasks.reconcile()
+        self.assertEqual(len(store.read_logs(task_id)['items']), 1)
+        store.delete_record(task_id)
+        await live_tasks.reconcile()
+        self.assertIsNone(store.get(task_id))
+        with patch.object(task_manager, '_store', store), self.assertRaisesRegex(ValueError, '直播'):
+            store.restore_record(task_id)
+            await task_manager.retry(task_id)
+
+    async def test_worker_recovers_one_temporary_http_server_failure(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        data = self.sample().read_bytes()
+        calls = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                calls.append(True)
+                if len(calls) == 1:
+                    self.send_error(503)
+                else:
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(data)))
+                    self.send_header('Content-Type', 'video/mp4')
+                    self.end_headers()
+                    self.wfile.write(data)
+            def log_message(self, *_args):
+                pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        record = live_store.create_record(self.sub, self.url, self.info)
+        try:
+            result = await asyncio.to_thread(live_recorder.record_stream, record,
+                f'http://127.0.0.1:{server.server_port}/fixture.mp4', threading.Event(), chat=False, min_free=0)
+            self.assertEqual(result['code'], 0)
+            self.assertGreater(result['seconds'], 0)
+            self.assertGreaterEqual(len(calls), 2)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    async def test_partial_video_published_after_disconnect_keeps_diagnostic_and_interrupted_task(self):
+        record = live_store.create_record(self.sub, self.url, self.info)
+        folder = live_recorder.prepare(record)
+        shutil.copyfile(self.sample(), folder/'recording.mp4.part')
+        live_store.update_record(record['id'], error=live_worker.ERRORS['network'], duration_seconds=3)
+        catalog.register_root(str(self.library))
+        with patch.object(library_service, '_stopping', False):
+            self.assertTrue(await live_service._publish(live_store.get_record(record['id']), 'interrupted', 'worker_error'))
+        saved = live_store.get_record(record['id'])
+        self.assertIn('连接超时', saved['error'])
+        task = TaskStore().get('live-' + record['id'])
+        self.assertEqual(task['status'], 'interrupted')
+        self.assertEqual(task['error'], saved['error'])
+        self.assertTrue(task['metadata']['live']['entry_id'])

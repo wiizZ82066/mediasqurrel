@@ -15,6 +15,37 @@ from .runtime import InstanceLock
 
 CREATE_HIDDEN = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
+ERRORS = {
+    'http_forbidden': '直播流拒绝访问（403）；将重新获取直播地址，可检查本地登录态',
+    'http_missing': '直播流地址已失效（404）；将重新获取直播地址',
+    'http_limited': '直播流请求受限（429）；已降低重试频率',
+    'http_server': '直播源暂时不可用（5xx）；稍后重新获取直播地址',
+    'network': '直播流连接超时或中断；请检查网络，稍后自动重试',
+    'invalid_media': '直播源未返回有效视频数据；稍后重新获取直播地址',
+    'unsupported_codec': '当前录播组件不支持直播源编码；可尝试较低画质',
+    'disk_full': '视频写入失败：磁盘空间不足；已有文件保留',
+    'ffmpeg_error': '录制进程异常退出；已有文件保留，稍后重新检查直播源',
+    'no_video': '直播连接结束前未收到视频；稍后重新获取直播地址',
+}
+
+
+def error_code(line):
+    """Classify bounded stderr fragments; never persist arbitrary URLs/headers."""
+    text = line.lower()
+    for code, needles in (
+        ('http_forbidden', ('403 forbidden', 'http error 403')),
+        ('http_missing', ('404 not found', 'http error 404')),
+        ('http_limited', ('429 too many', 'http error 429')),
+        ('http_server', ('http error 50', '500 internal', '502 bad', '503 service', '504 gateway')),
+        ('disk_full', ('no space left', 'disk full')),
+        ('unsupported_codec', ('unsupported codec', 'codec not currently supported')),
+        ('invalid_media', ('invalid data found', 'could not find codec parameters')),
+        ('network', ('timed out', 'connection reset', 'connection refused', 'error number -10054', 'i/o error')),
+    ):
+        if any(needle in text for needle in needles):
+            return code
+    return ''
+
 
 def command(options):
     args = [options['ffmpeg'], '-hide_banner', '-loglevel', 'error', '-n', '-rw_timeout', '20000000']
@@ -22,7 +53,10 @@ def command(options):
         args += ['-re']  # Internal synthetic-file test, never an API parameter.
     if options['url'].startswith(('https://', 'http://')):
         args += ['-user_agent', options['ua'], '-referer', 'https://live.douyin.com/',
-                 '-protocol_whitelist', 'http,https,tcp,tls,crypto']
+                 '-protocol_whitelist', 'http,https,tcp,tls,crypto',
+                 '-reconnect_on_network_error', '1', '-reconnect_on_http_error', '500,502,503,504',
+                 '-reconnect_max_retries', '2', '-reconnect_delay_max', '3',
+                 '-reconnect_delay_total_max', '10']
     args += ['-i', options['url'], '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy',
              '-map_metadata', '-1', '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
              '-frag_duration', '5000000', '-f', 'mp4', '-progress', 'pipe:1', '-nostats', options['output']]
@@ -34,6 +68,8 @@ def main():
     lock = None
     journal = None
     chat_thread = None
+    error_reader = None
+    diagnostic = ['']
     stop = threading.Event()
     reason = ['source_end']
     stdout_lock = threading.Lock()
@@ -66,7 +102,15 @@ def main():
             emit({'result': 'stopped', 'code': -1})
             return
         proc = subprocess.Popen(command(options), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, creationflags=CREATE_HIDDEN)
+                                stderr=subprocess.PIPE, creationflags=CREATE_HIDDEN)
+
+        def errors():
+            for fragment in iter(lambda: proc.stderr.readline(8192), b''):
+                code = error_code(fragment.decode('utf-8', errors='replace'))
+                if code and not diagnostic[0]:
+                    diagnostic[0] = code
+        error_reader = threading.Thread(target=errors, daemon=True)
+        error_reader.start()
         if options.get('room_url'):
             from . import live_chat
             journal = live_chat.Journal(output.parent, options['session_id'], options['started_at'])
@@ -111,7 +155,9 @@ def main():
                 if reason[0] != 'disk_full':
                     reason[0] = 'stop_timeout'
         reader.join(timeout=3)
-        emit({'result': reason[0], 'code': proc.returncode})
+        error_reader.join(timeout=3)
+        emit({'result': reason[0], 'code': proc.returncode,
+              'error_code': (diagnostic[0] or 'ffmpeg_error') if proc.returncode else ''})
     except Exception:
         # No arbitrary exception text: it can contain URLs, filesystem paths or headers.
         emit({'result': 'worker_error', 'code': -1})
@@ -121,7 +167,9 @@ def main():
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
-            for stream in (proc.stdin, proc.stdout):
+            if error_reader:
+                error_reader.join(timeout=3)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
                 if stream:
                     stream.close()
         if chat_thread:

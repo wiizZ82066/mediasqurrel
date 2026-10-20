@@ -7,6 +7,7 @@ import AppIcon from './AppIcon.vue'
 import IntervalPicker from './IntervalPicker.vue'
 import CalendarPlanFields from './CalendarPlanFields.vue'
 import { planDraft, planPayload } from '../schedule-ui.js'
+import { liveLabels, liveState } from '../live-status.js'
 
 const props = defineProps({ sub: { type: Object, required: true } })
 const emit = defineEmits(['updated'])
@@ -16,8 +17,8 @@ const quality=ref('best')
 const qualities={best:'最高可用（默认）',origin:'原画',uhd:'超清',hd:'高清',sd:'标清',ld:'流畅'}
 const loading = ref(true), saving = ref(false), error = ref(''), offset = ref(0)
 let timer, disposed = false, inFlight = false
-const active = computed(() => ['recording','finalizing'].includes(monitor.value?.status) || records.value.some(item => ['recording','finalizing'].includes(item.status)))
-const labels = { disabled:'已关闭', waiting:'等待检查', offline:'当前未开播', capacity:'等待录制空位', error:'检查失败', recording:'正在录制', finalizing:'正在保存', completed:'下播后结束', stopped:'已手动停止', interrupted:'已中断' }
+const active = computed(() => ['connecting','recording','stalled','finalizing','recovering'].includes(liveState(monitor.value)) || records.value.some(item => ['recording','finalizing'].includes(item.status)))
+const labels = liveLabels
 function time(value) { return value ? new Date(value).toLocaleString('zh-CN', {hour12:false}) : '—' }
 function size(value) { return ((Number(value)||0)/1024/1024).toFixed(1)+' MB' }
 function duration(value) { const seconds=Math.max(0,Math.floor(Number(value)||0)); return `${Math.floor(seconds/3600)}:${String(Math.floor(seconds/60)%60).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}` }
@@ -56,7 +57,7 @@ onBeforeUnmount(()=>{disposed=true;clearInterval(timer)})
 
 <template>
   <section class="live-panel" aria-label="直播录制设置与记录">
-    <div class="live-heading"><h3>直播与弹幕</h3><span class="live-state">{{ labels[monitor?.status] || '尚未设置' }}</span></div>
+    <div class="live-heading"><h3>直播与弹幕</h3><span class="live-state">{{ labels[liveState(monitor)] }}</span></div>
     <p class="live-help">独立于作品扫描与下载标签。开启后定期检查，整场保存一个视频和配套弹幕；下播或停止后进入媒体库。</p>
     <p v-if="loading" class="live-help" role="status">正在读取录播设置…</p>
     <form v-else @submit.prevent="save">
@@ -95,7 +96,7 @@ onBeforeUnmount(()=>{disposed=true;clearInterval(timer)})
       <div class="live-actions">
         <RouterLink v-if="item.entry_id" class="btn btn-ghost btn-sm" :to="{path:'/library',query:{entry_id:item.entry_id}}">查看媒体库</RouterLink>
         <button v-if="item.entry_id" class="btn btn-ghost btn-sm" @click="reveal(item)"><AppIcon name="folder" :size="18"/>视频与弹幕文件夹</button>
-        <button v-if="item.status==='interrupted' && !item.entry_id && item.output_rel" class="btn btn-ghost btn-sm" :disabled="saving || active" @click="publish(item)">重试入库</button>
+        <button v-if="item.can_publish" class="btn btn-ghost btn-sm" :disabled="saving || active" @click="publish(item)">重试入库</button>
       </div>
     </article>
     <div v-if="offset || records.length===20" class="live-actions live-help"><button class="btn btn-ghost btn-sm" :disabled="offset===0 || inFlight" @click="page(-1)">上一页</button><span>第 {{ offset/20+1 }} 页</span><button class="btn btn-ghost btn-sm" :disabled="records.length<20 || inFlight" @click="page(1)">下一页</button></div>

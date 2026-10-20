@@ -52,7 +52,9 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
   const store = sharedStore || vue.reactive({ tasks: [], subs: [], libraryState: savedState, libraryAuthorsCollapsed: false })
   const scope = vue.effectScope()
   const env = {
-    ...vue, api, store, toast: () => {}, upsertTaskSummary: () => {}, MaintenancePanel: {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},
+    ...vue, api, store, liveState: monitor => monitor?.runtime_status || monitor?.status, LiveStatus: {},
+    setInterval: () => 0, clearInterval: () => {},
+    toast: () => {}, upsertTaskSummary: () => {}, MaintenancePanel: {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},
     onTaskEvent: () => () => {}, onMounted: fn => mounted.push(fn),
     onBeforeUnmount: fn => cleanups.push(fn),
     useRoute: () => ({ query: {} }), useRouter: () => ({ replace: () => {} }),

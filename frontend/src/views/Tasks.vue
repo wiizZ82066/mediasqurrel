@@ -6,6 +6,7 @@ import { store, onTaskEvent, upsertTaskSummary, removeTaskSummary, toast } from 
 import ActivityProgress from '../components/ActivityProgress.vue'
 import PlatformLogo from '../components/PlatformLogo.vue'
 import AppIcon from '../components/AppIcon.vue'
+import { liveLabels, liveDuration, liveSize } from '../live-status.js'
 
 const router = useRouter()
 const route = useRoute()
@@ -42,7 +43,7 @@ const statusText = {
   cancelled: '已取消', interrupted: '运行中断',
 }
 const isActive = (task) => ['queued', 'running'].includes(task.status)
-const noTaskOutputYet = (task) => task.status === 'queued' && !task.entry_id && !task.output_rel && !task.output_dir
+const noTaskOutputYet = (task) => (task.status === 'queued' || task.metadata?.live) && !task.entry_id && !task.output_rel && !task.output_dir
 
 async function revealTask(task) {
   if (revealing[task.id] || noTaskOutputYet(task)) return
@@ -379,7 +380,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="view-root task-view">
     <h1 class="page-title">任务与历史</h1>
-    <p class="page-sub">查看下载状态，按需打开日志。时间按当前设备时区显示。</p>
+    <p class="page-sub">查看下载与录播记录，按需打开日志。时间按当前设备时区显示。</p>
     <div class="card task-filters">
       <label class="search-field">搜索任务<input v-model="query" class="input" type="search" placeholder="任务 ID、平台或链接" /></label>
       <label>状态<select v-model="status" class="select"><option value="">全部状态</option><option v-for="(label, value) in statusText" :key="value" :value="value">{{ label }}</option></select></label>
@@ -391,28 +392,30 @@ onBeforeUnmount(() => {
     <div v-if="error" class="error-box" role="alert">{{ error }} <button class="btn btn-ghost btn-sm" @click="loadPage()">重试</button></div>
     <div v-if="!loading && !error && !tasks.length" class="card empty">
       <svg class="empty-mark" viewBox="0 0 48 48" fill="none" aria-hidden="true"><rect x="11" y="8" width="26" height="34" rx="5" fill="#e8f1ff" stroke="#5287ca" stroke-width="2"/><path d="M18 19h12M18 26h12M18 33h7" stroke="#5287ca" stroke-width="2" stroke-linecap="round"/><rect x="19" y="5" width="10" height="6" rx="2" fill="#84b1e8"/></svg>
-      <p>{{ query || status ? '没有符合条件的任务' : '还没有下载任务' }}</p>
+      <p>{{ query || status ? '没有符合条件的任务' : '还没有下载或录播记录' }}</p>
       <router-link to="/" class="btn btn-primary">开始下载</router-link>
     </div>
     <div class="task-list" :aria-busy="loading">
       <article v-for="task in tasks" :key="task.id" class="card task-card">
         <button class="task-head" :aria-expanded="!!logs[task.id]" :aria-controls="`logs-${task.id}`" :disabled="task.hidden" @click="toggleLogs(task.id)">
-          <PlatformLogo :platform="task.script_id" :size="36"/>
-          <span class="task-info"><span class="task-name">{{ task.script_name }}</span><span class="task-param">{{ task.params?.input || task.params?.url || task.id }}</span><span class="task-meta">{{ formatTime(task.created_at) }} · {{ task.id }}<template v-if="task.exit_code != null"> · 退出码 {{ task.exit_code }}</template></span></span>
-          <span class="tag" :class="'tag-' + task.status"><span class="dot"></span>{{ statusText[task.status] || task.status }}</span>
+          <PlatformLogo :platform="task.metadata?.live ? 'douyin' : task.script_id" :size="36"/>
+          <span class="task-info"><span class="task-name">{{ task.script_name }}</span><span class="task-param">{{ task.metadata?.live ? task.params?.title : task.params?.input || task.params?.url || task.id }}</span><span class="task-meta">{{ formatTime(task.created_at) }} · {{ task.id }}<template v-if="task.exit_code != null"> · 退出码 {{ task.exit_code }}</template></span></span>
+          <span class="tag" :class="'tag-' + task.status"><span class="dot"></span>{{ task.metadata?.live ? liveLabels[task.metadata.live.status] : statusText[task.status] || task.status }}</span>
           <span class="chevron" aria-hidden="true">{{ logs[task.id] ? '−' : '+' }}</span>
         </button>
         <p v-if="task.hidden" class="attempt-note">此任务记录已隐藏。恢复后可查看原有日志，媒体文件不受影响。</p>
         <p v-if="task.parent_task_id" class="attempt-note">第 {{ task.attempt || 2 }} 次尝试 · 原任务 {{ task.parent_task_id }}</p>
-        <p v-if="task.status === 'interrupted'" class="interrupted-note">程序退出时下载尚未结束。可创建新任务重试，不会自动续传。</p>
+        <p v-if="task.metadata?.live" class="attempt-note">录播 {{liveDuration(task.metadata.live.duration_seconds)}} · {{liveSize(task.metadata.live.bytes)}} · 弹幕 {{task.metadata.live.chat_messages || 0}} 条<span v-if="task.status==='interrupted'"> · 本次录制未完整结束，已有文件保留</span></p>
+        <p v-else-if="task.status === 'interrupted'" class="interrupted-note">程序退出时下载尚未结束。可创建新任务重试，不会自动续传。</p>
         <p v-if="task.error" class="task-error">{{ task.error }}</p>
-        <ActivityProgress :progress="task.progress" :status="task.status" :label="`${task.script_name}下载进度`" />
+        <ActivityProgress :progress="task.progress" :status="task.status" :label="`${task.script_name}进度`" />
         <div class="task-actions">
           <button v-if="!task.hidden" class="btn btn-ghost btn-sm" @click="toggleLogs(task.id)">{{ logs[task.id] ? '收起日志' : '查看日志' }}</button>
           <button v-if="isActive(task)" class="btn btn-danger-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'cancel')">取消任务</button>
           <template v-else-if="!task.hidden">
-            <button v-if="['failed', 'cancelled', 'interrupted'].includes(task.status)" class="btn btn-primary btn-sm" :disabled="busy[task.id]" @click="act(task, 'retry')">创建重试任务</button>
-            <button v-if="task.output_rel" class="btn btn-ghost btn-sm" :disabled="locatingTaskId === task.id" @click="gotoLibrary(task)">{{ locatingTaskId === task.id ? '正在同步索引…' : '在媒体库查看' }}</button>
+            <button v-if="!task.metadata?.live && ['failed', 'cancelled', 'interrupted'].includes(task.status)" class="btn btn-primary btn-sm" :disabled="busy[task.id]" @click="act(task, 'retry')">创建重试任务</button>
+            <RouterLink v-if="task.metadata?.live?.sub_id" class="btn btn-ghost btn-sm" :to="{path:'/subs',query:{live:task.metadata.live.sub_id}}">直播录制详情</RouterLink>
+            <button v-if="task.metadata?.live ? task.metadata.live.entry_id : task.output_rel" class="btn btn-ghost btn-sm" :disabled="locatingTaskId === task.id" @click="gotoLibrary(task)">{{ locatingTaskId === task.id ? '正在同步索引…' : '在媒体库查看' }}</button>
             <button class="btn btn-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'hide')">隐藏任务记录</button>
             <button class="btn btn-danger-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'deleteLogs')">删除详细日志</button>
           </template>
