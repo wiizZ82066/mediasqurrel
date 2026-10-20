@@ -1,6 +1,6 @@
 import { buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../src/library-layout.js'
 import { subscriptionHomepage, newerBatch } from '../src/subscription-homepage.js'
-import { scanCoverageNotice, scanStatusText } from '../src/subscription-scan.js'
+import { scanCoverageNotice, scanStatusText, scanBadge } from '../src/subscription-scan.js'
 import { liveLabels, liveDuration, liveSize } from '../src/live-status.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -55,7 +55,7 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
   let taskListener
   const scope = vue.effectScope()
   const env = {
-    ...vue, api, store, liveLabels, liveDuration, liveSize, removeTaskSummary: () => {}, liveState: monitor => monitor?.runtime_status || monitor?.status, LiveStatus: {},
+    ...vue, api, store, scanBadge, liveLabels, liveDuration, liveSize, removeTaskSummary: () => {}, liveState: monitor => monitor?.runtime_status || monitor?.status, LiveStatus: {},
     setInterval: () => 0, clearInterval: () => {},
     toast: () => {}, upsertTaskSummary: () => {}, MaintenancePanel: {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},
     onTaskEvent: fn => { taskListener=fn; return () => {} }, onMounted: fn => mounted.push(fn),

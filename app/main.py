@@ -71,10 +71,10 @@ async def _dispatch_new_items(items):
                 it["script_id"], it["params"],
                 content_key=f"{identity[0]}:{identity[2]}",
                 metadata={"subscription": dict(platform=identity[0], blogger_id=identity[1],
-                    item_id=identity[2], sub_id=it.get("sub_id"), claim_token=claim)},
+                    item_id=identity[2], sub_id=it.get("sub_id"), scan_id=it.get("scan_id"), claim_token=claim)},
             )
             watcher.mark_enqueued(*identity, task["id"], claim)
-            _record_task_result(task_manager.get_task(task["id"]) or task)
+            await _record_task_result(task_manager.get_task(task["id"]) or task)
             queued += 1
         except Exception as error:
             watcher.mark_dispatch_failed(*identity, str(error), claim)
@@ -85,9 +85,14 @@ async def _dispatch_new_items(items):
             "time": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")})
 
 
-def _record_task_result(task):
-    watcher.record_task_result(task["id"], task["status"], task.get("error") or "",
-                               complete_verified=task["status"] == "success" and watcher.task_complete(task))
+async def _record_task_result(task):
+    changed = watcher.record_task_result(task["id"], task["status"], task.get("error") or "",
+                                        complete_verified=task["status"] == "success" and watcher.task_complete(task))
+    source = (task.get('metadata') or {}).get('subscription') or {}
+    if changed and source.get('sub_id'):
+        scan = watcher.refresh_scan_downloads(source['sub_id'])
+        if scan:
+            await task_manager.broadcast({'type':'sub_scan', 'sub_id':source['sub_id'], 'scan':scan})
 
 
 def _invalidate_library(task):
@@ -261,7 +266,7 @@ async def api_retry_task(task_id: str):
     try:
         task = await task_manager.retry(task_id)
         watcher.link_retry(task_id, task["id"])
-        _record_task_result(task_manager.get_task(task["id"]) or task)
+        await _record_task_result(task_manager.get_task(task["id"]) or task)
         return task
     except ValueError as error:
         raise HTTPException(400, str(error))

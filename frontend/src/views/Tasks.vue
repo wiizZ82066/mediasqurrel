@@ -383,7 +383,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="view-root task-view">
     <h1 class="page-title">任务与历史</h1>
-    <p class="page-sub">查看下载与录播记录，按需打开日志。时间按当前设备时区显示。</p>
+    <p class="page-sub">查看下载与录播结果，按需打开文件夹或详细日志。</p>
     <div class="card task-filters">
       <label class="search-field">搜索任务<input v-model="query" class="input" type="search" placeholder="任务 ID、平台或链接" /></label>
       <label>状态<select v-model="status" class="select"><option value="">全部状态</option><option v-for="(label, value) in statusText" :key="value" :value="value">{{ label }}</option></select></label>
@@ -402,7 +402,7 @@ onBeforeUnmount(() => {
       <article v-for="task in tasks" :key="task.id" class="card task-card">
         <button class="task-head" :aria-expanded="!!logs[task.id]" :aria-controls="`logs-${task.id}`" :disabled="task.hidden" @click="toggleLogs(task.id)">
           <PlatformLogo :platform="task.metadata?.live ? 'douyin' : task.script_id" :size="36"/>
-          <span class="task-info"><span class="task-name">{{ task.script_name }}</span><span class="task-param">{{ task.metadata?.live ? task.params?.title : task.params?.input || task.params?.url || task.id }}</span><span class="task-meta">{{ formatTime(task.created_at) }} · {{ task.id }}<template v-if="task.exit_code != null"> · 退出码 {{ task.exit_code }}</template></span></span>
+          <span class="task-info"><span class="task-name">{{ task.script_name }}</span><span v-if="task.metadata?.live && task.params?.title" class="task-title">{{ task.params.title }}</span></span>
           <span class="tag" :class="'tag-' + task.status"><span class="dot"></span>{{ task.metadata?.live ? liveLabels[task.metadata.live.status] : statusText[task.status] || task.status }}</span>
           <span class="chevron" aria-hidden="true">{{ logs[task.id] ? '−' : '+' }}</span>
         </button>
@@ -414,6 +414,7 @@ onBeforeUnmount(() => {
         <ActivityProgress :progress="task.progress" :status="task.status" :label="`${task.script_name}进度`" />
         <div class="task-actions">
           <button v-if="!task.hidden" class="btn btn-ghost btn-sm" @click="toggleLogs(task.id)">{{ logs[task.id] ? '收起日志' : '查看日志' }}</button>
+          <button class="btn btn-ghost btn-sm" :disabled="revealing[task.id] || noTaskOutputYet(task)" :title="noTaskOutputYet(task) ? '尚未生成内容目录' : '在文件资源管理器中打开任务内容目录'" @click="revealTask(task)"><AppIcon name="folder" :size="18"/>{{revealing[task.id] ? '正在打开…' : '打开文件夹'}}</button>
           <button v-if="isActive(task)" class="btn btn-danger-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'cancel')">取消任务</button>
           <template v-else-if="!task.hidden">
             <button v-if="!task.metadata?.live && ['failed', 'cancelled', 'interrupted'].includes(task.status)" class="btn btn-primary btn-sm" :disabled="busy[task.id]" @click="act(task, 'retry')">创建重试任务</button>
@@ -425,7 +426,6 @@ onBeforeUnmount(() => {
           <button v-if="task.hidden" class="btn btn-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'restore')">恢复任务记录</button>
         </div>
         <p v-if="locatingTaskId === task.id" class="task-outdir" role="status">{{ locateNotice }}</p>
-        <p v-if="task.output_rel || task.output_dir" class="task-outdir">输出：{{ task.output_rel || task.output_dir }}</p>
         <section v-if="logs[task.id]" :id="`logs-${task.id}`" class="log-panel" aria-label="任务详细日志">
           <div class="log-tools">
             <span>{{ logs[task.id].mode === 'live' ? '实时日志' : '历史日志' }}</span>
@@ -445,7 +445,6 @@ onBeforeUnmount(() => {
             <div v-if="!logs[task.id].items.length && !logs[task.id].loading" class="t-line">{{ isActive(task) ? '等待任务输出…' : '没有可显示的详细日志。' }}</div>
           </div>
         </section>
-        <div class="task-file-actions"><button class="btn btn-ghost task-reveal" :disabled="revealing[task.id] || noTaskOutputYet(task)" :title="noTaskOutputYet(task) ? '任务排队中，尚未生成内容目录' : '在文件资源管理器中打开任务内容目录'" aria-label="在文件资源管理器中打开任务内容目录" @click.stop="revealTask(task)"><AppIcon name="folder" :size="21"/></button></div>
       </article>
     </div>
     <nav v-if="tasks.length || previous.length" class="pagination" aria-label="任务分页"><button class="btn btn-ghost" :disabled="loading || !previous.length" @click="previousPage">上一页</button><span>第 {{ previous.length + 1 }} 页 · 本页 {{ tasks.length }} 条</span><button class="btn btn-ghost" :disabled="loading || !nextCursor" @click="nextPage">下一页</button></nav>
@@ -460,8 +459,6 @@ onBeforeUnmount(() => {
 .task-filters .btn { flex-shrink: 0; }
 .task-list { display: flex; flex-direction: column; gap: 14px; }
 .task-card { padding: 18px 22px; }
-.task-file-actions { display:flex; justify-content:flex-end; margin-top:8px; }
-.task-reveal { width:34px; height:34px; padding:0; display:grid; place-items:center; }
 .task-head { display: flex; align-items: center; gap: 14px; width: 100%; border: 0; background: transparent; text-align: left; padding: 0; color: inherit; font: inherit; cursor: pointer; }
 .task-head:focus-visible { outline: 2px solid var(--blue); outline-offset: 5px; border-radius: 8px; }
 .hidden-filter { display:flex; align-items:center; gap:6px; white-space:nowrap; font-size:12px; }
@@ -470,8 +467,7 @@ onBeforeUnmount(() => {
 .platform-mark.douyin { background: #e8f3f6; color: #2a737d; }
 .task-info { flex: 1; min-width: 0; display: grid; gap: 4px; }
 .task-name { font-size: 14.5px; font-weight: 650; }
-.task-param { font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.task-meta { font-size: 11.5px; color: var(--text-2); overflow-wrap: anywhere; }
+.task-title { font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .task-head .tag { flex-shrink: 0; }
 .chevron { font-size: 20px; color: var(--text-2); line-height: 1; }
 .task-actions { margin-top: 12px; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }

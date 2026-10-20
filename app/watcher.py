@@ -284,6 +284,23 @@ list_scans = subscription_store.list_scans
 def reconcile_tasks(tasks, complete_checker=None):
     subscription_store.reconcile_tasks(tasks, complete_checker or task_complete)
     SCAN_STATES.update(subscription_store.latest_snapshots())
+    for sub_id in list(SCAN_STATES):
+        refresh_scan_downloads(sub_id)
+
+
+def refresh_scan_downloads(sub_id):
+    """Refresh a durable badge without allowing a late task to revive an old scan."""
+    state = SCAN_STATES.get(sub_id)
+    sub = get_sub(sub_id)
+    if not state or not state.get('scan_id') or not sub:
+        return None
+    count = subscription_store.downloaded_for_scan(sub, state['scan_id'])
+    if count == state.get('downloaded_count', 0):
+        return None
+    updated = {**state, 'downloaded_count': count, 'revision': state.get('revision', 0) + 1}
+    subscription_store.save_scan_snapshot(state['scan_id'], updated)
+    SCAN_STATES[sub_id] = updated
+    return updated
 
 
 # ---------------------------------------------------------------- 扫描引擎（插件式）
@@ -424,6 +441,8 @@ async def _perform_scan(sub: dict, trigger: str = 'manual') -> dict:
                 )
             filter_counts = {}
             first_scan, result["new_items"] = subscription_store.record_discoveries(sub, items, local_ids, filter_counts=filter_counts)
+            for item in result["new_items"]:
+                item['scan_id'] = scan_id
             result.update(filter_counts)
             SCAN_STATES[sub['id']]['filter_counts'] = filter_counts
             if first_scan:

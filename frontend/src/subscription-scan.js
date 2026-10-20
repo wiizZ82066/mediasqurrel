@@ -47,3 +47,11 @@ export function terminalScanKey(scan) {
   return scan?.scan_id && ['success', 'partial', 'failed', 'cancelled', 'interrupted'].includes(scan.status)
     ? `${scan.scan_id}:${scan.status}:${scan.revision || 0}` : ''
 }
+
+export function scanBadge(sub, scanning = false) {
+  if (scanning || sub.scan?.status === 'running') return {text:'扫描中', kind:'scanning'}
+  if (['success','partial'].includes(sub.scan?.status) && sub.scan.downloaded_count > 0) {
+    return {text:'有新内容', kind:'new', title:`本轮已成功下载 ${sub.scan.downloaded_count} 条内容`}
+  }
+  return null
+}

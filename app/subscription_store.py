@@ -310,6 +310,22 @@ def record_task_result(task_id, status, error="", complete_verified=False):
     return bool(cursor.rowcount)
 
 
+def downloaded_for_scan(sub, scan_id):
+    """Count verified downloads from this scan, including its explicit retries.
+
+    Discovery, baseline, filtered posts and a process exit code alone are not
+    successful downloads. Older tasks without a scan link are not guessed.
+    """
+    with db.connect() as conn:
+        return conn.execute(
+            """SELECT COUNT(*) FROM subscription_items i JOIN tasks t ON t.id=i.task_id
+               WHERE i.platform=? AND i.blogger_id=? AND i.status='downloaded'
+               AND t.status='success'
+               AND json_extract(t.metadata_json,'$.subscription.scan_id')=?""",
+            (sub['platform'], sub['blogger_id'], scan_id),
+        ).fetchone()[0]
+
+
 def link_retry(parent_task_id, task_id):
     """An explicit retry can revive a cancelled item while preserving old tasks."""
     with db.connect() as conn:

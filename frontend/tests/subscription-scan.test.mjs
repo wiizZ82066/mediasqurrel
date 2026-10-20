@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { coverageText as scanCoverageText, scanCoverageNotice, scanStatusText, terminalScanKey } from '../src/subscription-scan.js'
+import { coverageText as scanCoverageText, scanCoverageNotice, scanStatusText, terminalScanKey, scanBadge } from '../src/subscription-scan.js'
 
 import { subscriptionHomepage, newerBatch } from '../src/subscription-homepage.js'
 import { liveState } from '../src/live-status.js'
@@ -34,7 +34,7 @@ function setupComponent(name, t, sub = { id: 1, platform: 'weibo', interval_minu
     useRoute: () => ({query:{}}), liveState, LiveStatus: {},
     onMounted: () => {}, onBeforeUnmount: fn => cleanups.push(fn),
     toast: (...args) => messages.push(args), refreshSubs: async () => {},
-    scanCoverageText, scanCoverageNotice, scanStatusText, terminalScanKey, subscriptionHomepage, newerBatch,
+    scanCoverageText, scanCoverageNotice, scanStatusText, terminalScanKey, scanBadge, subscriptionHomepage, newerBatch,
     parseDownloadTags: () => ({ tags: [] }), downloadFilterLabel: () => '全部新内容',
     ActivityProgress: {}, CalendarPlanFields: {}, IntervalPicker: {}, AppIcon: {}, PlatformLogo: {}, Avatar: {}, SchedulePanel: {}, SubscriptionFilterPanel: {}, LiveRecordingPanel: {},
   }
@@ -70,6 +70,23 @@ test('legacy successful records with incomplete coverage are explicitly partial 
   assert.match(scanCoverageText({ complete: false, reason: 'navigation_failed' }), /主页未能正常打开.*检查网络/)
   assert.match(scanCoverageText({ complete: false, reason: 'network_changed' }), /网络连接发生变化/)
   assert.match(scanCoverageText({ complete: false, reason: 'network_unavailable' }), /网络暂时不可用/)
+})
+
+test('name badge waits for verified downloads and disappears on a later empty scan', async t => {
+  const {state} = setupComponent('Subs', t)
+  const sub = {id:1,scan:{scan_id:'first',status:'running',downloaded_count:1}}
+  assert.equal(state.statusBadge(sub).text,'扫描中')
+  sub.scan = {scan_id:'first',status:'success',new_count:3}
+  assert.equal(state.statusBadge(sub),null)
+  sub.scan.downloaded_count = 1
+  assert.equal(state.statusBadge(sub).text,'有新内容')
+  assert.match(state.statusBadge(sub).title,/成功下载 1 条/)
+  sub.scan = {scan_id:'second',status:'success',downloaded_count:0}
+  assert.equal(state.statusBadge(sub),null)
+  for (const status of ['failed','cancelled','interrupted']) {
+    sub.scan = {status,downloaded_count:1}
+    assert.equal(state.statusBadge(sub),null)
+  }
 })
 
 test('partial manual scans show the coverage/login warning in toast and main-card notice', async t => {

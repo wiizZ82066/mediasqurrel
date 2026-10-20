@@ -72,6 +72,56 @@ class SubscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(watcher.mark_enqueued("weibo", "sample", item_id, task_id, token))
         return token
 
+    def save_download_task(self, task_id, scan_id, *, output=None):
+        from app.task_store import TaskStore
+        task = dict(id=task_id,script_id='weibo',script_name='示例下载',script_icon='',
+            params={},progress={},status='success',created_at=storage.now(),output_dir=str(output) if output else None,
+            metadata={'subscription':{'sub_id':self.sub['id'],'platform':'weibo',
+                'blogger_id':'sample','item_id':'new','scan_id':scan_id}})
+        TaskStore(log_dir=self.root/'logs').save(task)
+        return task
+
+    async def test_new_content_requires_verified_download_and_retains_retry_scan_link(self):
+        from app.main import _record_task_result
+        await self.scan('baseline')
+        result = await self.scan('baseline','new')
+        self.assertEqual(result['new_items'][0]['scan_id'],result['scan_id'])
+        self.enqueue()
+        task = self.save_download_task('task-one',result['scan_id'])
+        await _record_task_result(task)
+        self.assertEqual(self.state('new')['status'],'failed')
+        self.assertEqual(watcher.list_subs()[0]['scan'].get('downloaded_count',0),0)
+        self.assertTrue(watcher.link_retry('task-one','retry-task'))
+        retry = self.save_download_task('retry-task',result['scan_id'],output=self.manifest('new'))
+        await _record_task_result(retry)
+        current = watcher.list_subs()[0]['scan']
+        self.assertEqual(current['downloaded_count'],1)
+        self.assertEqual(storage.latest_snapshots()[self.sub['id']]['downloaded_count'],1)
+        self.assertTrue(any(call.args[0].get('scan',{}).get('downloaded_count')==1
+                            for call in task_manager.broadcast.await_args_list))
+        await _record_task_result(retry)
+        self.assertEqual(watcher.list_subs()[0]['scan']['revision'],current['revision'])
+        watcher.init_db()
+        self.assertEqual(watcher.list_subs()[0]['scan']['downloaded_count'],1)
+        await self.scan('baseline','new')
+        await _record_task_result(retry)
+        self.assertEqual(watcher.list_subs()[0]['scan'].get('downloaded_count',0),0)
+
+    async def test_restart_repairs_download_count_after_completion_before_badge_write(self):
+        await self.discover()
+        scan_id=watcher.SCAN_STATES[self.sub['id']]['scan_id']
+        self.enqueue()
+        self.save_download_task('task-one',scan_id)
+        storage.record_task_result('task-one','success',complete_verified=True)
+        self.assertEqual(storage.latest_snapshots()[self.sub['id']].get('downloaded_count',0),0)
+        watcher.reconcile_tasks([])
+        self.assertEqual(watcher.list_subs()[0]['scan']['downloaded_count'],1)
+        # Unrelated legacy successes cannot become new updates for this scan.
+        with db.connect() as conn:
+            conn.execute("UPDATE tasks SET metadata_json='{}' WHERE id='task-one'")
+        watcher.reconcile_tasks([])
+        self.assertEqual(watcher.list_subs()[0]['scan']['downloaded_count'],0)
+
     async def test_second_scan_and_restart_do_not_download_baseline(self):
         first = await self.scan("old", "old")
         self.assertEqual(first["baseline"], 1)
