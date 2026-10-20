@@ -5,6 +5,8 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { api as realApi } from '../src/api.js'
+import { taskAuthor, taskTitle, taskPlatform, mergeTaskSummary } from '../src/task-presentation.js'
+import { liveLabels, liveDuration, liveSize } from '../src/live-status.js'
 
 const require = createRequire(new URL('../package.json', import.meta.url))
 const { parse, compileScript, compileTemplate } = require('@vue/compiler-sfc')
@@ -42,7 +44,7 @@ function component(name, t) {
   const timers = new Map()
   const timer = callback => { const id = ++nextTimer; timers.set(id, callback); return id }
   const env = {
-    ...vue, api, store, toast: (...args) => notices.push(args),
+    ...vue, api, store, taskAuthor, taskTitle, taskPlatform, mergeTaskSummary, liveLabels, liveDuration, liveSize, Avatar: {}, toast: (...args) => notices.push(args),
     upsertTaskSummary: () => {}, removeTaskSummary: () => {},
     onTaskEvent: listener => { listeners.add(listener); return () => listeners.delete(listener) },
     onMounted: callback => mounted.push(callback), onBeforeUnmount: callback => cleanups.push(callback),

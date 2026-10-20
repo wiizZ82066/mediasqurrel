@@ -16,7 +16,7 @@ async def sync_record(record):
     old = store.get(identity, include_deleted=True)
     live = {key: record[key] for key in ('id', 'sub_id', 'status', 'entry_id', 'quality',
                                         'duration_seconds', 'bytes', 'chat_status', 'chat_messages', 'reason')}
-    live.update(is_aggregate=record.get('is_aggregate',0),merged_into=record.get('merged_into'))
+    live.update(is_aggregate=record.get('is_aggregate',0),merged_into=record.get('merged_into'),author=record['author'])
     if old and old.get('metadata', {}).get('live') == live and old.get('error', '') == record['error']:
         return
     parent_id = 'live-' + record['previous_id'] if record['previous_id'] else None

@@ -6,7 +6,10 @@ import { store, onTaskEvent, upsertTaskSummary, removeTaskSummary, toast } from 
 import ActivityProgress from '../components/ActivityProgress.vue'
 import PlatformLogo from '../components/PlatformLogo.vue'
 import AppIcon from '../components/AppIcon.vue'
+import Avatar from '../components/Avatar.vue'
+import ContentText from '../components/ContentText.vue'
 import { liveLabels, liveDuration, liveSize } from '../live-status.js'
+import { taskAuthor, taskTitle, taskPlatform, mergeTaskSummary } from '../task-presentation.js'
 
 const router = useRouter()
 const route = useRoute()
@@ -32,6 +35,7 @@ const logElements = new Map()
 const logRequests = new Map()
 const liveUpdates = new Map()
 const progressUpdates = new Map()
+const detailUpdates = new Map()
 let contentElement = null
 let pageRequest = null
 let pageSequence = 0
@@ -94,11 +98,13 @@ async function loadPage({ target = cursor.value, reset = false, restore = false 
   error.value = ''
   liveUpdates.clear()
   progressUpdates.clear()
+  detailUpdates.clear()
   try {
     const result = await api.taskPage({ cursor: target, status: status.value, q: query.value.trim(), includeHidden: includeHidden.value, signal: controller.signal })
     if (disposed || sequence !== pageSequence) return false
     tasks.value = result.items.map((task) => {
-      const latest = liveUpdates.get(task.id) || task
+      const latest = liveUpdates.has(task.id) ? mergeTaskSummary(task, liveUpdates.get(task.id)) : task
+      if (detailUpdates.has(task.id)) Object.assign(latest, detailUpdates.get(task.id))
       return progressUpdates.has(task.id) ? { ...latest, progress: progressUpdates.get(task.id) } : latest
     })
       .filter(visibleTask)
@@ -266,15 +272,21 @@ function onLogScroll(id, event) {
 
 const unsubscribe = onTaskEvent((event) => {
   if (event.type === 'task_update') {
-    if (loading.value) liveUpdates.set(event.task.id, event.task)
+    if (loading.value) liveUpdates.set(event.task.id, mergeTaskSummary(liveUpdates.get(event.task.id), event.task))
     const index = tasks.value.findIndex((task) => task.id === event.task.id)
     if (index >= 0) {
       if (!visibleTask(event.task)) {
         tasks.value.splice(index, 1)
         closeLogs(event.task.id)
         changed.value = true
-      } else tasks.value.splice(index, 1, event.task)
+      } else tasks.value.splice(index, 1, mergeTaskSummary(tasks.value[index], event.task))
     } else changed.value = true
+  } else if (event.type === 'library_indexed') {
+    const details = Object.fromEntries(['author', 'author_avatar_url', 'display_title']
+      .filter(key => event[key]).map(key => [key, event[key]]))
+    const task = tasks.value.find(item => item.id === event.task_id)
+    if (task) Object.assign(task, details)
+    if (loading.value) detailUpdates.set(event.task_id, details)
   } else if (event.type === 'task_progress') {
     if (loading.value) progressUpdates.set(event.task_id, event.progress)
     const task = tasks.value.find((item) => item.id === event.task_id)
@@ -377,6 +389,7 @@ onBeforeUnmount(() => {
   for (const id of Object.keys(logs)) closeLogs(id)
   liveUpdates.clear()
   progressUpdates.clear()
+  detailUpdates.clear()
 })
 </script>
 
@@ -401,8 +414,18 @@ onBeforeUnmount(() => {
     <div class="task-list" :aria-busy="loading">
       <article v-for="task in tasks" :key="task.id" class="card task-card">
         <button class="task-head" :aria-expanded="!!logs[task.id]" :aria-controls="`logs-${task.id}`" :disabled="task.hidden" @click="toggleLogs(task.id)">
-          <PlatformLogo :platform="task.metadata?.live ? 'douyin' : task.script_id" :size="36"/>
-          <span class="task-info"><span class="task-name">{{ task.script_name }}</span><span v-if="task.metadata?.live && task.params?.title" class="task-title">{{ task.params.title }}</span></span>
+          <span class="task-info">
+            <span class="task-author-row">
+              <Avatar :src="task.author_avatar_url" :name="taskAuthor(task)" :size="34"/>
+              <PlatformLogo v-if="['weibo','douyin'].includes(taskPlatform(task))" :platform="taskPlatform(task)" :size="24"/>
+              <span class="task-author" :class="{unknown:!taskAuthor(task)}">{{ taskAuthor(task) || '博主待识别' }}</span>
+              <span v-if="task.metadata?.live" class="task-kind">录播</span>
+            </span>
+            <span class="task-content-row">
+              <time class="task-time" :datetime="task.created_at" title="任务创建时间；录播为开始录制时间">{{ formatTime(task.created_at) }}</time>
+              <ContentText class="task-title" :text="taskTitle(task)" :platform="taskPlatform(task)"/>
+            </span>
+          </span>
           <span class="tag" :class="'tag-' + task.status"><span class="dot"></span>{{ task.metadata?.live ? liveLabels[task.metadata.live.status] : statusText[task.status] || task.status }}</span>
           <span class="chevron" aria-hidden="true">{{ logs[task.id] ? '−' : '+' }}</span>
         </button>
@@ -462,12 +485,14 @@ onBeforeUnmount(() => {
 .task-head { display: flex; align-items: center; gap: 14px; width: 100%; border: 0; background: transparent; text-align: left; padding: 0; color: inherit; font: inherit; cursor: pointer; }
 .task-head:focus-visible { outline: 2px solid var(--blue); outline-offset: 5px; border-radius: 8px; }
 .hidden-filter { display:flex; align-items:center; gap:6px; white-space:nowrap; font-size:12px; }
-.platform-mark { width: 36px; height: 36px; display: grid; place-items: center; flex-shrink: 0; border-radius: 11px; background: #e8eef7; color: #46638a; font-size: 17px; font-weight: 700; }
-.platform-mark.weibo { background: #fff0df; color: #c36034; }
-.platform-mark.douyin { background: #e8f3f6; color: #2a737d; }
-.task-info { flex: 1; min-width: 0; display: grid; gap: 4px; }
-.task-name { font-size: 14.5px; font-weight: 650; }
-.task-title { font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.task-info { flex: 1; min-width: 0; display: grid; gap: 9px; }
+.task-author-row { display:flex;align-items:center;gap:8px;min-width:0; }
+.task-author { font-size:14.5px;font-weight:650;line-height:1.6;overflow-wrap:anywhere;min-width:0; }
+.task-author.unknown { color:var(--text-2);font-weight:500; }
+.task-kind { font-size:11px;color:var(--text-2);background:#f0f1f3;padding:2px 7px;border-radius:8px;white-space:nowrap; }
+.task-content-row { display:flex;align-items:baseline;gap:12px;min-width:0; }
+.task-time { font-size:11.5px;color:var(--text-2);white-space:nowrap;font-variant-numeric:tabular-nums; }
+.task-title { font-size:12.5px;line-height:1.65;overflow-wrap:anywhere;min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
 .task-head .tag { flex-shrink: 0; }
 .chevron { font-size: 20px; color: var(--text-2); line-height: 1; }
 .task-actions { margin-top: 12px; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
@@ -486,7 +511,7 @@ onBeforeUnmount(() => {
 .pagination { display: flex; align-items: center; justify-content: center; gap: 18px; margin: 24px 0; font-size: 12.5px; color: var(--text-2); }
 .empty-mark { width: 48px; height: 48px; margin-bottom: 12px; }
 .empty a { text-decoration: none; }
-.task-view :deep(.btn), .task-card, .platform-mark { transition: none; }
+.task-view :deep(.btn), .task-card { transition: none; }
 .task-view :deep(.btn:active), .task-view :deep(.btn:hover) { transform: none; }
 @media (max-width: 760px) {
   .task-filters { flex-wrap: wrap; gap: 12px; }
@@ -494,8 +519,9 @@ onBeforeUnmount(() => {
   .task-filters label:not(.search-field) { flex: 1; }
   .task-card { padding: 16px; }
   .task-head { gap: 9px; flex-wrap: wrap; }
-  .task-head .task-info { min-width: calc(100% - 50px); }
-  .task-head .tag { margin-left: 45px; }
+  .task-head .task-info { flex-basis:100%; }
+  .task-content-row { flex-wrap:wrap;gap:3px 10px; }
+  .task-head .tag { margin-left:0; }
   .chevron { margin-left: auto; }
   .pagination { gap: 9px; }
 }

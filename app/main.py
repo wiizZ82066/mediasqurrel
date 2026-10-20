@@ -61,17 +61,21 @@ app.add_middleware(LocalOnlyMiddleware)
 async def _dispatch_new_items(items):
     """扫描发现新内容的统一处理：页面内通知 + 自动创建下载任务。"""
     queued, failed = 0, 0
+    profiles = {sub['id']: sub for sub in watcher.list_subs()}
     for it in items:
         identity = (it["platform"], it["blogger_id"], str(it["item_id"]))
         claim = watcher.claim_item(*identity)
         if not claim:
             continue
         try:
+            profile = profiles.get(it.get("sub_id"), {})
             task = await task_manager.create(
                 it["script_id"], it["params"],
                 content_key=f"{identity[0]}:{identity[2]}",
                 metadata={"subscription": dict(platform=identity[0], blogger_id=identity[1],
-                    item_id=identity[2], sub_id=it.get("sub_id"), scan_id=it.get("scan_id"), claim_token=claim)},
+                    item_id=identity[2], sub_id=it.get("sub_id"), scan_id=it.get("scan_id"),
+                    author=profile.get("nickname") if profile.get("nickname") != identity[1] else None,
+                    title=it.get("title"), claim_token=claim)},
             )
             watcher.mark_enqueued(*identity, task["id"], claim)
             await _record_task_result(task_manager.get_task(task["id"]) or task)
@@ -110,10 +114,13 @@ def _invalidate_library(task):
             try:
                 entry = library_service.task_entry(task)
                 if entry:
+                    from .task_authors import enrich
+                    summary = enrich([dict(task)])[0]
                     # A scan can return failed/cancelled without raising. Only an
                     # actual linked entry proves this task can now be opened.
                     asyncio.create_task(task_manager.broadcast({'type': 'library_indexed',
-                        'task_id': task['id'], 'entry_id': entry['id'], 'root_id': entry['root_id']}))
+                        'task_id': task['id'], 'entry_id': entry['id'], 'root_id': entry['root_id'],
+                        **{key: summary[key] for key in ('author', 'author_avatar_url', 'display_title')}}))
             except Exception as error:
                 print('[catalog] 任务媒体关联失败: ' + redact_text(str(error)))
         state['task'].add_done_callback(link)
@@ -227,13 +234,17 @@ async def api_create_task(body: dict):
 
 @app.get("/api/tasks")
 def api_list_tasks():
-    return task_manager.list_page(limit=50)["items"]
+    from .task_authors import enrich
+    return enrich(task_manager.list_page(limit=50)["items"])
 
 
 @app.get("/api/tasks/page")
 def api_task_page(limit: int = 50, cursor: str | None = None, status: str | None = None, q: str | None = None, include_hidden: bool = False):
     try:
-        return task_manager.list_page(limit=limit, cursor=cursor, status=status, q=q, include_hidden=include_hidden)
+        from .task_authors import enrich
+        page = task_manager.list_page(limit=limit, cursor=cursor, status=status, q=q, include_hidden=include_hidden)
+        enrich(page['items'])
+        return page
     except ValueError as error:
         raise HTTPException(400, str(error))
 
@@ -243,7 +254,8 @@ def api_get_task(task_id: str):
     task = task_manager.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return task
+    from .task_authors import enrich
+    return enrich([task])[0]
 
 
 @app.post("/api/tasks/{task_id}/cancel")

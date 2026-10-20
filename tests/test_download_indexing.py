@@ -117,8 +117,11 @@ class DownloadIndexingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(linked['entry_id'], response['entry_id'])
         events = [item for item in self.indexed_events() if item['task_id'] == task['id']]
         self.assertEqual(len(events), 1)
-        self.assertEqual(events[0], {'type': 'library_indexed', 'task_id': task['id'],
+        self.assertEqual({key:events[0][key] for key in ('type','task_id','entry_id','root_id')},
+                                    {'type': 'library_indexed', 'task_id': task['id'],
                                      'entry_id': response['entry_id'], 'root_id': self.media_root['id']})
+        self.assertEqual(events[0]['author'], self.folder.parent.name)
+        self.assertIn('display_title', events[0])
         return response
 
     async def test_success_notice_follows_callback_and_slow_index_is_pending_then_ready(self):
