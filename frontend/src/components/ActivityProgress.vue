@@ -47,7 +47,7 @@ const detail = computed(() => {
 <template>
   <div class="activity-progress" :class="'is-' + status">
     <div class="progress-caption">
-      <span class="progress-message">{{ message }}</span>
+      <span class="progress-message">{{ message }}<slot name="message-suffix" /></span>
       <span class="progress-value">{{ valueText }}</span>
     </div>
     <div

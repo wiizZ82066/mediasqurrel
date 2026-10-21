@@ -30,7 +30,8 @@ def enrich(tasks):
                 json_extract(value,'$.live_id') live_id, json_extract(value,'$.entry_id') entry_id
               FROM json_each(?))
             SELECT r.id, e.author linked_author, e.text_preview, e.meta_json, e.platform entry_platform,
-                l.author live_author, l.title live_title,
+                e.sort_at, e.date_source, l.author live_author, l.title live_title,
+                l.broadcast_started_at, l.started_at recording_started_at,
                 s.nickname, s.blogger_id, s.id sub_id, s.avatar_source,
                 ls.id live_sub_id, ls.blogger_id live_blogger_id, ls.avatar_source live_avatar_source, i.title item_title
             FROM refs r LEFT JOIN task_media tm ON tm.task_id=r.id
@@ -48,6 +49,8 @@ def enrich(tasks):
             sub, live = metadata.get('subscription') or {}, metadata.get('live') or {}
             content = metadata.get('content') or {}
             row = details[task['id']]
+            published = ((row['sort_at'] if row['date_source'] == 'published' else None) or
+                         sub.get('published_at') or content.get('published_at')) if not live else None
             entry_meta = json.loads(row['meta_json']) if row['meta_json'] else {}
             platform = row['entry_platform'] or sub.get('platform') or content.get('platform') or ('douyin' if live else task.get('script_id'))
             identity = (row['blogger_id'] or row['live_blogger_id'] or
@@ -58,7 +61,7 @@ def enrich(tasks):
             title = (_name(row['live_title']) or _name(row['item_title']) or _name(row['text_preview']) or
                      _name(sub.get('title')) or _name((task.get('params') or {}).get('title')) or _name(content.get('title')))
             avatar_id = row['sub_id'] if row['avatar_source'] else row['live_sub_id'] if row['live_avatar_source'] else None
-            if (not name or not title) and not metadata.get('diagnostic'):
+            if (not name or not title or (not published and not live)) and not metadata.get('diagnostic'):
                 # Legacy tasks may have no task_media link. Match an exact
                 # indexed directory inside a registered root, not its basename.
                 output = task.get('output_dir')
@@ -72,13 +75,15 @@ def enrich(tasks):
                         base = Path(root['path']).resolve()
                         if path != base and path.is_relative_to(base):
                             relative = path.relative_to(base).as_posix()
-                            entry = connection.execute('SELECT author,text_preview,meta_json,platform FROM media_entries WHERE root_id=? AND rel_dir=?',
+                            entry = connection.execute('SELECT author,text_preview,meta_json,platform,sort_at,date_source FROM media_entries WHERE root_id=? AND rel_dir=?',
                                                        (root['id'], relative)).fetchone()
                             if entry:
                                 name = name or _name(entry['author'])
                                 title = title or _name(entry['text_preview'])
                                 platform = entry['platform'] or platform
                                 identity = identity or author_profiles.from_metadata(platform, json.loads(entry['meta_json']))
+                                if not live and entry['date_source'] == 'published':
+                                    published = published or entry['sort_at']
                                 break
             if not avatar_id and author_profiles.valid_identity(platform, identity):
                 if subscriptions is None:
@@ -94,4 +99,7 @@ def enrich(tasks):
             task['author_avatar_url'] = (f'/api/subs/{avatar_id}/avatar' if avatar_id else
                                          author_profiles.avatar_url(platform, identity))
             task['display_title'] = title[:500] or None
+            task['published_at'] = published or None
+            task['broadcast_started_at'] = row['broadcast_started_at'] or None
+            task['recording_started_at'] = row['recording_started_at'] or None
     return tasks

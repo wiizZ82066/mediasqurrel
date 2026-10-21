@@ -2,7 +2,7 @@ import { buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEnt
 import { subscriptionHomepage, newerBatch } from '../src/subscription-homepage.js'
 import { scanCoverageNotice, scanStatusText, scanBadge } from '../src/subscription-scan.js'
 import { liveLabels, liveDuration, liveSize } from '../src/live-status.js'
-import { taskAuthor, taskTitle, taskPlatform, mergeTaskSummary } from '../src/task-presentation.js'
+import { taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary } from '../src/task-presentation.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -56,7 +56,7 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
   let taskListener
   const scope = vue.effectScope()
   const env = {
-    ...vue, api, store, scanBadge, liveLabels, liveDuration, liveSize, taskAuthor, taskTitle, taskPlatform, mergeTaskSummary, removeTaskSummary: () => {}, liveState: monitor => monitor?.runtime_status || monitor?.status, LiveStatus: {},
+    ...vue, api, store, scanBadge, liveLabels, liveDuration, liveSize, taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary, removeTaskSummary: () => {}, liveState: monitor => monitor?.runtime_status || monitor?.status, LiveStatus: {},
     setInterval: () => 0, clearInterval: () => {},
     toast: () => {}, upsertTaskSummary: () => {}, MaintenancePanel: {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},
     onTaskEvent: fn => { taskListener=fn; return () => {} }, onMounted: fn => mounted.push(fn),
@@ -651,7 +651,7 @@ test('task details survive queue updates and index completion racing an older pa
   const result = deferred()
   api.taskPage = () => result.promise
   const loading = state.loadPage()
-  const details = {author:'完整的博主名字 🐿️',author_avatar_url:'/api/subs/7/avatar',display_title:'旅行记录 ☀️'}
+  const details = {author:'完整的博主名字 🐿️',author_avatar_url:'/api/subs/7/avatar',display_title:'旅行记录 ☀️',published_at:'2024-02-03T04:34:56Z'}
   event({type:'library_indexed',task_id:original.id,...details})
   event({type:'task_update',task:{...original,status:'success'}})
   result.resolve({items:[original],next_cursor:null})
@@ -661,8 +661,19 @@ test('task details survive queue updates and index completion racing an older pa
   assert.equal(taskAuthor(state.tasks.value[0]),details.author)
   assert.equal(taskTitle(state.tasks.value[0]),details.display_title)
   assert.equal(state.tasks.value[0].author_avatar_url,details.author_avatar_url)
+  assert.equal(taskContentTime(state.tasks.value[0]).value,details.published_at)
   event({type:'task_update',task:{...original,status:'success',metadata:{subscription:{author:'旧昵称'}}}})
   assert.equal(taskAuthor(state.tasks.value[0]),details.author)
+})
+
+test('task content time distinguishes publication, broadcast and recording from download times', () => {
+  const task={created_at:'2026-10-21T00:00:00Z',finished_at:'2026-10-21T01:00:00Z'}
+  assert.deepEqual(taskContentTime(task),{label:'发布',value:null})
+  assert.deepEqual(taskContentTime({...task,published_at:'2024-02-03T04:34:56Z'}),{label:'发布',value:'2024-02-03T04:34:56Z'})
+  assert.equal(taskContentTime({...task,metadata:{subscription:{published_at:'2024-02-03T04:34:56Z'}}}).value,'2024-02-03T04:34:56Z')
+  const live={...task,metadata:{live:{}},started_at:'2026-10-20T12:00:00Z'}
+  assert.deepEqual(taskContentTime(live),{label:'录制开始',value:live.started_at})
+  assert.deepEqual(taskContentTime({...live,broadcast_started_at:'2026-10-20T11:00:00Z'}),{label:'开播',value:'2026-10-20T11:00:00Z'})
 })
 
 test('tasks identify pending subscriptions and recordings without guessing names from input links', t => {

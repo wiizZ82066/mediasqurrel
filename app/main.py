@@ -75,7 +75,7 @@ async def _dispatch_new_items(items):
                 metadata={"subscription": dict(platform=identity[0], blogger_id=identity[1],
                     item_id=identity[2], sub_id=it.get("sub_id"), scan_id=it.get("scan_id"),
                     author=profile.get("nickname") if profile.get("nickname") != identity[1] else None,
-                    title=it.get("title"), claim_token=claim)},
+                    title=it.get("title"), published_at=it.get("created_at"), claim_token=claim)},
             )
             watcher.mark_enqueued(*identity, task["id"], claim)
             await _record_task_result(task_manager.get_task(task["id"]) or task)
@@ -120,7 +120,7 @@ def _invalidate_library(task):
                     # actual linked entry proves this task can now be opened.
                     asyncio.create_task(task_manager.broadcast({'type': 'library_indexed',
                         'task_id': task['id'], 'entry_id': entry['id'], 'root_id': entry['root_id'],
-                        **{key: summary[key] for key in ('author', 'author_avatar_url', 'display_title')}}))
+                        **{key: summary[key] for key in ('author', 'author_avatar_url', 'display_title', 'published_at')}}))
             except Exception as error:
                 print('[catalog] 任务媒体关联失败: ' + redact_text(str(error)))
         state['task'].add_done_callback(link)

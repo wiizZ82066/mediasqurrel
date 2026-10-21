@@ -29,8 +29,10 @@ def repair():
                 'title':saved_content.get('title') or task.get('display_title'),
                 'platform':saved_content.get('platform') or task.get('author_platform'),
                 'blogger_id':saved_content.get('blogger_id') or task.get('author_id'),
+                'published_at':saved_content.get('published_at') or task.get('published_at'),
             }.items() if value}
-            if not content.get('author') or not content.get('title') or not content.get('blogger_id'):
+            if (not content.get('author') or not content.get('title') or not content.get('blogger_id') or
+                    (not metadata.get('live') and not content.get('published_at'))):
                 try:
                     folder = Path(task_files.output_directory(task))
                     # Read only this verified task's bounded context file.
@@ -40,6 +42,7 @@ def repair():
                     for key, value in {
                         'author':meta.get('作者'), 'title':(meta.get('视频标题') or body)[:500],
                         'blogger_id':author_profiles.from_metadata(content.get('platform'), meta),
+                        'published_at':catalog._date_value(meta.get('发布时间')) if not metadata.get('live') else None,
                     }.items():
                         if value and not content.get(key):
                             content[key] = value

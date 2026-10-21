@@ -9,7 +9,7 @@ import AppIcon from '../components/AppIcon.vue'
 import Avatar from '../components/Avatar.vue'
 import ContentText from '../components/ContentText.vue'
 import { liveLabels, liveDuration, liveSize } from '../live-status.js'
-import { taskAuthor, taskTitle, taskPlatform, mergeTaskSummary } from '../task-presentation.js'
+import { taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary } from '../task-presentation.js'
 
 const router = useRouter()
 const route = useRoute()
@@ -285,7 +285,7 @@ const unsubscribe = onTaskEvent((event) => {
       } else tasks.value.splice(index, 1, mergeTaskSummary(tasks.value[index], event.task))
     } else changed.value = true
   } else if (event.type === 'library_indexed') {
-    const details = Object.fromEntries(['author', 'author_avatar_url', 'display_title']
+    const details = Object.fromEntries(['author', 'author_avatar_url', 'display_title', 'published_at']
       .filter(key => event[key]).map(key => [key, event[key]]))
     const task = tasks.value.find(item => item.id === event.task_id)
     if (task) Object.assign(task, details)
@@ -425,7 +425,8 @@ onBeforeUnmount(() => {
               <span v-if="task.metadata?.live" class="task-kind">录播</span>
             </span>
             <span class="task-content-row">
-              <time class="task-time" :datetime="task.created_at" title="任务创建时间；录播为开始录制时间">{{ formatTime(task.created_at) }}</time>
+              <time v-if="taskContentTime(task).value" class="task-time" :datetime="taskContentTime(task).value" :title="taskContentTime(task).label + '时间'">{{ taskContentTime(task).label }} {{ formatTime(taskContentTime(task).value) }}</time>
+              <span v-else class="task-time">{{ taskContentTime(task).label }}时间未知</span>
               <ContentText class="task-title" :text="taskTitle(task)" :platform="taskPlatform(task)"/>
             </span>
           </span>
@@ -437,7 +438,11 @@ onBeforeUnmount(() => {
         <p v-if="task.metadata?.live" class="attempt-note">录播 {{liveDuration(task.metadata.live.duration_seconds)}} · {{liveSize(task.metadata.live.bytes)}} · 弹幕 {{task.metadata.live.chat_messages || 0}} 条<span v-if="task.status==='interrupted'"> · 本次录制未完整结束，已有文件保留</span></p>
         <p v-else-if="task.status === 'interrupted'" class="interrupted-note">程序退出时下载尚未结束。可创建新任务重试，不会自动续传。</p>
         <p v-if="task.error" class="task-error">{{ task.error }}</p>
-        <ActivityProgress :progress="task.progress" :status="task.status" :label="`${task.script_name}进度`" />
+        <ActivityProgress :progress="task.progress" :status="task.status" :label="`${task.script_name}进度`">
+          <template v-if="task.status === 'success'" #message-suffix>
+            <span class="completion-time"> · <time v-if="task.finished_at" :datetime="task.finished_at" :title="task.metadata?.live ? '录制结束时间' : '下载完成时间'">{{ formatTime(task.finished_at) }}</time><span v-else>完成时间未记录</span></span>
+          </template>
+        </ActivityProgress>
         <div class="task-actions">
           <button v-if="!task.hidden" class="btn btn-ghost btn-sm" @click="toggleLogs(task.id)">{{ logs[task.id] ? '收起日志' : '查看日志' }}</button>
           <button class="btn btn-ghost btn-sm" :disabled="revealing[task.id] || noTaskOutputYet(task)" :title="noTaskOutputYet(task) ? '尚未生成内容目录' : '在文件资源管理器中打开任务内容目录'" @click="revealTask(task)"><AppIcon name="folder" :size="18"/>{{revealing[task.id] ? '正在打开…' : '打开文件夹'}}</button>
@@ -495,6 +500,7 @@ onBeforeUnmount(() => {
 .task-kind { font-size:11px;color:var(--text-2);background:#f0f1f3;padding:2px 7px;border-radius:8px;white-space:nowrap; }
 .task-content-row { display:flex;align-items:baseline;gap:12px;min-width:0; }
 .task-time { font-size:11.5px;color:var(--text-2);white-space:nowrap;font-variant-numeric:tabular-nums; }
+.completion-time { display:inline-block;font-variant-numeric:tabular-nums; }
 .task-title { font-size:12.5px;line-height:1.65;overflow-wrap:anywhere;min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
 .task-head .tag { flex-shrink: 0; }
 .chevron { font-size: 20px; color: var(--text-2); line-height: 1; }

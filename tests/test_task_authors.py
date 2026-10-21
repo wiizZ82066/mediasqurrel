@@ -31,7 +31,7 @@ class TaskAuthorTests(unittest.TestCase):
         folder = self.root / 'ExampleAuthor' / '2026-10-21'
         folder.mkdir(parents=True)
         (folder / 'context.md').write_text(
-            '- **原文链接**: https://weibo.com/123/post\n## 页面文本\n```\n已索引的内容 ☀️\n```\n', encoding='utf-8')
+            '- **原文链接**: https://weibo.com/123/post\n- **发布时间**: 2024-02-03 12:34:56\n## 页面文本\n```\n已索引的内容 ☀️\n```\n', encoding='utf-8')
         root = catalog.register_root(self.root)
         catalog.scan_root(root['id'])
         entry = catalog.list_entries(root_id=root['id'])['items'][0]
@@ -79,6 +79,22 @@ class TaskAuthorTests(unittest.TestCase):
         self.assertTrue(all(task['author'] == '完整博主名字 🐿️' for task in tasks))
         self.assertTrue(all(task['author_avatar_url'] == '/api/subs/1/avatar' for task in tasks))
         self.assertTrue(all('已索引的内容' in task['display_title'] for task in tasks))
+        self.assertTrue(all(task['published_at'] == '2024-02-03T04:34:56+00:00' for task in tasks))
+
+    def test_task_creation_or_fallback_catalog_date_is_never_a_publication_date(self):
+        folder, root, entry = self.fixture_entry()
+        with db.connect() as connection:
+            connection.execute('INSERT INTO task_media VALUES (?,?,?)', ('linked',entry['id'],root['id']))
+            connection.execute("UPDATE media_entries SET date_source='directory' WHERE id=?", (entry['id'],))
+        tasks = [dict(id='linked',created_at='2026-10-21T00:00:00Z'),
+                 dict(id='legacy',output_dir=str(folder),metadata={'content':{'author':'Saved','title':'Saved'}}),
+                 dict(id='unknown',created_at='2026-10-21T00:00:00Z')]
+        self.assertTrue(all(task['published_at'] is None for task in task_authors.enrich(tasks)))
+
+    def test_pending_subscription_keeps_platform_publication_timestamp(self):
+        task = dict(id='pending',created_at='2026-10-21T00:00:00Z',metadata={'subscription':dict(
+            sub_id=1,platform='weibo',blogger_id='123',item_id='post',published_at='2024-02-03T04:34:56Z')})
+        self.assertEqual(task_authors.enrich([task])[0]['published_at'],'2024-02-03T04:34:56Z')
 
     def test_unknown_external_or_diagnostic_paths_are_not_guessed(self):
         folder, _, _ = self.fixture_entry()
@@ -105,12 +121,18 @@ class TaskAuthorTests(unittest.TestCase):
         self.assertEqual(result['author'], '录播博主')
         self.assertEqual(result['display_title'], '直播标题')
         self.assertEqual(result['author_avatar_url'], '/api/subs/1/avatar')
+        self.assertIsNone(result['published_at'])
+        self.assertEqual(result['recording_started_at'],'now')
+        with db.connect() as connection:
+            connection.execute("UPDATE live_recordings SET broadcast_started_at='2026-10-20T12:00:00Z'")
+        self.assertEqual(task_authors.enrich([dict(id='live-record',metadata={'live':{'id':'record'}})])[0]
+                         ['broadcast_started_at'],'2026-10-20T12:00:00Z')
 
     def test_diagnostic_metadata_repair_is_idempotent_and_does_not_index_or_modify_files(self):
         folder = self.root.parent/'diagnostics'/'Author'/'2026-10-09'
         folder.mkdir(parents=True)
         source = folder/'context.md'
-        source.write_text('- **作者**: 原博主\n- **原文链接**: https://weibo.com/123/post\n## 页面文本\n```\n原正文 🎉\n```\n',encoding='utf-8')
+        source.write_text('- **作者**: 原博主\n- **原文链接**: https://weibo.com/123/post\n- **发布时间**: 2024-02-03 12:34:56\n## 页面文本\n```\n原正文 🎉\n```\n',encoding='utf-8')
         original = source.read_bytes()
         store = TaskStore()
         store.save(dict(id='diagnostic',script_id='weibo',script_name='检测',script_icon='',status='success',
@@ -122,6 +144,7 @@ class TaskAuthorTests(unittest.TestCase):
         saved = store.get('diagnostic', include_deleted=True)
         self.assertTrue(saved['hidden'])
         self.assertEqual(saved['metadata']['content']['author'], '原博主')
+        self.assertEqual(saved['metadata']['content']['published_at'],'2024-02-03T04:34:56+00:00')
         self.assertEqual(task_history_repair.repair()['updated'], 0)
         self.assertEqual(source.read_bytes(), original)
         with db.connect() as connection:
