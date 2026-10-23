@@ -193,9 +193,11 @@ async def check(sub_id):
             return
         if info.get('owner_id') != sub['blogger_id']:
             raise live_douyin.LiveError('直播间博主身份与此订阅不匹配或无法核实，请检查链接')
-        if info['session_id'] == latest['completed_session']:
-            live_store.update_monitor(sub_id, status='waiting')
-            return
+        # Douyin can reuse the same room/session ID after a connection outage
+        # or a resumed broadcast. A previous completion is historical state,
+        # not evidence that the currently confirmed live stream is finished.
+        # _active and the database's unique active constraint prevent parallel
+        # recordings; manual stop disables the monitor until explicitly enabled.
         if len(_active) >= MAX_RECORDINGS:
             live_store.update_monitor(sub_id, status='capacity', error='已有 2 路录制，稍后重新检查', next_check_at=_later(60))
             return

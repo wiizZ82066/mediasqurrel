@@ -249,6 +249,47 @@ class LiveTests(unittest.IsolatedAsyncioTestCase):
             live_service._active.clear()
         self.assertNotIn('private',json.dumps(live_api.status(self.sub['id'])))
 
+    async def test_confirmed_live_restarts_a_completed_session_without_parallel_recordings(self):
+        previous=live_store.create_record(self.sub,self.url,self.info)
+        live_store.update_record(previous['id'],status='completed',reason='offline',finished_at=db.utc_now())
+        live_store.update_monitor(self.sub['id'],completed_session=self.info['session_id'],status='waiting')
+        gate=asyncio.Event()
+        async def record(*_args):
+            await gate.wait()
+        owner=None
+        try:
+            with patch.object(live_douyin,'lookup',return_value=self.info), \
+                    patch.object(live_recorder,'ffmpeg_exe',return_value='fixture'), \
+                    patch.object(live_service,'_record',side_effect=record):
+                await live_service.check(self.sub['id'])
+                owner=live_service._active.get(self.sub['id'])
+                self.assertIsNotNone(owner)
+                await live_service.check(self.sub['id'])
+                records=live_store.recordings(self.sub['id'])
+                self.assertEqual(len(records),2)
+                current=next(r for r in records if r['id']!=previous['id'])
+                self.assertEqual(current['previous_id'],previous['id'])
+                self.assertEqual(current['session_id'],previous['session_id'])
+                self.assertEqual(live_store.get_record(previous['id'])['status'],'completed')
+                self.assertEqual(live_store.monitor(self.sub['id'])['status'],'recording')
+        finally:
+            gate.set()
+            if owner:
+                await owner['task']
+                live_service._active.pop(self.sub['id'],None)
+
+    async def test_manual_stop_keeps_confirmed_same_session_disabled(self):
+        previous=live_store.create_record(self.sub,self.url,self.info)
+        live_store.update_record(previous['id'],status='stopped',reason='manual',finished_at=db.utc_now())
+        live_store.update_monitor(self.sub['id'],completed_session=self.info['session_id'])
+        live_service.stop_recording(self.sub['id'])
+        with patch.object(live_douyin,'lookup',return_value=self.info) as lookup:
+            await live_service.check(self.sub['id'])
+            lookup.assert_not_called()
+        self.assertEqual(len(live_store.recordings(self.sub['id'])),1)
+        self.assertFalse(live_store.monitor(self.sub['id'])['enabled'])
+        self.assertEqual(live_store.monitor(self.sub['id'])['status'],'disabled')
+
     async def test_whole_file_stop_finalization_and_index_link(self):
         source = self.sample()
         record = live_store.create_record(self.sub,self.url,self.info)
