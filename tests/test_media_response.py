@@ -18,11 +18,13 @@ class MediaResponseTests(unittest.IsolatedAsyncioTestCase):
         self.content = bytes(range(256)) * 4096
         self.path.write_bytes(self.content)
 
-    async def request(self, *, method='GET', ranges=None, disconnect=False, fail_send=False):
+    async def request(self, *, method='GET', ranges=None, disconnect=False, fail_send=False,
+                      asgi_spec='2.3'):
         messages, opened, reads = [], [], []
         disconnected = asyncio.Event()
         listener_done = asyncio.Event()
         original_open = anyio.open_file
+        active_receives = 0
 
         class TrackedFile:
             def __init__(self, file):
@@ -42,16 +44,23 @@ class MediaResponseTests(unittest.IsolatedAsyncioTestCase):
             async def seek(self, position):
                 return await self.file.seek(position)
 
+            async def aclose(self):
+                await self.file.aclose()
+
         async def open_tracked(*args, **kwargs):
             file = await original_open(*args, **kwargs)
             opened.append(file)
             return TrackedFile(file)
 
         async def receive():
+            nonlocal active_receives
+            active_receives += 1
             try:
+                self.assertEqual(active_receives, 1, 'ASGI receive must have only one consumer')
                 await disconnected.wait()
                 return {'type': 'http.disconnect'}
             finally:
+                active_receives -= 1
                 listener_done.set()
 
         async def send(message):
@@ -64,7 +73,8 @@ class MediaResponseTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(0)
 
         headers = [(b'range', ranges.encode())] if ranges else []
-        scope = {'type': 'http', 'method': method, 'headers': headers, 'extensions': {}}
+        scope = {'type': 'http', 'method': method, 'headers': headers, 'extensions': {},
+                 'asgi': {'version': '3.0', 'spec_version': asgi_spec}}
         response = MediaFileResponse(self.path)
         with patch.object(anyio, 'open_file', side_effect=open_tracked):
             try:
@@ -75,11 +85,13 @@ class MediaResponseTests(unittest.IsolatedAsyncioTestCase):
         return messages, reads
 
     async def test_disconnected_seek_closes_file_after_one_chunk(self):
-        messages, reads = await self.request(ranges='bytes=0-', disconnect=True)
-        self.assertLessEqual(len(reads), 1)
-        body = b''.join(message.get('body', b'') for message in messages)
-        self.assertEqual(body, self.content[:MediaFileResponse.chunk_size])
-        self.assertLess(len(body), len(self.content))
+        for spec in ('2.3', '2.4'):
+            with self.subTest(asgi_spec=spec):
+                messages, reads = await self.request(ranges='bytes=0-', disconnect=True, asgi_spec=spec)
+                self.assertLessEqual(len(reads), 1)
+                body = b''.join(message.get('body', b'') for message in messages)
+                self.assertEqual(body, self.content[:MediaFileResponse.chunk_size])
+                self.assertLess(len(body), len(self.content))
 
     async def test_complete_range_returns_exact_bytes_and_stops_listener(self):
         messages, _ = await self.request(ranges='bytes=17-100016')

@@ -27,6 +27,12 @@ class MediaFileResponse(FileResponse):
                     disconnected.set()
                     return
 
+        async def receive_disconnect():
+            # Newer FileResponse versions also listen for disconnect. Share
+            # the event so only our watcher consumes the underlying ASGI stream.
+            await disconnected.wait()
+            return {'type': 'http.disconnect'}
+
         async def send_connected(message):
             if disconnected.is_set():
                 raise _PlaybackDisconnected()
@@ -37,7 +43,7 @@ class MediaFileResponse(FileResponse):
         async with anyio.create_task_group() as group:
             group.start_soon(watch_disconnect)
             try:
-                await super().__call__(scope, receive, send_connected)
+                await super().__call__(scope, receive_disconnect, send_connected)
             except _PlaybackDisconnected:
                 pass
             finally:
