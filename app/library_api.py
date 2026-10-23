@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from . import catalog, config, library_service as service, media_jobs, task_manager, local_files, task_files
 from .security import media_path
+from .media_response import MediaFileResponse
 
 router = APIRouter()
 
@@ -202,7 +203,7 @@ def media(root_id: str, path: str):
         full = media_path(path, root=service.root_path(root_id), file_only=True)
     except KeyError:
         raise HTTPException(404, '媒体根不存在')
-    return FileResponse(full, headers={'X-Content-Type-Options': 'nosniff'})
+    return MediaFileResponse(full, headers={'X-Content-Type-Options': 'nosniff'})
 
 
 @router.get('/api/search')

@@ -53,19 +53,32 @@ def fingerprint(records):
     return hashlib.sha256(json.dumps([[r[k] for k in fields] for r in records]).encode()).hexdigest()
 
 
-def _run(args, cancel, *, timeout=3600):
+class _VideoProcessError(ValueError):
+    """A completed FFmpeg command failed; cancellation is never recoverable."""
+
+
+def _run(args, cancel, *, timeout=3600, disk_root=None):
     # Drain diagnostics to a temporary file, not an unbounded in-memory PIPE.
     import tempfile
+    if cancel.is_set():
+        raise ValueError('合并已中止，原始片段和上次合并结果保留')
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen([live_recorder.ffmpeg_exe(), '-hide_banner', '-nostdin', *args],
             stdout=subprocess.DEVNULL, stderr=errors, creationflags=live_recorder.CREATE_HIDDEN)
         deadline = time.monotonic() + timeout
+        check_space_at = 0
         try:
             while process.poll() is None:
                 if cancel.wait(.25) or time.monotonic() >= deadline:
                     raise ValueError('合并已中止，原始片段和上次合并结果保留')
+                if disk_root and time.monotonic() >= check_space_at:
+                    if shutil.disk_usage(disk_root).free < live_recorder.MIN_FREE:
+                        raise ValueError('合并空间不足，已停止处理并保留原件')
+                    check_space_at = time.monotonic() + 2
+            if cancel.is_set():
+                raise ValueError('合并已中止，原始片段和上次合并结果保留')
             if process.returncode:
-                raise ValueError('视频合并或校验失败，原始片段保留，未替换媒体库内容')
+                raise _VideoProcessError('视频合并或校验失败，原始片段保留，未替换媒体库内容')
             errors.seek(0)
             return errors.read(65536).decode('utf-8', errors='replace')
         finally:
@@ -85,6 +98,41 @@ def probe(path):
         raise ValueError('无法确认片段时长或编码，未合并原件')
     duration = int(match[1])*3600 + int(match[2])*60 + float(match[3])
     return duration, (video.groups(), audio.groups() if audio else None)
+
+
+def _verify_video(path, cancel):
+    _run(['-v','error','-xerror','-threads','2','-i',str(path),'-map','0:v:0','-map','0:a:0?',
+          '-threads','2','-fps_mode','passthrough','-enc_time_base','demux','-f','null','-'], cancel)
+
+
+def repair_video(source, destination, cancel):
+    """Create a strictly verified derivative; retain source timestamps and bytes.
+
+    Interrupted live streams can contain damaged frames even after a successful
+    remux. Decode with FFmpeg's recovery and encode a clean browser-compatible
+    file. This cannot restore missing pictures; callers must expose that gap.
+    """
+    source, destination = Path(source), Path(destination)
+    if source.resolve() == destination.resolve() or destination.exists() or destination.is_symlink():
+        raise ValueError('修复输出已存在或与原件相同，未覆盖文件')
+    expected, _ = probe(source)
+    if shutil.disk_usage(destination.parent).free < source.stat().st_size * 1.1 + live_recorder.MIN_FREE:
+        raise ValueError('修复空间不足，原件保留')
+    try:
+        _run(['-v','error','-n','-fflags','+discardcorrupt','-err_detect','ignore_err',
+              '-copyts','-start_at_zero','-threads','2','-i',str(source),'-map','0:v:0','-map','0:a:0?',
+              '-c:v','libx264','-preset','veryfast','-crf','18','-threads','2',
+              '-pix_fmt','yuv420p','-fps_mode','passthrough','-enc_time_base','demux',
+              '-c:a','aac','-b:a','192k','-map_metadata','-1','-movflags','+faststart',
+              '-f','mp4',str(destination)], cancel, timeout=max(3600, expected*4), disk_root=destination.parent)
+        measured, _ = probe(destination)
+        if abs(measured - expected) > 2:
+            raise ValueError('修复后时间轴变化超过 2 秒，原件保留，未切换索引')
+        _verify_video(destination, cancel)
+        return measured
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def _json_lines(path):
@@ -134,13 +182,14 @@ def build(records, cancel):
         return value
     # This exact manifest belongs to this derived revision, never a source.
     # An interrupted rebuild can discard its own generated temporary files.
-    for name in ('recording.mp4.part','recording.mp4','chat.jsonl','chat.events.jsonl',
+    for name in ('recording.mp4.part','recording.repaired.mp4.part','recording.mp4','chat.jsonl','chat.events.jsonl',
                  'chat.meta.json','context.md','.merge-result.json','.concat.txt'):
         path=folder/name
         if path.is_symlink():
             raise ValueError('合并目录包含文件链接，未改动')
         path.unlink(missing_ok=True)
     video = folder/'recording.mp4.part'
+    repaired = folder/'recording.repaired.mp4.part'
     concat = folder/'.concat.txt'
     try:
         with concat.open('x', encoding='utf-8') as stream:
@@ -148,12 +197,19 @@ def build(records, cancel):
                 escaped = path.as_posix().replace("'", "'\\''")
                 stream.write(f"file '{escaped}'\nduration {duration:.6f}\n")
         _run(['-v','error','-n','-f','concat','-safe','0','-i',str(concat),'-map','0:v:0','-map','0:a:0?',
-              '-c','copy','-map_metadata','-1','-movflags','+faststart','-f','mp4',str(video)], cancel)
+              '-c','copy','-map_metadata','-1','-movflags','+faststart','-f','mp4',str(video)], cancel, disk_root=folder)
         measured, _ = probe(video)
         if abs(measured - sum(p[2] for p in parts)) > 2:
             raise ValueError('合并后时长不一致，原件保留，未切换索引')
-        _run(['-v','error','-xerror','-i',str(video),'-map','0:v:0','-map','0:a:0?',
-              '-threads','2','-fps_mode','passthrough','-enc_time_base','demux','-f','null','-'], cancel)
+        recovered = False
+        try:
+            _verify_video(video, cancel)
+        except _VideoProcessError:
+            measured = repair_video(video, repaired, cancel)
+            if abs(measured - sum(p[2] for p in parts)) > 2:
+                raise ValueError('修复后合并时间轴不一致，原件保留，未切换索引')
+            repaired.replace(video)
+            recovered = True
         segments, offset, messages = [], 0, 0
         with (folder/'chat.jsonl').open('x',encoding='utf-8') as chats, (folder/'chat.events.jsonl').open('x',encoding='utf-8') as events:
             previous = None
@@ -186,17 +242,19 @@ def build(records, cancel):
                     segment_id=record['id'],gap_before_seconds=round(gap,3)))+'\n')
                 offset += source_ms
                 previous = {**record, 'duration':duration}
-        has_gaps = any(s['gap_before_seconds']>2 or s['status']=='interrupted' for s in segments) or any(r['chat_status']!='captured' for r in records)
+        has_gaps = recovered or any(s['gap_before_seconds']>2 or s['status']=='interrupted' for s in segments) or any(r['chat_status']!='captured' for r in records)
         chat_status = 'captured_with_gaps' if has_gaps else 'captured'
         meta = dict(schema_version=3, status=chat_status, messages=messages, segments=segments,
                     excluded_records=[r['id'] for r in records if not r['entry_id']],
-                    timezone=ZONE, day=day_of(first), alignment='Concatenated video offsets; real gaps are listed in segments. Null positions have no matching video.')
+                    timezone=ZONE, day=day_of(first), video_repair='decode_reencode' if recovered else 'none',
+                    alignment='Concatenated video offsets; real gaps are listed in segments. Null positions have no matching video.')
         archive.atomic_write_text(folder/'chat.meta.json',json.dumps(meta,ensure_ascii=False,indent=2))
         video.rename(folder/'recording.mp4')
         archive.atomic_write_text(folder/'context.md', f"# 抖音直播 · 每日合并\n\n- **作者**: {first['author']}\n"
             f"- **发布时间**: {first['started_at']}\n- **视频标题**: {day_of(first)} 直播录播\n"
             f"- **来源**: {first['room_url']}\n\n合并 {len(parts)} 个片段，原始文件和每次任务记录保留。"
             + ("本日存在录制或弹幕缺口，未补造缺失内容。" if has_gaps else "")
+            + ("原直播流包含损坏帧，合并副本已转码修复并重新校验；损坏画面无法还原，原片保留。" if recovered else "")
             + "\n弹幕 video_time_ms 对齐合并视频；实际时间保留在 received_at，缺口及分段对应见 chat.meta.json。\n")
         files = [p.name for p in folder.iterdir() if p.is_file() and not p.name.startswith('.') and p.name!='entry.json' and p.stat().st_size]
         result = dict(id=identity,sub_id=first['sub_id'],room_url=first['room_url'],session_id='day:'+day_of(first),
@@ -206,13 +264,16 @@ def build(records, cancel):
             output_rel=folder.relative_to(Path(config.LIBRARY_ROOT).resolve()).as_posix(),
             entry_id=entry.marker['entry_id'],bytes=(folder/'recording.mp4').stat().st_size,
             duration_seconds=measured,chat_status=chat_status,chat_messages=messages,reason=last['reason'],
-            error='存在录制或弹幕缺口；展开片段记录可查看原因' if has_gaps else '',
+            error=('原直播流含损坏帧，合并副本已修复；存在录制或弹幕缺口，原片保留' if recovered else
+                   '存在录制或弹幕缺口；展开片段记录可查看原因' if has_gaps else ''),
             quality=first['quality'],broadcast_started_at=first.get('broadcast_started_at',''),is_aggregate=1,merged_into=None)
         archive.atomic_write_text(receipt,json.dumps(result,ensure_ascii=False))
         entry.complete(files)
         return result
     finally:
         concat.unlink(missing_ok=True)
+        video.unlink(missing_ok=True)
+        repaired.unlink(missing_ok=True)
 
 
 async def merge_day(sub_id, day):
@@ -223,7 +284,7 @@ async def merge_day(sub_id, day):
     signature = fingerprint(records)
     with db.connect() as c:
         old = c.execute('SELECT * FROM live_day_merges WHERE sub_id=? AND day=?',(sub_id,day)).fetchone()
-    if old and old['fingerprint']==signature and old['record_id']:
+    if old and old['fingerprint']==signature and old['record_id'] and not old['error']:
         return live_store.get_record(old['record_id'])
     result = await asyncio.to_thread(build, records, _cancel)
     if result is None:
@@ -239,9 +300,13 @@ async def merge_day(sub_id, day):
     result['entry_id'] = entry['id']
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
-        c.execute('INSERT INTO live_recordings ('+','.join(result)+') VALUES ('+','.join('?' for _ in result)+')',tuple(result.values()))
+        # A crash after this transaction but before task synchronization must
+        # reuse the published revision instead of creating a duplicate or
+        # marking the aggregate as its own hidden source.
+        c.execute('INSERT INTO live_recordings ('+','.join(result)+') VALUES ('+','.join('?' for _ in result)+') '
+                  'ON CONFLICT(id) DO NOTHING',tuple(result.values()))
         ids = [r['id'] for r in records]
-        if old and old['record_id']:
+        if old and old['record_id'] and old['record_id'] != result['id']:
             ids.append(old['record_id'])
         for identity in ids:
             c.execute('UPDATE media_entries SET superseded_by=? WHERE id=(SELECT entry_id FROM live_recordings WHERE id=?)',
@@ -270,16 +335,18 @@ async def _pending(active_subs):
         signature=fingerprint(records)
         with db.connect() as c:
             state=c.execute('SELECT * FROM live_day_merges WHERE sub_id=? AND day=?',(group['sub_id'],group['day'])).fetchone()
-        if state and (state['fingerprint']==signature or state['retry_at']>db.utc_now()):
+        # Back off only the exact source set that failed. A resumed stream adds
+        # a new source and must not inherit the previous attempt's delay.
+        if state and state['fingerprint']==signature and (not state['error'] or state['retry_at']>db.utc_now()):
             continue
         try:
             await merge_day(group['sub_id'],group['day'])
         except Exception as error:
             message = str(error) if isinstance(error, ValueError) else '每日合并暂未完成，原片段保留'
             with db.connect() as c:
-                c.execute('''INSERT INTO live_day_merges(sub_id,day,error,retry_at) VALUES(?,?,?,?)
-                    ON CONFLICT(sub_id,day) DO UPDATE SET error=excluded.error,retry_at=excluded.retry_at''',
-                    (group['sub_id'],group['day'],message,(datetime.now(timezone.utc)+timedelta(minutes=30)).isoformat()))
+                c.execute('''INSERT INTO live_day_merges(sub_id,day,fingerprint,error,retry_at) VALUES(?,?,?,?,?)
+                    ON CONFLICT(sub_id,day) DO UPDATE SET fingerprint=excluded.fingerprint,error=excluded.error,retry_at=excluded.retry_at''',
+                    (group['sub_id'],group['day'],signature,message,(datetime.now(timezone.utc)+timedelta(minutes=30)).isoformat()))
 
 
 def tick(active_subs):

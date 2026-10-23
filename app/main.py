@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from . import config, media_library, script_registry, task_manager, watcher, library_service
 from .library_api import router as library_router
 from .security import LocalOnlyMiddleware, media_path
+from .media_response import MediaFileResponse
 from .redaction import redact_text
 from .runtime import InstanceLock, runtime_identity
 from . import settings
@@ -585,7 +586,7 @@ async def api_scan_sub(sub_id: int):
 # Never expose the entire directory: credentials, databases and source are not media.
 @app.get("/media/{path:path}")
 def api_media_file(path: str):
-    return FileResponse(media_path(path, file_only=True), headers={"X-Content-Type-Options": "nosniff"})
+    return MediaFileResponse(media_path(path, file_only=True), headers={"X-Content-Type-Options": "nosniff"})
 
 # 前端构建产物（存在才挂载）
 _DIST = config.FRONTEND_DIST

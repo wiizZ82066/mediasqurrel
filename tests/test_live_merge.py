@@ -18,7 +18,7 @@ class DailyMergeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.stack=ExitStack()
         self.addCleanup(self.stack.close)
-        self.root=Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.root=Path(self.stack.enter_context(tempfile.TemporaryDirectory(prefix='mediasquirrel-live-merge-')))
         self.library=self.root/'library';self.library.mkdir()
         for name,value in [('DB_PATH',str(self.root/'app.db')),('LIBRARY_ROOT',str(self.library)),('LOG_DIR',str(self.root/'logs'))]:
             self.stack.enter_context(patch.object(config,name,value))
@@ -65,7 +65,8 @@ class DailyMergeTests(unittest.IsolatedAsyncioTestCase):
         empty=self.part('2026-10-19T12:00:03+00:00',missing=True)
         second=self.part('2026-10-19T12:00:05+00:00')
         before={r['id']:hashlib.sha256((live_recorder.folder_for(r)/'recording.mp4').read_bytes()).hexdigest() for r in (first,second)}
-        merged=await live_merge.merge_day(self.sub['id'],'2026-10-19')
+        with patch.object(live_merge,'repair_video',side_effect=AssertionError('healthy sources must stay lossless')):
+            merged=await live_merge.merge_day(self.sub['id'],'2026-10-19')
         self.assertAlmostEqual(merged['duration_seconds'],2,places=1)
         folder=live_recorder.folder_for(merged)
         chat=[json.loads(x) for x in (folder/'chat.jsonl').read_text(encoding='utf-8').splitlines()]
@@ -75,6 +76,7 @@ class DailyMergeTests(unittest.IsolatedAsyncioTestCase):
         meta=json.loads((folder/'chat.meta.json').read_text())
         self.assertEqual(meta['segments'][1]['gap_before_seconds'],4)
         self.assertEqual(meta['excluded_records'],[empty['id']])
+        self.assertEqual(meta['video_repair'],'none')
         again=await live_merge.merge_day(self.sub['id'],'2026-10-19')
         self.assertEqual(again['id'],merged['id'])
         catalog.scan_root(self.root_id)
@@ -119,3 +121,125 @@ class DailyMergeTests(unittest.IsolatedAsyncioTestCase):
             result=await live_merge.merge_day(self.sub['id'],'2026-10-19')
         self.assertTrue(result['entry_id'])
         self.assertEqual(len(list(self.library.rglob('recording.mp4'))),3)
+
+    def audio_fixture(self):
+        subprocess.run([live_recorder.ffmpeg_exe(),'-v','error','-y','-f','lavfi','-i',
+            'testsrc2=s=160x90:r=10','-f','lavfi','-i','sine=frequency=440:sample_rate=48000',
+            '-t','2','-c:v','libx264','-threads','1','-c:a','aac','-ac','2',str(self.source)],
+            check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+            creationflags=live_recorder.CREATE_HIDDEN)
+
+    async def test_interrupted_source_verification_failure_recovers_and_preserves_chat_timeline(self):
+        self.audio_fixture()
+        first=self.part('2026-10-19T12:00:00+00:00')
+        second=self.part('2026-10-19T12:00:10+00:00')
+        live_store.update_record(first['id'],status='interrupted',reason='disconnect',error='网络中断')
+        hashes={r['id']:hashlib.sha256((live_recorder.folder_for(r)/'recording.mp4').read_bytes()).hexdigest()
+                for r in (first,second)}
+        verify=live_merge._verify_video
+        verified=[]
+        def first_verification_fails(path,cancel):
+            # Exercise the fallback deterministically. Some FFmpeg versions
+            # discard a damaged input packet during remux, so source corruption
+            # alone cannot guarantee the merged derivative still fails decode.
+            verified.append(path.name)
+            if path.name=='recording.mp4.part':
+                raise live_merge._VideoProcessError('fixture: damaged decoded frame')
+            return verify(path,cancel)  # The repaired video must really decode.
+        with patch.object(live_merge,'_verify_video',side_effect=first_verification_fails):
+            merged=await live_merge.merge_day(self.sub['id'],'2026-10-19')
+        self.assertEqual(verified,['recording.mp4.part','recording.repaired.mp4.part'])
+        output=live_recorder.folder_for(merged)
+        meta=json.loads((output/'chat.meta.json').read_text())
+        self.assertEqual(meta['video_repair'],'decode_reencode')
+        self.assertEqual(merged['chat_status'],'captured_with_gaps')
+        self.assertIn('损坏帧',merged['error'])
+        self.assertAlmostEqual(merged['duration_seconds'],4,delta=.2)
+        self.assertEqual(live_merge.probe(output/'recording.mp4')[1][1],('aac','48000','stereo'))
+        chats=[json.loads(line) for line in (output/'chat.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual([row['video_time_ms'] for row in chats],[300,1200,2300,3200])
+        self.assertEqual(meta['segments'][1]['gap_before_seconds'],8)
+        self.assertFalse(list(output.glob('*.part')))
+        self.assertFalse((output/'.concat.txt').exists())
+        for r in (first,second):
+            self.assertEqual(hashlib.sha256((live_recorder.folder_for(r)/'recording.mp4').read_bytes()).hexdigest(),hashes[r['id']])
+        with patch.object(live_merge,'_run',side_effect=AssertionError('verified revision must be reused')):
+            self.assertEqual((await live_merge.merge_day(self.sub['id'],'2026-10-19'))['id'],merged['id'])
+
+    async def test_real_corrupt_packet_repairs_to_strictly_decodable_video(self):
+        self.audio_fixture()
+        damaged=self.root/'damaged.mp4'
+        subprocess.run([live_recorder.ffmpeg_exe(),'-v','error','-i',str(self.source),
+            '-c','copy','-bsf:v',r'noise=amount=if(eq(n\,3)\,100\,0)',str(damaged)],
+            check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+            creationflags=live_recorder.CREATE_HIDDEN)
+        before=hashlib.sha256(damaged.read_bytes()).hexdigest()
+        self.assertNotEqual(before,hashlib.sha256(self.source.read_bytes()).hexdigest())
+        repaired=self.root/'repaired.mp4'
+        measured=live_merge.repair_video(damaged,repaired,threading.Event())
+        # repair_video uses the real strict decoder; no mock can hide a broken
+        # output. Duration, AAC audio, and original bytes are verified as well.
+        self.assertAlmostEqual(measured,2,delta=.2)
+        self.assertEqual(live_merge.probe(repaired)[1][1],('aac','48000','stereo'))
+        self.assertEqual(hashlib.sha256(damaged.read_bytes()).hexdigest(),before)
+
+    async def test_repair_rejects_changed_timeline_and_cleans_derived_output(self):
+        destination=self.root/'repaired.mp4'
+        def encode(args,*a,**k):
+            destination.write_bytes(b'generated derivative')
+        before=self.source.read_bytes()
+        with patch.object(live_merge,'probe',side_effect=[(10,()),(5,())]), patch.object(live_merge,'_run',side_effect=encode):
+            with self.assertRaisesRegex(ValueError,'时间轴'):
+                live_merge.repair_video(self.source,destination,threading.Event())
+        self.assertFalse(destination.exists())
+        self.assertEqual(self.source.read_bytes(),before)
+        with self.assertRaisesRegex(ValueError,'相同'):
+            live_merge.repair_video(self.source,self.source,threading.Event())
+        cancel=threading.Event();cancel.set()
+        with self.assertRaisesRegex(ValueError,'中止'):
+            live_merge.repair_video(self.source,destination,cancel)
+        self.assertFalse(destination.exists())
+
+    async def test_repair_supports_video_without_an_audio_track(self):
+        destination=self.root/'silent-repaired.mp4'
+        before=hashlib.sha256(self.source.read_bytes()).hexdigest()
+        measured=live_merge.repair_video(self.source,destination,threading.Event())
+        self.assertAlmostEqual(measured,1,delta=.1)
+        self.assertIsNone(live_merge.probe(destination)[1][1])
+        self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(),before)
+
+    async def test_failure_backoff_applies_only_to_the_source_set_that_failed(self):
+        self.part('2026-10-19T12:00:00+00:00');self.part('2026-10-19T12:00:05+00:00')
+        failing=AsyncMock(side_effect=ValueError('temporary failure'))
+        with patch.object(live_merge,'merge_day',failing):
+            await live_merge._pending(set())
+            await live_merge._pending(set())
+            self.assertEqual(failing.await_count,1)
+            self.part('2026-10-19T12:00:10+00:00')
+            await live_merge._pending(set())
+            self.assertEqual(failing.await_count,2)
+        with db.connect() as c:
+            c.execute("UPDATE live_day_merges SET retry_at='' WHERE sub_id=?",(self.sub['id'],))
+        merged=await live_merge.merge_day(self.sub['id'],'2026-10-19')
+        self.assertEqual(catalog.list_entries(root_id=self.root_id)['total'],1)
+        self.assertAlmostEqual(merged['duration_seconds'],3,delta=.2)
+
+    async def test_task_sync_interruption_resumes_without_hiding_the_aggregate(self):
+        self.part('2026-10-19T12:00:00+00:00');self.part('2026-10-19T12:00:05+00:00')
+        with patch.object(live_tasks,'sync_record',AsyncMock(side_effect=ValueError('sync interrupted'))):
+            await live_merge._pending(set())
+        with db.connect() as c:
+            state=dict(c.execute('SELECT * FROM live_day_merges WHERE sub_id=?',(self.sub['id'],)).fetchone())
+            self.assertTrue(state['record_id'])
+            self.assertEqual(state['error'],'sync interrupted')
+            c.execute("UPDATE live_day_merges SET retry_at='' WHERE sub_id=?",(self.sub['id'],))
+        with patch.object(live_merge,'_run',side_effect=AssertionError('published derivative must be reused')):
+            await live_merge._pending(set())
+        self.assertIsNone(live_store.get_record(state['record_id'])['merged_into'])
+        self.assertEqual(catalog.list_entries(root_id=self.root_id)['total'],1)
+        with db.connect() as c:
+            after=dict(c.execute('SELECT * FROM live_day_merges WHERE sub_id=?',(self.sub['id'],)).fetchone())
+        self.assertEqual(after['record_id'],state['record_id'])
+        self.assertEqual(after['error'],'')
+        self.assertEqual(after['retry_at'],'')
+        self.assertEqual(len(TaskStore().list_page()['items']),1)
