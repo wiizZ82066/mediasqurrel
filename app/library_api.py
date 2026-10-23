@@ -78,6 +78,8 @@ async def detail(entry_id: str):
     entry = await asyncio.to_thread(catalog.get_entry, entry_id)
     if not entry:
         raise HTTPException(404, '媒体条目不存在')
+    from .live_collections import enrich_entry
+    entry = await asyncio.to_thread(enrich_entry, entry)
     service.enrich_page([entry])
     return entry
 

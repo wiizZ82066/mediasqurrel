@@ -16,8 +16,11 @@ async def sync_record(record):
     old = store.get(identity, include_deleted=True)
     live = {key: record[key] for key in ('id', 'sub_id', 'status', 'entry_id', 'quality',
                                         'duration_seconds', 'bytes', 'chat_status', 'chat_messages', 'reason')}
-    live.update(is_aggregate=record.get('is_aggregate',0),merged_into=record.get('merged_into'),author=record['author'])
-    if old and old.get('metadata', {}).get('live') == live and old.get('error', '') == record['error']:
+    live.update(is_aggregate=record.get('is_aggregate',0),is_collection=record.get('is_collection',0),
+                merged_into=record.get('merged_into'),author=record['author'])
+    if (old and old.get('metadata', {}).get('live') == live and old.get('error', '') == record['error']
+            and old.get('finished_at') == record['finished_at']
+            and old.get('params', {}).get('title') == record['title']):
         return
     parent_id = 'live-' + record['previous_id'] if record['previous_id'] else None
     # Follow durable links, independent of task-backfill order or hidden tasks.
@@ -64,6 +67,13 @@ async def reconcile():
                 AND (t.id IS NULL OR json_extract(t.metadata_json,'$.live.status') IS NOT r.status
                      OR json_extract(t.metadata_json,'$.live.entry_id') IS NOT r.entry_id
                      OR json_extract(t.metadata_json,'$.live.merged_into') IS NOT r.merged_into
+                     OR json_extract(t.metadata_json,'$.live.is_collection') IS NOT r.is_collection
+                     OR json_extract(t.metadata_json,'$.live.bytes') IS NOT r.bytes
+                     OR json_extract(t.metadata_json,'$.live.duration_seconds') IS NOT r.duration_seconds
+                     OR json_extract(t.metadata_json,'$.live.chat_messages') IS NOT r.chat_messages
+                     OR json_extract(t.metadata_json,'$.live.chat_status') IS NOT r.chat_status
+                     OR t.finished_at IS NOT r.finished_at
+                     OR json_extract(t.params_json,'$.title') IS NOT r.title
                      OR t.error IS NOT r.error)
                 ORDER BY r.id LIMIT 50''', (after,))]
         if not records:

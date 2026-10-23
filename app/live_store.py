@@ -101,7 +101,7 @@ def get_record(identity):
 def latest_for_monitors():
     with db.connect() as connection:
         rows = connection.execute('''SELECT r.* FROM live_monitors m JOIN live_recordings r ON r.id=(
-            SELECT id FROM live_recordings WHERE sub_id=m.sub_id AND merged_into IS NULL ORDER BY started_at DESC,id DESC LIMIT 1)''')
+            SELECT id FROM live_recordings WHERE sub_id=m.sub_id AND is_aggregate=0 ORDER BY started_at DESC,id DESC LIMIT 1)''')
         return {row['sub_id']: dict(row) for row in rows}
 
 

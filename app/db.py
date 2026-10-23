@@ -87,11 +87,13 @@ def _migrations():
     from .live_store import SCHEMA as live
     from .live_scheduling import SCHEMA as live_schedules
     from .live_merge import SCHEMA as live_daily
+    from .live_collections import SCHEMA as live_collections
     return [(1, "subscription-history", subscriptions), (2, "task-history", tasks),
             (3, "media-catalog", catalog), (4, "data-maintenance", maintenance),
             (5, "subscription-schedules", schedules), (6, "restart-path-transitions", paths),
             (7, "subscription-topic-filters", filters), (8, "douyin-live-recording", live),
-            (9, "live-profile-and-schedules", live_schedules), (10, "daily-live-archives", live_daily)]
+            (9, "live-profile-and-schedules", live_schedules), (10, "daily-live-archives", live_daily),
+            (11, "live-recording-collections", live_collections)]
 
 
 def migrate(path=None, *, migrations=None):

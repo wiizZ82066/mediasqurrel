@@ -181,7 +181,7 @@ class LiveTests(unittest.IsolatedAsyncioTestCase):
         db.migrate()
         self.assertEqual(live_store.get_record(record['id'])['status'], 'interrupted')
         with db.connect() as connection:
-            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], 10)
+            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], 11)
 
     async def test_disable_during_lookup_cannot_start_a_recording(self):
         gate = threading.Event()

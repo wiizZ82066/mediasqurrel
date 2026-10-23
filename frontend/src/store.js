@@ -12,6 +12,7 @@ export const store = reactive({
   toasts: [],
   downloadState: { selectedId: '', drafts: {}, task: null },
   libraryState: null,
+  libraryRevision: 0,
   libraryAuthorsCollapsed: false,
   preferences: { density: 'comfortable', default_volume: 50 },
   taskListState: { items: [], cursor: '', nextCursor: null, previous: [], status: '', q: '', scrollTop: 0, loaded: false },
@@ -94,7 +95,9 @@ export function connectWS() {
   ws.onmessage = (ev) => {
     let msg
     try { msg = JSON.parse(ev.data) } catch { return }
-    if (msg.type === 'task_update') {
+    if (msg.type === 'library_updated' || msg.type === 'library_indexed') {
+      store.libraryRevision++
+    } else if (msg.type === 'task_update') {
       upsertTaskSummary(msg.task)
       if (!msg.task.metadata?.live && ['success', 'failed', 'interrupted'].includes(msg.task.status) && terminalEvents.get(msg.task.id) !== msg.task.status) {
         terminalEvents.set(msg.task.id, msg.task.status)

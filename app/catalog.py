@@ -643,6 +643,8 @@ def list_entries(*, root_id=None, author=None, q="", date_from=None, date_to=Non
         rows = rows[:page_size]
         live_paths = _cover_live_paths(connection, rows)
     items = [_summary(row) | {"cover_live_rel": live_paths.get(row["id"])} for row in rows]
+    from .live_collections import enrich_summaries
+    enrich_summaries(items, database=database)
     next_cursor = base64.urlsafe_b64encode(json.dumps([fingerprint, rows[-1]['sort_at'], rows[-1]['id']]).encode()).decode() if has_more else None
     return {"items": items, "total": total, "page": page, "page_size": page_size, "next_cursor": next_cursor}
 

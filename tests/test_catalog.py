@@ -153,15 +153,20 @@ class CatalogTests(unittest.TestCase):
             with connect(database) as connection:
                 connection.set_trace_callback(queries.append)
                 yield connection
+        read_counts = []
         with patch.object(catalog.db, "connect", traced), patch.object(catalog, "get_entry", side_effect=AssertionError("details are not list data")):
             for size in (1, 3):
                 queries.clear()
                 page = self.entries(page_size=size)
                 reads = [query for query in queries if query.lstrip().upper().startswith(("SELECT", "WITH"))]
-                self.assertEqual(len(reads), 3)  # count, bounded page, bounded Live pairing
+                # Count, page, Live pairing, optional collection schema/batch.
+                # Increasing the page must never add per-entry detail reads.
+                self.assertLessEqual(len(reads), 5)
+                read_counts.append(len(reads))
                 self.assertEqual(len(page["items"]), size)
                 self.assertTrue(all(item["cover_live_rel"] == "live/live01.mov" for item in page["items"]))
                 self.assertEqual(sum("WITH cover_page" in query for query in reads), 1)
+        self.assertEqual(read_counts[0], read_counts[1])
 
     def test_cover_analysis_event_pairing_matches_persisted_cover_and_discards_stale_work(self):
         import numpy as np

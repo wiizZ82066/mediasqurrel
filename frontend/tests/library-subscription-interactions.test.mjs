@@ -97,6 +97,59 @@ function gallery() {
   ] }
 }
 
+function collectionGallery() {
+  return { id:'collection-anchor',root_id:'test-root',rel_dir:'author/first',collection:{part_count:2},gallery:[
+    {id:'first',type:'video',rel:'recording.mp4',source_entry_id:'first-entry',root_id:'test-root',rel_dir:'author/first'},
+    {id:'second',type:'video',rel:'recording.mp4',source_entry_id:'second-entry',root_id:'test-root',rel_dir:'author/second'},
+  ] }
+}
+
+test('a collection advances only on ended, uses the next source and preserves player preferences',async t=>{
+  const {state}=setupComponent('Library',t)
+  state.gallery.value=collectionGallery()
+  const first=mediaDouble(),second=mediaDouble()
+  first.volume=.24;first.muted=false;first.playbackRate=1.25
+  state.segmentVideo.value=first
+  const advancing=state.continueCollection({target:first})
+  state.segmentVideo.value=second
+  second.playback.resolve()
+  await advancing
+  assert.equal(state.galleryIndex.value,1)
+  assert.equal(second.plays,1)
+  assert.equal(second.volume,.24)
+  assert.equal(second.playbackRate,1.25)
+  assert.equal(state.currentLocation.value.id,'second-entry')
+  assert.match(state.mediaUrl(state.currentLocation.value,state.currentItem.value.rel),/author\/second\/recording.mp4$/)
+  await state.continueCollection({target:second})
+  assert.equal(state.galleryIndex.value,1)
+  assert.equal(second.plays,1)
+})
+
+test('collection file operations target the selected source and closing cancels delayed continuation',async t=>{
+  const {state,api}=setupComponent('Library',t)
+  state.gallery.value=collectionGallery();state.selectMedia(1)
+  let opened
+  api.libraryOpen=async (...args)=>{opened=args;return {ok:true}}
+  await state.openCurrentFile('default')
+  assert.deepEqual(opened,['second-entry','recording.mp4','default'])
+  state.selectMedia(0)
+  const first=mediaDouble(),second=mediaDouble();first.volume=.5;first.playbackRate=1
+  state.segmentVideo.value=first
+  const advancing=state.continueCollection({target:first})
+  state.closeGallery();state.segmentVideo.value=second
+  await advancing
+  assert.equal(second.plays,0)
+})
+
+test('ordinary video galleries do not automatically play unrelated items',async t=>{
+  const {state}=setupComponent('Library',t)
+  const entry=collectionGallery();delete entry.collection
+  state.gallery.value=entry
+  const first=mediaDouble();state.segmentVideo.value=first
+  await state.continueCollection({target:first})
+  assert.equal(state.galleryIndex.value,0)
+})
+
 test('startup repair saves immediately and rereads the persisted registration', async t => {
   const { state, api } = setupComponent('Settings', t)
   let saved = { enabled: true, available: true, supported: true, method: 'legacy_run', matches_current: false }
@@ -494,6 +547,45 @@ test('matching cached entries are restored without a first-page refresh', async 
   await restored.mount()
   assert.deepEqual(restored.state.entries.value.map(item => item.id), ['saved-entry'])
   assert.equal(restored.state.nextCursor.value, 'saved-cursor')
+})
+
+test('collection updates invalidate cached cards without interrupting playback or accepting a stale response', async t => {
+  const original=setupComponent('Library',t)
+  original.state.rootId.value='test-root'
+  await vue.nextTick()
+  original.api.libraryEntries=async()=>({items:[{id:'old-segment'}],total:1,next_cursor:null})
+  await original.state.loadEntries()
+  original.state.gallery.value=collectionGallery()
+  const response=deferred()
+  original.api.libraryEntries=()=>response.promise
+  const loading=original.state.loadEntries()
+  original.store.libraryRevision=1
+  original.event({type:'library_updated'})
+  response.resolve({items:[{id:'old-segment'}],total:1,next_cursor:null})
+  await loading
+  assert.equal(original.state.changed.value,true)
+  assert.equal(original.state.gallery.value.id,'collection-anchor')
+  original.unmount()
+  assert.deepEqual(original.store.libraryState.entries,[])
+})
+
+test('returning after a background collection update reloads the saved library snapshot', async t => {
+  const original=setupComponent('Library',t)
+  original.state.rootId.value='test-root'
+  await vue.nextTick()
+  original.api.libraryEntries=async()=>({items:[{id:'old-segment'}],total:1,next_cursor:null})
+  await original.state.loadEntries()
+  original.unmount()
+  original.store.libraryRevision=1
+  const restored=setupComponent('Library',t,{},original.store)
+  let requests=0
+  restored.api.libraryRoots=async()=>({items:[{id:'test-root'}]})
+  restored.api.libraryEntries=async()=>{requests++;return {items:[{id:'collection-anchor'}],total:1,next_cursor:null}}
+  restored.api.libraryAuthors=async()=>({items:[],total:0})
+  restored.api.libraryScans=async()=>({items:[]})
+  await restored.mount()
+  assert.equal(requests,1)
+  assert.deepEqual(restored.state.entries.value.map(item=>item.id),['collection-anchor'])
 })
 
 test('expanding a small library viewport tops up once without following an unfilled cursor chain', async t => {

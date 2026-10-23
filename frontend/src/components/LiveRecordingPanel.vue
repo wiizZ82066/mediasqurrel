@@ -70,7 +70,7 @@ onBeforeUnmount(()=>{disposed=true;clearInterval(timer)})
 <template>
   <section class="live-panel" aria-label="直播录制设置与记录">
     <div class="live-heading"><h3>直播与弹幕</h3><span class="live-state">{{ labels[liveState(monitor)] }}</span></div>
-    <p class="live-help">独立于作品扫描与下载标签。开启后定期检查，下播或停止后保存视频和弹幕；同一博主同一天的片段自动无损合并，原件和中断记录保留。</p>
+    <p class="live-help">独立于作品扫描与下载标签。下播或停止后保存视频和弹幕；同一博主、相同直播编号的分段归入合集，跨午夜也能连续浏览。保留每段原文件与时间，不拼接或补齐缺失内容。</p>
     <p v-if="loading" class="live-help" role="status">正在读取录播设置…</p>
     <form v-else ref="formElement" @submit.prevent="save">
       <label :for="`live-source-${sub.id}`">检查对象</label>
@@ -97,10 +97,10 @@ onBeforeUnmount(()=>{disposed=true;clearInterval(timer)})
       </div>
     </form>
     <p class="live-help">上次检查 {{ time(monitor?.checked_at) }} · 下次 {{ monitor?.enabled ? (monitor.next_check_at ? time(monitor.next_check_at) : '计划已结束') : '已关闭' }}（本地时间）</p>
-    <p class="live-help">最多同时录制 2 位博主，剩余空间不足 2 GiB 时停止。关闭网页可继续；退出程序后停止检查。按北京时间的录制日期合并；编码或尺寸不兼容时保留片段并提示，不降低画质。</p>
+    <p class="live-help">最多同时录制 2 位博主，剩余空间不足 2 GiB 时停止。关闭网页可继续；退出程序后停止检查。分段分别保存并顺序播放，不拼接、不转码；每段保留开始时间、收尾时间和中断记录。</p>
     <p v-if="error || monitor?.error" class="live-error" role="alert">{{ error || monitor.error }}</p>
     <h4>录播记录</h4>
-    <p v-if="merging" class="live-help" role="status">正在后台检查和合并每日录播，校验通过后更新媒体库与任务记录。</p>
+    <p v-if="merging" class="live-help" role="status">正在整理录播记录。</p>
     <p v-for="failure in mergeErrors" :key="failure.day" class="live-error">{{failure.day}}：{{failure.error}}</p>
     <p v-if="!records.length" class="live-help">尚无录播。弹幕保存为 JSONL，仅保留文字、Emoji 和时间，不保存发送者身份。以视频播放位置估算时间轴；采集缺口另存记录，不自动删除。</p>
     <article v-for="item in records" :key="item.id" class="live-record">
@@ -109,9 +109,9 @@ onBeforeUnmount(()=>{disposed=true;clearInterval(timer)})
       <p v-if="item.quality">实际画质：{{qualities[item.quality] || item.quality}}</p>
       <ActivityProgress v-if="['recording','finalizing'].includes(item.status)" status="running" :progress="{label:item.status==='finalizing'?'正在保存视频与弹幕…':`已录制 ${duration(item.duration_seconds)} · ${size(item.bytes)}`}" label="直播录制进度"/>
       <p v-if="item.chat">弹幕 {{ item.chat.messages || 0 }} 条 · {{ item.chat.status==='captured'?'采集已结束':item.chat.status==='connected'?'采集中':item.chat.status==='captured_with_gaps'?'存在采集缺口':item.chat.status==='write_failed'?'写入失败，已有数据保留':['interrupted','unavailable'].includes(item.chat.status)?'采集未正常结束，已有数据保留':'正在连接或恢复' }}</p>
-      <p v-if="item.previous_id">这是同场直播中断后的新记录，前一记录保留。</p>
+      <p v-if="item.previous_id">这是相同直播编号的后续分段，前一记录保留。</p>
       <p v-if="item.error" class="live-error">{{ item.error }}</p>
-      <details v-if="item.parts?.length" class="live-parts"><summary>查看 {{item.parts.length}} 次录制与中断记录</summary><div v-for="part in item.parts" :key="part.id"><p>{{time(part.started_at)}} · {{labels[part.status]}} · {{duration(part.duration_seconds)}} · 弹幕 {{part.chat_messages}} 条</p><p v-if="part.error" class="live-error">{{part.error}}</p><RouterLink class="btn btn-ghost btn-sm" :to="{path:'/tasks',query:{task:'live-'+part.id}}">原任务记录</RouterLink></div></details>
+      <details v-if="item.parts?.length" class="live-parts"><summary>查看 {{item.parts.length}} 个分段与中断记录</summary><div v-for="part in item.parts" :key="part.id"><p>开始 {{time(part.started_at)}} · 收尾 {{time(part.finished_at)}} · {{labels[part.status]}} · {{duration(part.duration_seconds)}} · 弹幕 {{part.chat_messages}} 条</p><p v-if="part.gap_before_seconds > 0">距上一段收尾 {{duration(part.gap_before_seconds)}}，此间未录制。</p><p v-if="part.error" class="live-error">{{part.error}}</p><RouterLink class="btn btn-ghost btn-sm" :to="{path:'/tasks',query:{task:'live-'+part.id}}">原任务记录</RouterLink></div></details>
       <div class="live-actions">
         <button class="btn btn-ghost btn-sm" :disabled="active || saving" @click="addTime(item)">{{item.broadcast_started_at?'将开播时间加入检查计划':'将录制时间加入检查计划'}}</button>
         <RouterLink v-if="item.entry_id" class="btn btn-ghost btn-sm" :to="{path:'/library',query:{entry_id:item.entry_id}}">查看媒体库</RouterLink>

@@ -6,7 +6,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from . import config, db, live_douyin, live_recorder, live_service, live_store, scheduling, watcher, live_merge
+from . import config, db, live_douyin, live_recorder, live_service, live_store, scheduling, watcher, live_collections
 
 router = APIRouter()
 
@@ -28,6 +28,8 @@ def enrich_records(records):
     for record in records:
         record['chat'] = {'status': record['chat_status'], 'messages': record['chat_messages']}
         record['can_publish'] = False
+        if record.get('is_collection'):
+            continue  # Its anchor sidecar describes one source, not the collection.
         try:
             folder = live_recorder.folder_for(record)
             record['can_publish'] = record['status'] == 'interrupted' and not record['entry_id'] and any(
@@ -81,15 +83,18 @@ def monitor_status(monitor, record=None):
 def status(sub_id: int, offset: int = 0):
     _sub(sub_id)
     records = enrich_records(live_store.recordings(sub_id, limit=20, offset=offset))
-    latest = records[0] if records and offset == 0 else next(iter(live_store.recordings(sub_id, limit=1)), None)
+    latest = live_store.latest_for_monitors().get(sub_id)
     with db.connect() as c:
         for record in records:
-            if record.get('is_aggregate'):
+            if record.get('is_collection'):
+                record['parts']=[{k:r[k] for k in ('id','status','started_at','finished_at','duration_seconds',
+                    'chat_messages','reason','error','entry_id','gap_before_seconds','gap_basis')}
+                    for r in live_collections.parts(c, record['id'])]
+            elif record.get('is_aggregate'):
                 record['parts']=[{k:r[k] for k in ('id','status','started_at','finished_at','duration_seconds','chat_messages','reason','error','entry_id')}
                     for r in c.execute('SELECT * FROM live_recordings WHERE merged_into=? AND is_aggregate=0 ORDER BY started_at',(record['id'],))]
-        errors=[dict(r) for r in c.execute("SELECT day,error FROM live_day_merges WHERE sub_id=? AND error<>'' ORDER BY day DESC LIMIT 10",(sub_id,))]
     return {'monitor': monitor_status(live_store.monitor(sub_id), latest), 'records': records,
-            'merge_errors':errors, 'merging':live_merge.busy()}
+            'merge_errors':[], 'merging':False}
 
 
 @router.patch('/api/subs/{sub_id}/live')
