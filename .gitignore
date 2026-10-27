@@ -22,6 +22,7 @@
 !/docs/guide.md
 !/docs/images/
 /docs/images/*
+!/docs/images/home.png
 !/docs/images/library.png
 !/docs/images/viewer.png
 !/docs/images/logo.svg
