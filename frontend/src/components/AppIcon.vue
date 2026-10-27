@@ -11,6 +11,7 @@ defineProps({ name: { type: String, required: true }, size: { type: [Number, Str
       <path d="m40 20 4 1-4 3" fill="#322a28"/><path d="M29 29h8" stroke="#a45b34" stroke-width="3"/>
       <path d="M34 29c0-5 7-5 7 0 0 4-3 6-3 6s-4-2-4-6" fill="#dea654"/><path d="M34 28h7" stroke="#735439" stroke-width="3"/>
     </g>
+    <g v-else-if="name === 'home'" stroke="#648cca" stroke-width="3"><path d="m5 22 19-16 19 16"/><path d="M10 20v21h28V20L24 9Z" fill="#e1eaf7"/><path d="M20 41V28h8v13" fill="#a5c1e7"/></g>
     <g v-else-if="name === 'download'" stroke="#2779c9" stroke-width="3.5"><path d="M7 29v10h34V29" fill="#d9eaf8"/><path d="M24 7v24m-9-9 9 9 9-9"/></g>
     <g v-else-if="name === 'tasks'" stroke="#9070bc" stroke-width="3"><rect x="9" y="9" width="30" height="33" rx="5" fill="#eee5f8"/><rect x="17" y="5" width="14" height="8" rx="3" fill="#d2bce9"/><path d="m16 23 3 3 5-6m3 4h5m-16 9h16"/></g>
     <g v-else-if="name === 'library' || name === 'image'" stroke="#438f73" stroke-width="3"><rect x="6" y="8" width="36" height="32" rx="5" fill="#def0e4"/><circle cx="16" cy="19" r="4" fill="#f6cc73" stroke="none"/><path d="m7 35 11-10 8 6 7-11 8 14" fill="#94c8af"/></g>

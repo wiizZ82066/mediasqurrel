@@ -3,6 +3,8 @@ import { subscriptionHomepage, newerBatch } from '../src/subscription-homepage.j
 import { scanCoverageNotice, scanStatusText, scanBadge } from '../src/subscription-scan.js'
 import { liveLabels, liveDuration, liveSize } from '../src/live-status.js'
 import { taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary } from '../src/task-presentation.js'
+import { homeTime, homeThumbnail, nextScanLabel } from '../src/home-presentation.js'
+import { livePresentation } from '../src/live-status.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -16,7 +18,7 @@ const vue = require('vue')
 // Execute the real SFC setup and watchers with in-memory API/media doubles.
 // Browser layout, pointer dispatch and video decoding remain browser QA concerns.
 const originalGlobals = Object.fromEntries(['document', 'window', 'Image'].map(key => [key, globalThis[key]]))
-globalThis.document = { querySelector: () => null, activeElement: null }
+globalThis.document = { querySelector: () => null, activeElement: null, addEventListener: () => {}, removeEventListener: () => {} }
 globalThis.window = { addEventListener: () => {}, matchMedia: () => ({ matches: true }), removeEventListener: () => {} }
 globalThis.Image = class { set src(value) { this.value = value } }
 after(() => {
@@ -51,14 +53,14 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
   assert.deepEqual(template.errors, [])
   const api = { subBatch: async () => ({status:'idle'}) }, mounted = [], cleanups = [], timers = new Map()
   let timerId = 0
-  const store = sharedStore || vue.reactive({ tasks: [], subs: [], libraryState: savedState, libraryAuthorsCollapsed: false,
+  const store = sharedStore || vue.reactive({ tasks: [], subs: [], libraryState: savedState, libraryAuthorsCollapsed: false, homeState: {data:null,scrollTop:0},
     taskListState: {items:[],previous:[],q:'',status:'',cursor:''} })
   let taskListener
   const scope = vue.effectScope()
   const env = {
     ...vue, api, store, scanBadge, liveLabels, liveDuration, liveSize, taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary, removeTaskSummary: () => {}, liveState: monitor => monitor?.runtime_status || monitor?.status, LiveStatus: {},
-    setInterval: () => 0, clearInterval: () => {},
-    toast: () => {}, upsertTaskSummary: () => {}, MaintenancePanel: {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},
+    setInterval: () => 0, clearInterval: () => {}, homeTime, homeThumbnail, nextScanLabel, livePresentation,
+    toast: () => {}, upsertTaskSummary: () => {}, MaintenancePanel: {}, StartupScreen: {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},
     onTaskEvent: fn => { taskListener=fn; return () => {} }, onMounted: fn => mounted.push(fn),
     onBeforeUnmount: fn => cleanups.push(fn),
     useRoute: () => ({ query: {} }), useRouter: () => ({ replace: () => {} }),
@@ -796,4 +798,33 @@ test('task pagination reaches fifth page, shows the end, and returns to earlier 
   await state.previousPage()
   assert.equal(state.tasks.value[0].id,'150')
   assert.equal(state.previous.value.length,3)
+})
+
+
+test('home leaves cached status visible on failure and replaces it only after a successful retry', async t => {
+  const vm = setupComponent('Home', t)
+  const prior = { downloads:{running:2,queued:70,items:[]}, live:{active:0,enabled:1}, scans:{active:0}, recent:[] }
+  vm.state.data.value = prior
+  vm.api.home = async () => { throw new Error('offline') }
+  await vm.state.refresh()
+  assert.equal(vm.state.downloads.value.queued, 70)
+  assert.match(vm.state.error.value, /重试/)
+  vm.api.home = async () => ({...prior,downloads:{running:0,queued:1,items:[]}})
+  await vm.state.refresh()
+  assert.equal(vm.state.error.value, '')
+  assert.equal(vm.store.homeState.data.downloads.queued, 1)
+})
+
+test('home deduplicates requests and discards a response after leaving the page', async t => {
+  const vm = setupComponent('Home', t), response = deferred()
+  let requests = 0, signal
+  vm.api.home = async received => { requests++; signal=received; return response.promise }
+  const first = vm.state.refresh()
+  await vm.state.refresh()
+  assert.equal(requests, 1)
+  vm.unmount()
+  assert.equal(signal.aborted, true)
+  response.resolve({downloads:{running:9},recent:[]})
+  await first
+  assert.equal(vm.store.homeState.data, null)
 })

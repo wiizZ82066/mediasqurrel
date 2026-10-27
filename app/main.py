@@ -22,6 +22,7 @@ from . import settings
 from . import settings_api, maintenance, db
 from . import windows_api, subscription_batch, live_service
 from .live_api import router as live_router
+from .home_api import router as home_router
 from . import scanners  # noqa: F401  (import 即注册各平台扫描器)
 
 
@@ -169,6 +170,7 @@ app.include_router(library_router)
 app.include_router(settings_api.router)
 app.include_router(windows_api.router)
 app.include_router(live_router)
+app.include_router(home_router)
 
 
 # ---------------------------------------------------------------- 健康检查

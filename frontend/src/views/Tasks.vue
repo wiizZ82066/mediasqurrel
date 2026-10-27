@@ -412,7 +412,7 @@ onBeforeUnmount(() => {
     <div v-if="!loading && !error && !tasks.length" class="card empty">
       <svg class="empty-mark" viewBox="0 0 48 48" fill="none" aria-hidden="true"><rect x="11" y="8" width="26" height="34" rx="5" fill="#e8f1ff" stroke="#5287ca" stroke-width="2"/><path d="M18 19h12M18 26h12M18 33h7" stroke="#5287ca" stroke-width="2" stroke-linecap="round"/><rect x="19" y="5" width="10" height="6" rx="2" fill="#84b1e8"/></svg>
       <p>{{ query || status ? '没有符合条件的任务' : '还没有下载或录播记录' }}</p>
-      <router-link to="/" class="btn btn-primary">开始下载</router-link>
+      <router-link to="/download" class="btn btn-primary">开始下载</router-link>
     </div>
     <div class="task-list" :aria-busy="loading">
       <article v-for="task in tasks" :key="task.id" class="card task-card">

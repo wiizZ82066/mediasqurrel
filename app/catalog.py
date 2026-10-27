@@ -573,6 +573,19 @@ def _summary(row):
     return result
 
 
+def recent_entries(*, limit=8, database=None):
+    """Recent imports, rather than recent publication dates. Never return the full catalog."""
+    with db.connect(database) as connection:
+        rows = connection.execute(f'''SELECT {_SUMMARY_COLUMNS} FROM media_entries
+            WHERE availability='present' AND superseded_by IS NULL
+            ORDER BY imported_at DESC,id DESC LIMIT ?''', (max(1, min(12, int(limit))),)).fetchall()
+        live_paths = _cover_live_paths(connection, rows)
+    items = [_summary(row) | {'cover_live_rel': live_paths.get(row['id'])} for row in rows]
+    from .live_collections import enrich_summaries
+    enrich_summaries(items, database=database)
+    return items
+
+
 def list_entries(*, root_id=None, author=None, q="", date_from=None, date_to=None,
                  page=1, page_size=60, status=None, sort="desc", platform=None,
                  media_type=None, cursor=None, database=None):

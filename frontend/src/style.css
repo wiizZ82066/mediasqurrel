@@ -1,22 +1,28 @@
 /* ============================================================
-   Media Squirrel — Apple 风格设计系统（依据 DESIGN.md）
+   Media Squirrel — 亮白相册与状态组件（依据 DESIGN.md）
    ============================================================ */
 
 :root {
-  --bg: #f5f5f7;
-  --text: #1d1d1f;
-  --text-2: #6e6e73;
-  --blue: #0071e3;
-  --blue-hover: #0077ed;
-  --green: #34c759;
-  --orange: #ff9500;
-  --red: #ff3b30;
-  --surface: rgba(255, 255, 255, 0.72);
-  --surface-strong: rgba(255, 255, 255, 0.9);
-  --border: rgba(0, 0, 0, 0.06);
-  --radius-card: 20px;
-  --shadow-card: 0 8px 32px rgba(0, 0, 0, 0.08);
-  --shadow-card-hover: 0 14px 44px rgba(0, 0, 0, 0.14);
+  color-scheme: only light;
+  --bg: #ffffff;
+  --sidebar-bg: #f8faff;
+  --selected: #edf3ff;
+  --soft-blue: #eef4ff;
+  --soft-orange: #fff3e9;
+  --soft-green: #edf8f2;
+  --text: #222b38;
+  --text-2: #667085;
+  --blue: #3e66bf;
+  --blue-hover: #3459aa;
+  --green: #397454;
+  --orange: #a56b22;
+  --red: #c6473d;
+  --surface: #ffffff;
+  --surface-strong: #ffffff;
+  --border: #e7edf5;
+  --radius-card: 10px;
+  --shadow-card: 0 2px 8px rgba(84, 103, 137, 0.035);
+  --shadow-card-hover: 0 4px 16px rgba(84, 103, 137, 0.08);
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --font: -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC",
     "Segoe UI", "Microsoft YaHei", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
@@ -45,15 +51,13 @@ body {
 }
 
 .sidebar {
-  width: 232px;
+  width: 216px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  padding: 20px 14px;
-  background: rgba(255, 255, 255, 0.55);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border-right: 1px solid rgba(255, 255, 255, 0.5);
+  padding: 26px 12px 20px;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
 }
 
 .brand {
@@ -61,7 +65,7 @@ body {
   align-items: center;
   gap: 10px;
   padding: 6px 10px 18px;
-  font-size: 17px;
+  font-size: 15px;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
@@ -71,10 +75,10 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
-  margin-bottom: 2px;
-  border-radius: 980px;
-  font-size: 14.5px;
+  padding: 12px 14px;
+  margin-bottom: 5px;
+  border-radius: 10px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--text);
   text-decoration: none;
@@ -85,8 +89,8 @@ body {
   width: 100%;
   font-family: var(--font);
 }
-.nav-item:hover { background: rgba(0, 0, 0, 0.045); }
-.nav-item.active { background: rgba(0, 0, 0, 0.07); font-weight: 600; }
+.nav-item:hover { background: #f0f4fb; }
+.nav-item.active { background: var(--selected); color:var(--blue); font-weight: 600; }
 .nav-item .icon { font-size: 17px; width: 22px; text-align: center; }
 .nav-item .badge {
   margin-left: auto;
@@ -115,19 +119,19 @@ body {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 36px 44px 60px;
+  padding: 36px 36px 60px;
   scroll-behavior: auto;
 }
-.content-inner { max-width: 1080px; margin: 0 auto; }
+.content-inner { max-width: 1320px; margin: 0 auto; }
 
 /* ---------- 排版 ---------- */
 .page-title {
-  font-size: 30px;
-  font-weight: 700;
+  font-size: 28px;
+  font-weight: 650;
   letter-spacing: -0.02em;
   margin-bottom: 6px;
 }
-.page-sub { font-size: 14px; color: var(--text-2); margin-bottom: 28px; }
+.page-sub { font-size: 13px; color: var(--text-2); margin-bottom: 26px; line-height:1.7; }
 .section-title {
   font-size: 19px;
   font-weight: 600;
@@ -138,12 +142,10 @@ body {
 /* ---------- 卡片 ---------- */
 .card {
   background: var(--surface);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.6);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
-  padding: 26px 28px;
+  padding: 24px;
 }
 .card.hoverable:hover {
   box-shadow: var(--shadow-card-hover);
@@ -155,11 +157,11 @@ body {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 11px 24px;
+  padding: 10px 18px;
   border: none;
-  border-radius: 980px;
+  border-radius: 8px;
   font-family: var(--font);
-  font-size: 14.5px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   user-select: none;
@@ -170,16 +172,16 @@ body {
 .btn-primary {
   background: var(--blue);
   color: #fff;
-  box-shadow: 0 6px 18px rgba(0, 113, 227, 0.35);
+  box-shadow: none;
 }
 .btn-primary:hover:not(:disabled) { background: var(--blue-hover); }
 
 .btn-ghost {
-  background: rgba(255, 255, 255, 0.8);
+  background: #fff;
   color: var(--text);
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid #dce4ef;
 }
-.btn-ghost:hover:not(:disabled) { background: #fff; }
+.btn-ghost:hover:not(:disabled) { background: var(--sidebar-bg); }
 
 .btn-danger-ghost {
   background: transparent;
@@ -203,9 +205,9 @@ body {
 .input, .textarea, .select {
   width: 100%;
   padding: 11px 14px;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid #dce4ef;
+  border-radius: 8px;
+  background: #fff;
   font-family: var(--font);
   font-size: 14px;
   color: var(--text);
@@ -213,7 +215,7 @@ body {
 }
 .input:focus, .textarea:focus, .select:focus {
   border-color: var(--blue);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.25);
+  box-shadow: 0 0 0 3px rgba(62, 102, 191, 0.12);
 }
 .textarea { min-height: 110px; resize: vertical; line-height: 1.6; }
 
@@ -283,18 +285,18 @@ body {
 
 /* ---------- 日志终端 ---------- */
 .terminal {
-  background: rgba(20, 22, 28, 0.92);
-  border-radius: 14px;
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   padding: 16px 18px;
   font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
   font-size: 12.5px;
   line-height: 1.75;
-  color: #d8dee9;
+  color: var(--text);
   overflow-y: auto;
   max-height: 340px;
-  backdrop-filter: blur(10px);
 }
-.terminal .t-time { color: #5c6370; margin-right: 10px; }
+.terminal .t-time { color: var(--text-2); margin-right: 10px; }
 .terminal .t-line { white-space: pre-wrap; word-break: break-all; }
 
 /* ---------- 网格与列表 ---------- */
