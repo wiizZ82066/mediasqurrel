@@ -65,7 +65,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="home-view">
     <header class="home-heading">
-      <div><p class="eyebrow">你的本地媒体空间</p><h1 class="page-title">首页</h1><p class="page-sub">先看看正在发生什么，再回到喜欢的内容。</p></div>
+      <div><h1 class="page-title">首页</h1></div>
       <div class="home-connection"><span class="dot" :class="{ connected: store.wsConnected }"></span>{{ store.wsConnected ? '实时连接' : '等待连接' }}<small v-if="data">更新于 {{ homeTime(data.updated_at) }}</small></div>
     </header>
     <div v-if="error" class="home-error" role="status"><span>{{ error }}{{ data ? ' 当前保留上次读取的状态。' : '' }}</span><button class="btn btn-ghost btn-sm" @click="refresh">重试</button></div>
@@ -111,7 +111,7 @@ onBeforeUnmount(() => {
       </article>
     </section>
     <section class="recent-section" aria-labelledby="recent-title">
-      <header class="recent-heading"><div><h2 id="recent-title">最近入库</h2><p>新保存的内容，都在这里。</p></div><router-link to="/library" class="btn btn-ghost btn-sm">打开媒体库<AppIcon name="chevron-right" :size="16"/></router-link></header>
+      <header class="recent-heading"><div><h2 id="recent-title">最近入库</h2></div><router-link to="/library" class="btn btn-ghost btn-sm">打开媒体库<AppIcon name="chevron-right" :size="16"/></router-link></header>
       <div v-if="data?.recent.length" class="recent-grid">
         <article v-for="entry in data.recent" :key="entry.id" class="recent-card">
           <router-link :to="{ path: '/library', query: { entry_id: entry.id, from: 'home' } }" class="recent-open" :aria-label="`查看 ${entry.author} 的内容`">
@@ -128,8 +128,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .home-heading,.recent-heading { display:flex; align-items:center; justify-content:space-between; gap:18px; }
-.eyebrow { color:var(--text-2); font-size:12px; letter-spacing:.08em; margin-bottom:8px; }
-.home-heading .page-sub { margin-bottom:0; }.home-heading { margin-bottom:28px; }
+.home-heading { margin-bottom:28px; }
 .home-connection { display:flex; align-items:center; gap:7px; flex-wrap:wrap; justify-content:flex-end; color:var(--text-2); font-size:12px; }
 .home-connection .dot { color:var(--orange); }.home-connection .connected { color:var(--green); }.home-connection small { flex-basis:100%; text-align:right; font-size:11px; }
 .status-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }
@@ -146,7 +145,7 @@ onBeforeUnmount(() => {
 .widget-state { display:inline-block; margin-left:7px; padding:2px 6px; border-radius:5px; background:var(--soft-orange); color:#946126; font-size:11px; }
 .live-elapsed { font-size:22px; font-variant-numeric:tabular-nums; margin:7px 0; }.live-elapsed small { font-size:11px; margin-left:8px; color:var(--text-2); }
 .widget-kicker { font-size:11px; color:var(--text-2); margin-bottom:5px; }.widget-footer { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:auto; padding-top:15px; color:var(--blue); font-size:12px; text-decoration:none; }
-.recent-section { margin-top:32px; }.recent-heading { margin-bottom:18px; }.recent-heading h2 { font-size:20px; font-weight:650; }.recent-heading p { font-size:12px; color:var(--text-2); margin-top:5px; }
+.recent-section { margin-top:32px; }.recent-heading { margin-bottom:18px; }.recent-heading h2 { font-size:20px; font-weight:650; }
 .recent-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:18px; }.recent-card { min-width:0; position:relative; overflow:hidden; border:1px solid var(--border); border-radius:var(--radius-card); background:#fff; }.recent-card:hover { border-color:#c9d7e9; box-shadow:var(--shadow-card-hover); }
 .recent-open { display:block; height:100%; color:inherit; text-decoration:none; }.recent-cover { position:relative; aspect-ratio:4/3; background:var(--sidebar-bg); overflow:hidden; }
 .recent-caption { padding:14px; }.recent-author { display:flex; align-items:center; gap:7px; }.recent-author strong { font-size:13px; font-weight:600; overflow-wrap:anywhere; }.recent-text { font-size:12px; color:var(--text-2); line-height:1.65; margin:8px 0 12px; height:40px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }.recent-caption small { font-size:11px; color:var(--text-2); display:block; padding-right:34px; }
@@ -154,6 +153,6 @@ onBeforeUnmount(() => {
 .home-empty { padding:42px 24px; text-align:center; box-shadow:none; }.home-empty h3 { margin:12px 0 8px; font-size:17px; }.home-empty p { color:var(--text-2); font-size:13px; margin-bottom:18px; line-height:1.7; }
 .home-error { display:flex; align-items:center; justify-content:space-between; gap:15px; padding:12px 16px; margin-bottom:18px; border-radius:10px; background:var(--soft-orange); font-size:12px; line-height:1.6; }
 @media(max-width:1199px) and (min-width:768px) { .status-grid { gap:12px; }.status-card { padding:16px; }.widget-number { flex-wrap:wrap; gap:4px 10px; }.widget-number span { flex-basis:100%; } }
-@media(max-width:767px) { .home-heading { align-items:flex-start; }.home-connection { max-width:96px; flex-shrink:0; padding-top:8px; }.status-grid { grid-template-columns:1fr; }.widget-detail,.widget-idle { min-height:0; }.recent-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }.recent-caption { padding:12px; }.recent-heading .btn { padding:8px; }.home-heading .page-sub { max-width:240px; }.home-error { align-items:flex-start; } }
+@media(max-width:767px) { .home-heading { align-items:flex-start; }.home-connection { max-width:96px; flex-shrink:0; padding-top:8px; }.status-grid { grid-template-columns:1fr; }.widget-detail,.widget-idle { min-height:0; }.recent-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }.recent-caption { padding:12px; }.recent-heading .btn { padding:8px; }.home-error { align-items:flex-start; } }
 @media(max-width:359px) { .recent-grid { grid-template-columns:1fr; } }
 </style>

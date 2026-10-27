@@ -197,7 +197,7 @@ onBeforeUnmount(()=>{disposed=true; cancelPreview(); clearInterval(pollTimer); u
 </script>
 <template>
   <div class="download-view">
-    <h1 class="page-title">下载内容</h1><p class="page-sub">保存喜欢的内容，在本地相册中慢慢浏览。</p>
+    <h1 class="page-title">下载内容</h1>
     <div class="download-columns">
       <section class="card download-form">
         <div class="platforms" aria-label="下载平台">

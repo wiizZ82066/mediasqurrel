@@ -22,7 +22,7 @@ async function realCheck(){if(!test.input.trim())return;if(!window.confirm('使�
 onMounted(()=>{const content=document.querySelector('.content');if(content)content.scrollTop=0;load();loadStartup()})
 </script>
 <template>
-  <div class="settings-view"><h1 class="page-title">设置</h1><p class="page-sub">运行环境、存储位置和本地数据管理。</p>
+  <div class="settings-view"><h1 class="page-title">设置</h1>
     <p v-if="loading" role="status">正在读取设置…</p><div v-if="error" class="card error-text" role="alert">{{ error }} <button class="btn btn-ghost btn-sm" @click="load">重试</button></div>
     <template v-if="settings">
       <section class="card settings-card">

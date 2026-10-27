@@ -399,7 +399,6 @@ onBeforeUnmount(() => {
 <template>
   <div class="view-root task-view">
     <h1 class="page-title">任务与历史</h1>
-    <p class="page-sub">查看下载与录播结果，按需打开文件夹或详细日志。</p>
     <div class="card task-filters">
       <label class="search-field">搜索任务<input v-model="query" class="input" type="search" placeholder="任务 ID、平台或链接" /></label>
       <label>状态<select v-model="status" class="select"><option value="">全部状态</option><option v-for="(label, value) in statusText" :key="value" :value="value">{{ label }}</option></select></label>

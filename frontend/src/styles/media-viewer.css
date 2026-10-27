@@ -52,7 +52,6 @@
 .gallery-thumbnails span { position:absolute; bottom:2px; left:3px; padding:1px 3px; border-radius:3px; background:#0009; color:#fff; font-size:9px; }
 .viewer-sidebar { min-width:0; min-height:0; display:flex; flex-direction:column; padding:28px 24px 18px; border:1px solid var(--viewer-line); border-radius:22px; background:linear-gradient(145deg,rgba(62,65,73,.52),rgba(31,34,41,.64)); box-shadow:inset 0 1px 0 #ffffff08; }
 .viewer-sidebar>.media-details { flex:1; }
-.viewer-sidebar-footer { flex-shrink:0; display:flex; justify-content:space-between; gap:12px; padding-top:18px; margin-top:20px; border-top:1px solid var(--viewer-line); color:var(--viewer-muted); font-size:10px; letter-spacing:.04em; }
 .viewer-social.is-text-only { grid-template-columns:minmax(0,1fr); max-width:750px; width:100%; align-self:center; }
 .viewer-social.is-text-only .viewer-canvas { display:none; }
 .viewer-social.is-text-only .viewer-sidebar { border-left:0; padding:36px; }
@@ -67,7 +66,6 @@
 .viewer-description[open]>summary p { display:none; }
 .viewer-notes { padding-top:20px; }
 .is-text-only .viewer-description { margin:28px; max-height:100%; }
-.viewer-hint { flex-shrink:0; display:flex; justify-content:center; gap:20px; min-height:25px; padding-top:12px; font-size:10px; letter-spacing:.03em; color:#ced2ddab; }
 .collection-timeline { margin:18px 22px 0; padding:14px 17px; border:1px solid var(--viewer-line); border-radius:14px; background:#ffffff05; flex-shrink:0; max-height:30%; overflow:auto; font-size:11px; line-height:1.8; color:var(--viewer-muted); }
 .collection-summary { display:flex; flex-wrap:wrap; align-items:center; gap:6px 18px; margin-bottom:4px; }
 .collection-summary strong { color:var(--viewer-text); font-size:12px; font-weight:500; }
@@ -99,7 +97,6 @@
 @media(max-width:900px) {
   .viewer-social { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(200px,1fr) minmax(170px,.65fr); gap:12px; }
   .viewer-sidebar { padding:20px; }
-  .viewer-sidebar-footer { display:none; }
   .viewer-social.is-text-only { grid-template-rows:minmax(0,1fr); }
 }
 @media(max-width:600px) {
@@ -118,14 +115,11 @@
   .gallery-thumbnails button { width:44px; height:44px; border-radius:8px; }
   .viewer-description { margin:0 16px 15px; max-height:40%; }
   .collection-timeline { margin:12px 12px 0; padding:10px 12px; }
-  .viewer-hint { display:none; }
 }
 @media(max-height:580px) and (min-width:901px) {
   .gallery-mask { padding:12px 18px; }
-  .viewer-hint { display:none; }
   .gallery-head { min-height:46px; padding-bottom:10px; }
   .viewer-sidebar { padding:20px; }
-  .viewer-sidebar-footer { margin-top:10px; padding-top:12px; }
   .gallery-thumbnails { padding-bottom:12px; }
   .collection-timeline { max-height:25%; }
 }

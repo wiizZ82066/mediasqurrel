@@ -1,11 +1,13 @@
 """Paged library API; index work never runs inside a list request."""
 import asyncio
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import catalog, config, library_service as service, media_jobs, task_manager, local_files, task_files
+from . import catalog, config, db, library_service as service, media_jobs, task_manager, local_files, task_files
+from . import recording_playback
 from .security import media_path
 from .media_response import MediaFileResponse
 
@@ -80,8 +82,75 @@ async def detail(entry_id: str):
         raise HTTPException(404, '媒体条目不存在')
     from .live_collections import enrich_entry
     entry = await asyncio.to_thread(enrich_entry, entry)
+    from .library_details import enrich
+    entry = await asyncio.to_thread(enrich, entry)
     service.enrich_page([entry])
     return entry
+
+
+def _recording_target(entry_id, relative, expected=None):
+    with db.connect() as connection:
+        row = connection.execute('''SELECT e.rel_dir,r.path FROM media_entries e
+            JOIN media_roots r ON r.id=e.root_id JOIN media_assets a ON a.entry_id=e.id
+            WHERE e.id=? AND a.rel_path=? AND a.kind='video' AND e.availability='present'
+            AND EXISTS(SELECT 1 FROM live_recordings l WHERE l.entry_id=e.id
+                AND l.status IN ('completed','stopped','interrupted') AND l.is_collection=0)''',
+            (entry_id, relative)).fetchone()
+    if not row:
+        raise HTTPException(404, '此条目没有已完成的录播视频')
+    try:
+        folder = Path(media_path(row['rel_dir'], root=row['path']))
+        path = Path(media_path('/'.join((row['rel_dir'], relative)), root=row['path'], file_only=True))
+        if not path.is_relative_to(folder) or path.suffix.lower() != '.mp4':
+            raise HTTPException(403, '只能读取此条目内的录播 MP4')
+        fingerprint = recording_playback.revision(path)
+    except (FileNotFoundError, KeyError):
+        raise HTTPException(404, '录播文件已移动或删除') from None
+    if expected is not None and expected != fingerprint:
+        raise HTTPException(409, '录播文件已改变，请重新打开内容')
+    return path, fingerprint
+
+
+async def _playback_index(path):
+    try:
+        return await asyncio.to_thread(recording_playback.get_index, path)
+    except recording_playback.PlaybackBusy:
+        raise HTTPException(503, '正在准备另一个录播的播放索引，请稍后重试', headers={'Retry-After': '1'}) from None
+    except OSError:
+        raise HTTPException(404, '录播文件暂时无法读取') from None
+
+
+@router.get('/api/library/entries/{entry_id}/playback')
+async def playback_info(entry_id: str, rel: str):
+    path, fingerprint = await asyncio.to_thread(_recording_target, entry_id, rel)
+    index = await _playback_index(path)
+    if index is None:
+        return {'kind': 'native'}
+    if index['revision'] != fingerprint:
+        raise HTTPException(409, '录播文件已改变，请重新打开内容')
+    url = f'/api/library/entries/{quote(entry_id, safe="")}/playback/playlist.m3u8?'
+    return {'kind': 'hls', 'url': url + urlencode({'rel': rel, 'rev': fingerprint}),
+            'duration_seconds': index['duration']}
+
+
+@router.get('/api/library/entries/{entry_id}/playback/playlist.m3u8')
+async def playback_playlist(entry_id: str, rel: str, rev: str):
+    path, _ = await asyncio.to_thread(_recording_target, entry_id, rel, rev)
+    index = await _playback_index(path)
+    if index is None or index['revision'] != rev:
+        raise HTTPException(409, '播放索引已失效，请重新打开内容')
+    media_url = f'/api/library/entries/{quote(entry_id, safe="")}/playback/media?'
+    media_url += urlencode({'rel': rel, 'rev': rev})
+    return Response(recording_playback.playlist(index, media_url),
+                    media_type='application/vnd.apple.mpegurl',
+                    headers={'Cache-Control': 'private, max-age=3600'})
+
+
+@router.api_route('/api/library/entries/{entry_id}/playback/media', methods=['GET', 'HEAD'])
+def playback_media(entry_id: str, rel: str, rev: str):
+    path, _ = _recording_target(entry_id, rel, rev)
+    return MediaFileResponse(path, media_type='video/mp4',
+                             headers={'Cache-Control': 'private, max-age=3600'})
 
 
 @router.post('/api/library/scan')

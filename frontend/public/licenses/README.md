@@ -21,3 +21,7 @@ Simple Icons 项目采用 CC0-1.0（完整文本：`simple-icons-cc0.txt`），�
 - 房间状态接口及清晰度字段映射参考 [SplashedWhite/douyin-recorder](https://github.com/SplashedWhite/douyin-recorder)，MIT，Copyright (c) 2026 SplashedWhite；许可文本保留在 `douyin-recorder-mit.txt`。本项目使用 Python 实现，不引入其 Tauri/Rust 应用。
 - 弹幕字段编号参照 [opedium/douyin-live-proto 的协议字段文档](https://github.com/opedium/douyin-live-proto/blob/master/docs/complete_payload_reference.md)，并以真实直播消息验证。使用自行实现的有限字段解析器，不复制生成的协议库；消息传输由 Playwright 打开的正常页面处理。
 - [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) 通过依赖安装提供 FFmpeg；其包与 FFmpeg 的各自许可证、构建选项随依赖分发。仓库不包含 FFmpeg 二进制。
+
+## 录播播放引擎
+
+HLS.js 1.7.3（https://github.com/video-dev/hls.js/tree/v1.7.3），Apache-2.0；完整许可见 `hls-js-apache-2.0.txt`。按需加载本地打包的 light 版本，不访问第三方播放 CDN。

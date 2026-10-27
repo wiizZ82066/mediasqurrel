@@ -11,6 +11,7 @@ import ContentText from '../components/ContentText.vue'
 import Avatar from '../components/Avatar.vue'
 import MediaDetails from '../components/MediaDetails.vue'
 import { mediaProfile } from '../viewer-presentation.js'
+import { createRecordingPlayback } from '../recording-playback.js'
 import { buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../library-layout.js'
 import { applyDefaultVolume } from '../playback.js'
 const route=useRoute(), router=useRouter(), saved=store.libraryState || {}
@@ -32,6 +33,7 @@ const viewerEl=ref(null), closeButton=ref(null), liveVideo=ref(null), filtersOpe
 const openMenuVisible=ref(false), openMenuEl=ref(null), openMenuButton=ref(null), openBusy=ref(false)
 const segmentVideo=ref(null)
 let collectionPlaybackSequence=0, continuationVolume=null
+let recordingPlayer=null, recordingReady=Promise.resolve(true)
 let listedRevision=saved.revision || 0
 let livePlaybackSequence=0, cardLiveSequence=0
 let ready=false, disposed=false, listSequence=0, detailSequence=0, auxSequence=0, listController=null, detailController=null, auxController=null, debounceTimer=null, authorTimer=null, scanTimer=null, contentEl=null, restoreFocus=null, preloads=[]
@@ -248,7 +250,15 @@ function liveError(event){if(event.target!==liveVideo.value)return;stopLive();me
 function selectMedia(index){if(index===null || index<0 || index>=(gallery.value?.gallery?.length || 0))return;++collectionPlaybackSequence;continuationVolume=null;galleryIndex.value=index}
 function navigateMedia(delta){selectMedia(galleryIndex.value+delta)}
 function fitMedia(event){const media=event.target,width=media.videoWidth || media.naturalWidth,height=media.videoHeight || media.naturalHeight;if(width>0 && height>0)media.style.setProperty('--media-ratio',String(width/height))}
-function videoMetadata(event){fitMedia(event);if(continuationVolume && event.target===segmentVideo.value)Object.assign(event.target,continuationVolume);else applyDefaultVolume(event,store.preferences?.default_volume)}
+function videoMetadata(event){fitMedia(event);if(event.target===segmentVideo.value)mediaError.value='';if(continuationVolume && event.target===segmentVideo.value)Object.assign(event.target,continuationVolume);else applyDefaultVolume(event,store.preferences?.default_volume)}
+function releaseRecording(){recordingPlayer?.dispose();recordingPlayer=null;recordingReady=Promise.resolve(true)}
+watch(segmentVideo,video=>{
+  releaseRecording()
+  if(video && currentItem.value?.playback_info_url){
+    recordingPlayer=createRecordingPlayback(video,{infoUrl:currentItem.value.playback_info_url,nativeUrl:mediaUrl(currentLocation.value,currentItem.value.rel)})
+    recordingReady=recordingPlayer.ready
+  }
+},{flush:'post'})
 async function continueCollection(event){
   const entry=gallery.value, video=event.target, next=galleryIndex.value+1
   if(!entry?.collection || video!==segmentVideo.value || next>=entry.gallery.length)return
@@ -259,11 +269,13 @@ async function continueCollection(event){
   const following=segmentVideo.value
   if(sequence!==collectionPlaybackSequence || gallery.value!==entry || galleryIndex.value!==next || !following)return
   Object.assign(following,continuationVolume)
+  await recordingReady
+  if(sequence!==collectionPlaybackSequence || gallery.value!==entry || galleryIndex.value!==next || segmentVideo.value!==following)return
   try{await following.play()}catch(error){if(sequence===collectionPlaybackSequence && error.name!=='AbortError')mediaError.value='已切换下一段，请点击播放继续。'}
 }
 watch(galleryIndex,()=>{closeOpenMenu();stopLive();mediaError.value='';preloadNeighbors()},{flush:'sync'})
 function deactivateViewer(element){element.inert=true;element.setAttribute('aria-hidden','true')}
-function closeGallery(){++collectionPlaybackSequence;continuationVolume=null;closeOpenMenu();cancelLocate();++detailSequence;detailController?.abort();detailBusy.value=false;stopLive();segmentVideo.value?.pause?.();document.querySelector('.layout')?.removeAttribute('inert');gallery.value=null;clearPreloads();restoreFocus?.focus?.({preventScroll:true});if(route.query.from==='home'){if(window.history.state?.back==='/')router.back();else router.replace('/')}else if(route.query.entry_id || route.query.task_id || route.query.entry)router.replace({path:'/library',query:{}})}
+function closeGallery(){++collectionPlaybackSequence;continuationVolume=null;closeOpenMenu();cancelLocate();++detailSequence;detailController?.abort();detailBusy.value=false;stopLive();segmentVideo.value?.pause?.();releaseRecording();document.querySelector('.layout')?.removeAttribute('inert');gallery.value=null;clearPreloads();restoreFocus?.focus?.({preventScroll:true});if(route.query.from==='home'){if(window.history.state?.back==='/')router.back();else router.replace('/')}else if(route.query.entry_id || route.query.task_id || route.query.entry)router.replace({path:'/library',query:{}})}
 function onKey(event){if(!gallery.value || event.defaultPrevented)return;if(event.key==='Escape'){event.preventDefault();if(openMenuVisible.value)closeOpenMenu(true);else closeGallery()}else if(['ArrowRight','ArrowLeft'].includes(event.key)){if(event.target?.closest?.('video,input,textarea,select,[contenteditable="true"]'))return;event.preventDefault();navigateMedia(event.key==='ArrowRight'?1:-1)}else if(event.key==='Tab'){const controls=viewerControls();const first=controls[0],last=controls.at(-1);if(event.shiftKey && document.activeElement===first){event.preventDefault();last?.focus()}else if(!event.shiftKey && document.activeElement===last){event.preventDefault();first?.focus()}}}
 function cancelLocate(){++locateSequence;locateController?.abort();locateController=null;locateBusy.value=false;locateMessage.value=''}
 async function locateRoute(){
@@ -297,12 +309,12 @@ onMounted(async()=>{
     updateViewport();maybeLoadMore();await locateRoute();if(disposed)return;await pollScan();if(disposed)return;scanTimer=setInterval(()=>{if(activeScan.value)pollScan()},2000)
   }catch(e){error.value=e.message;ready=true}
 })
-onBeforeUnmount(()=>{++collectionPlaybackSequence;stopCardLive();stopLive();unsubscribe();document.querySelector('.layout')?.removeAttribute('inert');remember();disposed=true;cancelLocate();++detailSequence;listController?.abort();detailController?.abort();auxController?.abort();authorController?.abort();resizeObserver?.disconnect();if(scrollFrame!==null)cancelAnimationFrame(scrollFrame);contentEl?.removeEventListener('scroll',onScroll);window.removeEventListener('resize',onScroll);clearTimeout(debounceTimer);clearTimeout(authorTimer);clearInterval(scanTimer);clearPreloads();window.removeEventListener('keydown',onKey)})
+onBeforeUnmount(()=>{++collectionPlaybackSequence;releaseRecording();stopCardLive();stopLive();unsubscribe();document.querySelector('.layout')?.removeAttribute('inert');remember();disposed=true;cancelLocate();++detailSequence;listController?.abort();detailController?.abort();auxController?.abort();authorController?.abort();resizeObserver?.disconnect();if(scrollFrame!==null)cancelAnimationFrame(scrollFrame);contentEl?.removeEventListener('scroll',onScroll);window.removeEventListener('resize',onScroll);clearTimeout(debounceTimer);clearTimeout(authorTimer);clearInterval(scanTimer);clearPreloads();window.removeEventListener('keydown',onKey)})
 
 </script>
 <template>
   <div class="library-view">
-    <div class="page-heading"><div><h1 class="page-title">媒体库</h1><p class="page-sub">按作者或日期浏览本地内容，原文件保留在媒体目录。</p></div><button class="btn btn-ghost" :disabled="!rootId || activeScan || scanBusy" @click="startScan"><AppIcon name="scan"/>{{ activeScan?'正在建立索引':'更新索引' }}</button></div>
+    <div class="page-heading"><div><h1 class="page-title">媒体库</h1></div><button class="btn btn-ghost" :disabled="!rootId || activeScan || scanBusy" @click="startScan"><AppIcon name="scan"/>{{ activeScan?'正在建立索引':'更新索引' }}</button></div>
     <div v-if="roots.length" class="card library-toolbar">
       <div class="toolbar-row compact-toolbar"><button class="btn btn-ghost btn-sm author-toggle" :aria-expanded="authorsOpen" aria-controls="library-authors" @click="authorsOpen=!authorsOpen"><AppIcon name="person" :size="19"/>{{ author || '选择作者' }}</button><button class="btn btn-ghost btn-sm filter-toggle" :aria-expanded="filtersOpen" aria-controls="library-filters" @click="filtersOpen=!filtersOpen">{{ filtersOpen?'收起搜索与筛选':'搜索与筛选' }}</button></div><p class="active-filter-summary" aria-live="polite">{{ filterSummary }}</p>
       <div id="library-filters" v-show="filtersOpen"><label class="search-input library-search"><span class="sr-only">搜索媒体库</span><input v-model="query" class="input" type="search" placeholder="搜索作者、标题、正文或日期"></label>
@@ -350,7 +362,7 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;stopCardLive();stopLive();unsu
             <header class="gallery-head">
               <div v-if="socialViewer" class="viewer-context">
                 <PlatformLogo platform="weibo" :size="30" />
-                <div><strong>微博详情</strong><p>{{ gallery.gallery?.length ? '图文与影像' : '文字存档' }}</p></div>
+                <div><strong>微博详情</strong></div>
               </div>
               <div v-else class="gallery-head-title">
                 <Avatar :src="viewerProfile.avatarUrl" :name="gallery.author" :size="38" />
@@ -394,7 +406,7 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;stopCardLive();stopLive();unsu
                       <img v-else-if="currentItem.poster" :src="mediaUrl(currentLocation,currentItem.poster)" alt="Live 图静态画面，鼠标悬停可静音播放" @load="fitMedia" @error="mediaError='静态画面无法读取，可尝试播放 Live 图。'">
                       <button class="live-play" :aria-pressed="livePlaying" @click="toggleLive"><AppIcon name="live" :size="18" />{{ livePlaying?'停止 Live 图':'播放 Live 图' }}</button>
                     </template>
-                    <video v-else-if="currentItem.type==='video'" ref="segmentVideo" :key="currentItem.id || currentItem.rel" :src="mediaUrl(currentLocation,currentItem.rel)" :poster="currentItem.poster?mediaUrl(currentLocation,currentItem.poster):undefined" controls playsinline preload="metadata" @loadedmetadata="videoMetadata" @ended="continueCollection" @error="mediaError='视频无法读取或浏览器不支持此格式，请检查原文件。'"></video>
+                    <video v-else-if="currentItem.type==='video'" ref="segmentVideo" :key="currentItem.id || currentItem.rel" :src="currentItem.playback_info_url?undefined:mediaUrl(currentLocation,currentItem.rel)" :poster="currentItem.poster?mediaUrl(currentLocation,currentItem.poster):undefined" controls playsinline preload="metadata" @loadedmetadata="videoMetadata" @ended="continueCollection" @error="mediaError='视频无法读取或浏览器不支持此格式，请检查原文件。'"></video>
                     <img v-else :src="mediaUrl(currentLocation,currentItem.rel)" alt="媒体原图" @load="fitMedia" @error="mediaError='图片无法读取，请检查文件是否移动或删除。'">
                     <p v-if="mediaError" class="media-error" role="alert">{{ mediaError }}</p>
                   </div>
@@ -416,10 +428,8 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;stopCardLive();stopLive();unsu
 
               <aside v-if="socialViewer" class="viewer-sidebar" aria-label="微博正文与作者">
                 <MediaDetails :entry="gallery" :date-text="displayTime(gallery.sort_at)" :date-label="datesLabel[gallery.date_source] || '内容时间'" show-profile />
-                <footer class="viewer-sidebar-footer"><span>{{ gallery.gallery?.length ? gallery.gallery.length+' 项内容' : '文字存档' }}</span><span>本地保存</span></footer>
               </aside>
             </div>
-            <footer class="viewer-hint"><span v-if="gallery.gallery?.length>1">← → 切换内容</span><span>Esc 关闭</span><span v-if="currentItem?.live">悬停播放 Live 图</span></footer>
           </section>
         </div>
       </Transition>
@@ -431,7 +441,7 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;stopCardLive();stopLive();unsu
 @media(max-width:767px){.toolbar-row.compact-toolbar { display:flex; flex-wrap:wrap; gap:10px; }.compact-toolbar .view-switch { width:auto; margin-top:0; }.compact-toolbar .filter-toggle { margin-left:auto; }}
 @media(min-width:1450px){.entry-grid { grid-template-columns:repeat(4,minmax(0,1fr)); }}
 @media(max-width:1050px){.entry-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }.date-row label { flex-basis:40%; }}
-@media(max-width:767px){.page-heading { flex-wrap:wrap; margin-bottom:20px; }.page-heading .page-sub { margin-bottom:0; }.toolbar-row { display:block; }.view-switch { width:max-content; margin-top:12px; }.entry-grid { gap:12px; }.entry-caption { padding:10px; }.entry-title { font-size:12px; }.entry-count { font-size:9px; }.pagination { gap:10px; font-size:11px; }.pagination .btn { padding:9px 14px; }.library-toolbar { padding:16px; } }
+@media(max-width:767px){.page-heading { flex-wrap:wrap; margin-bottom:20px; }.toolbar-row { display:block; }.view-switch { width:max-content; margin-top:12px; }.entry-grid { gap:12px; }.entry-caption { padding:10px; }.entry-title { font-size:12px; }.entry-count { font-size:9px; }.pagination { gap:10px; font-size:11px; }.pagination .btn { padding:9px 14px; }.library-toolbar { padding:16px; } }
 
 .author-list { height:100%; min-width:0; overflow:auto; overscroll-behavior:contain; }
 .author-list h2 { display:flex; gap:8px; align-items:center; font-size:15px; margin:0 4px 14px; }

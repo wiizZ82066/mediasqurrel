@@ -19,8 +19,12 @@ export function mediaProfile(entry) {
   }
   const valid = platform === 'weibo' ? /^\d{1,20}$/.test(String(identity || ''))
     : platform === 'douyin' && /^MS4wLjAB[A-Za-z0-9_-]{8,248}$/.test(String(identity || ''))
+  const avatar = entry?.author_avatar_url || ''
+  const localAvatar = /^\/api\/subs\/[1-9]\d*\/avatar$/.test(avatar) ||
+    (platform === 'weibo' && /^\/api\/authors\/weibo\/\d{1,20}\/avatar$/.test(avatar)) ||
+    (platform === 'douyin' && /^\/api\/authors\/douyin\/MS4wLjAB[A-Za-z0-9_-]{8,248}\/avatar$/.test(avatar))
   return {
-    avatarUrl: valid ? `/api/authors/${platform}/${identity}/avatar` : '',
+    avatarUrl: localAvatar ? avatar : valid ? `/api/authors/${platform}/${identity}/avatar` : '',
     sourceUrl: source?.href || '',
   }
 }

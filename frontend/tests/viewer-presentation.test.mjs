@@ -21,3 +21,13 @@ test('imported metadata cannot create script, credential, private host or mismat
   assert.equal(mediaProfile({ platform:'weibo',meta:{'作者UID':'../private'} }).avatarUrl, '')
   assert.equal(mediaProfile({ platform:'douyin',meta:{'作者sec_uid':'MS4wLjAB/../private'} }).avatarUrl, '')
 })
+
+test('recordings use resolved subscription avatars while arbitrary or mismatched URLs are ignored', () => {
+  assert.equal(mediaProfile({platform:'douyin',author_avatar_url:'/api/subs/2/avatar'}).avatarUrl,'/api/subs/2/avatar')
+  for (const avatar of ['https://example.invalid/avatar.jpg','//example.invalid/avatar.jpg','/api/subs/2/avatar?token=private',
+    '/api/subs/../private/avatar','/api/authors/weibo/123/avatar']) {
+    assert.equal(mediaProfile({platform:'douyin',author_avatar_url:avatar}).avatarUrl,'')
+  }
+  assert.equal(mediaProfile({platform:'weibo',author_avatar_url:'/api/subs/2/avatar',meta:{'作者UID':'123'}}).avatarUrl,
+    '/api/subs/2/avatar')
+})

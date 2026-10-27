@@ -129,9 +129,9 @@ body {
   font-size: 28px;
   font-weight: 650;
   letter-spacing: -0.02em;
-  margin-bottom: 6px;
+  margin-bottom: 24px;
 }
-.page-sub { font-size: 13px; color: var(--text-2); margin-bottom: 26px; line-height:1.7; }
+.page-heading .page-title, .home-heading .page-title { margin-bottom: 0; }
 .section-title {
   font-size: 19px;
   font-weight: 600;
@@ -346,7 +346,7 @@ a.btn { text-decoration:none; }
   .brand,.sidebar-footer { display:none; }.primary-nav { flex-direction:row; gap:3px; }
   .nav-item { position:relative; flex:1; flex-direction:column; gap:3px; justify-content:center; padding:8px 2px; margin:0; border-radius:12px; font-size:11px; min-width:0; }
   .nav-item .badge { position:absolute; right:3px; top:0; height:16px; min-width:16px; padding:0 4px; font-size:10px; }
-  .card { padding:20px; }.page-title { font-size:27px; }.page-sub { line-height:1.6; margin-bottom:20px; }
+  .card { padding:20px; }.page-title { font-size:27px; margin-bottom:20px; }
   .grid-3,.grid-4 { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
 

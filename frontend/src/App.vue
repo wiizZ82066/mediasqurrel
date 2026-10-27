@@ -51,8 +51,7 @@ onBeforeUnmount(() => { bootController?.abort(); contentEl.value?.removeEventLis
   <StartupScreen v-if="!ready" :completed="bootCompleted" :stage="bootStage" :error="bootError" @retry="bootstrap" @continue="openPage"/>
   <div v-else class="layout" :class="'density-' + store.preferences.density">
     <aside class="sidebar">
-      <router-link to="/" class="brand"><AppIcon name="brand" :size="36"/><span>Media Squirrel<small>本地媒体空间</small></span></router-link>
-      <div class="nav-caption">工作空间</div>
+      <router-link to="/" class="brand"><AppIcon name="brand" :size="36"/><span>Media Squirrel</span></router-link>
       <nav class="primary-nav" aria-label="主导航">
         <router-link v-for="item in navItems" :key="item.to" :to="item.to" class="nav-item" :class="{ active: route.path === item.to }" :aria-current="route.path === item.to ? 'page' : undefined">
           <AppIcon :name="item.icon"/><span>{{ item.label }}</span>
@@ -77,8 +76,7 @@ onBeforeUnmount(() => { bootController?.abort(); contentEl.value?.removeEventLis
 </template>
 <style scoped>
 .sidebar-footer .dot { display:inline-block; }
-.brand { text-decoration:none; color:inherit; }.brand small { display:block; font-size:10px; font-weight:400; color:var(--text-2); letter-spacing:.03em; margin-top:4px; }
-.nav-caption { margin:18px 14px 10px; font-size:10px; color:var(--text-2); letter-spacing:.08em; }.sidebar-footer { padding:0; }.connection-status { margin:16px 14px 4px; padding-top:14px; border-top:1px solid var(--border); font-size:11px; }
+.brand { text-decoration:none; color:inherit; }.sidebar-footer { padding:0; }.connection-status { margin:16px 14px 4px; padding-top:14px; border-top:1px solid var(--border); font-size:11px; }
 .mobile-header { display:none; }
 .content-inner.library-content { max-width:none; }
 .library-sidebar-host { display:flex; flex-direction:column; flex:0 0 240px; min-width:0; height:100%; padding:36px 18px 24px; overflow:hidden; background:var(--sidebar-bg); border-left:1px solid var(--border); }
@@ -95,5 +93,5 @@ onBeforeUnmount(() => { bootController?.abort(); contentEl.value?.removeEventLis
 .toast-close { border:0; background:transparent; cursor:pointer; padding:3px; }
 .back-top { position:fixed; right:24px; bottom:25px; z-index:450; width:44px; height:44px; display:grid; place-items:center; border:1px solid var(--border); border-radius:50%; background:#fff; box-shadow:var(--shadow-card); cursor:pointer; }
 @media(max-width:767px) { .back-top { bottom:90px; right:16px; }.toast-wrap { top:12px; right:16px; } }
-@media(max-width:767px) { .nav-caption { display:none; }.mobile-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:28px; padding-bottom:14px; border-bottom:1px solid var(--border); }.mobile-header a { display:flex; align-items:center; gap:8px; text-decoration:none; font-size:13px; font-weight:600; color:var(--text); }.mobile-header a:last-child { padding:5px; border-radius:7px; }.mobile-header [aria-current] { background:var(--selected); } }
+@media(max-width:767px) { .mobile-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:28px; padding-bottom:14px; border-bottom:1px solid var(--border); }.mobile-header a { display:flex; align-items:center; gap:8px; text-decoration:none; font-size:13px; font-weight:600; color:var(--text); }.mobile-header a:last-child { padding:5px; border-radius:7px; }.mobile-header [aria-current] { background:var(--selected); } }
 </style>
