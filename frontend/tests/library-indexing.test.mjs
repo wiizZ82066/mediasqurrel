@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import { api as realApi } from '../src/api.js'
 import { taskAuthor, taskTitle, taskPlatform, mergeTaskSummary } from '../src/task-presentation.js'
 import { liveLabels, liveDuration, liveSize } from '../src/live-status.js'
+import { mediaProfile } from '../src/viewer-presentation.js'
 
 const require = createRequire(new URL('../package.json', import.meta.url))
 const { parse, compileScript, compileTemplate } = require('@vue/compiler-sfc')
@@ -44,6 +45,7 @@ function component(name, t) {
   const timers = new Map()
   const timer = callback => { const id = ++nextTimer; timers.set(id, callback); return id }
   const env = {
+    mediaProfile, MediaDetails: {},
     ...vue, api, store, taskAuthor, taskTitle, taskPlatform, mergeTaskSummary, liveLabels, liveDuration, liveSize, Avatar: {}, toast: (...args) => notices.push(args),
     upsertTaskSummary: () => {}, removeTaskSummary: () => {},
     onTaskEvent: listener => { listeners.add(listener); return () => listeners.delete(listener) },

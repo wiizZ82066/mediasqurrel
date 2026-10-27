@@ -5,6 +5,7 @@ import { liveLabels, liveDuration, liveSize } from '../src/live-status.js'
 import { taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary } from '../src/task-presentation.js'
 import { homeTime, homeThumbnail, nextScanLabel } from '../src/home-presentation.js'
 import { livePresentation } from '../src/live-status.js'
+import { mediaProfile } from '../src/viewer-presentation.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -58,6 +59,7 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
   let taskListener
   const scope = vue.effectScope()
   const env = {
+    mediaProfile, MediaDetails: {},
     ...vue, api, store, scanBadge, liveLabels, liveDuration, liveSize, taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary, removeTaskSummary: () => {}, liveState: monitor => monitor?.runtime_status || monitor?.status, LiveStatus: {},
     setInterval: () => 0, clearInterval: () => {}, homeTime, homeThumbnail, nextScanLabel, livePresentation,
     toast: () => {}, upsertTaskSummary: () => {}, MaintenancePanel: {}, StartupScreen: {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},
@@ -150,6 +152,37 @@ test('ordinary video galleries do not automatically play unrelated items',async 
   const first=mediaDouble();state.segmentVideo.value=first
   await state.continueCollection({target:first})
   assert.equal(state.galleryIndex.value,0)
+})
+
+test('closing pauses the movie immediately while the visual dismissal can still be running', t => {
+  const { state } = setupComponent('Library', t)
+  state.gallery.value = collectionGallery()
+  const video = mediaDouble()
+  state.segmentVideo.value = video
+  state.closeGallery()
+  assert.equal(video.pauses, 1)
+  assert.equal(state.gallery.value, null)
+  const leaving = { setAttribute(name, value) { this[name] = value } }
+  state.deactivateViewer(leaving)
+  assert.equal(leaving.inert, true)
+  assert.equal(leaving['aria-hidden'], 'true')
+})
+
+test('native player arrow keys seek without switching gallery, and hidden details do not trap focus', t => {
+  const { state } = setupComponent('Library', t)
+  state.gallery.value = gallery()
+  let prevented = false
+  const event = { key: 'ArrowRight', preventDefault() { prevented = true }, target: { closest: () => ({}) } }
+  state.onKey(event)
+  assert.equal(state.galleryIndex.value, 0)
+  assert.equal(prevented, false)
+  event.target = { closest: () => null }
+  state.onKey(event)
+  assert.equal(state.galleryIndex.value, 1)
+  assert.equal(prevented, true)
+  const visible = { getClientRects: () => [{}] }, hidden = { getClientRects: () => [] }
+  state.viewerEl.value = vue.markRaw({ querySelectorAll: () => [visible, hidden] })
+  assert.deepEqual(state.viewerControls(), [visible])
 })
 
 test('startup repair saves immediately and rereads the persisted registration', async t => {

@@ -15,7 +15,7 @@ export const store = reactive({
   homeState: { data: null, scrollTop: 0 },
   libraryRevision: 0,
   libraryAuthorsCollapsed: false,
-  preferences: { density: 'comfortable', default_volume: 50 },
+  preferences: { density: 'comfortable', default_volume: 50, viewer_motion: true },
   taskListState: { items: [], cursor: '', nextCursor: null, previous: [], status: '', q: '', scrollTop: 0, loaded: false },
 })
 

@@ -92,6 +92,19 @@ class SettingsApiTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 400, response.text)
                 self.assertEqual((Path(config.DATA_DIR) / 'settings.json').read_bytes(), before)
 
+    def test_viewer_motion_has_its_own_persistent_boolean_preference(self):
+        self.assertTrue(settings.load()['viewer_motion'])
+        with patch.object(settings, 'apply'):
+            for enabled in (False, True):
+                response = self.client.patch('/api/settings', json={'viewer_motion': enabled})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertIs(settings.load()['viewer_motion'], enabled)
+                self.assertTrue(settings.load()['reduce_motion'])
+            before = (Path(config.DATA_DIR) / 'settings.json').read_bytes()
+            for invalid in (0, 1, None, 'true', 'false'):
+                self.assertEqual(self.client.patch('/api/settings', json={'viewer_motion': invalid}).status_code, 400)
+                self.assertEqual((Path(config.DATA_DIR) / 'settings.json').read_bytes(), before)
+
     def test_douyin_channel_defaults_to_browser_and_validates_before_saving(self):
         self.assertEqual(settings.load()['douyin_detail_channel'], 'browser')
         with patch.object(settings, 'apply'):
