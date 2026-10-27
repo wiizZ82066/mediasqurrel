@@ -327,10 +327,10 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 
 @media (prefers-reduced-motion: reduce) {
-  /* Viewer motion has an explicit in-app preference; other UI follows the OS. */
-  *:not(.viewer-motion-on):not(.viewer-motion-on *),
-  *:not(.viewer-motion-on):not(.viewer-motion-on *)::before,
-  *:not(.viewer-motion-on):not(.viewer-motion-on *)::after { animation-duration:0.01ms !important; transition-duration:0.01ms !important; }
+  /* Progress and enabled viewer motion have explicit in-app preferences. */
+  *:not(:where(.viewer-motion-on, .viewer-motion-on *, .activity-progress, .activity-progress *)),
+  *:not(:where(.viewer-motion-on, .viewer-motion-on *, .activity-progress, .activity-progress *))::before,
+  *:not(:where(.viewer-motion-on, .viewer-motion-on *, .activity-progress, .activity-progress *))::after { animation-duration:0.01ms !important; transition-duration:0.01ms !important; }
 }
 
 /* Navigation and icons stay still; viewer motion is scoped to its overlay. */

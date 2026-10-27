@@ -77,7 +77,7 @@ const detail = computed(() => {
 .progress-fill { display: block; height: 100%; border-radius: inherit; background: var(--blue); transition: width 250ms var(--ease), background 250ms var(--ease) !important; }
 /* Explicit user preference: progress alone animates independently of OS motion settings. */
 .progress-indeterminate { position: absolute; inset: 0; }
-.progress-indeterminate::before { content: ''; display: block; width: 30%; height: 100%; border-radius: 999px; background: var(--blue); animation: progress-slide 1.4s linear infinite !important; }
+.progress-indeterminate::before { content: ''; display: block; width: 30%; height: 100%; border-radius: 999px; background: var(--blue); animation: progress-slide 2.8s linear infinite !important; }
 .progress-detail { margin-top: 6px; font-size: 11.5px; line-height: 1.5; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .is-success .progress-fill { background: var(--green); }
 .is-failed .progress-fill { background: var(--red); }

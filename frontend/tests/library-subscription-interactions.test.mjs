@@ -252,6 +252,23 @@ test('collapsed library controls preserve filters without fetching date choices'
   assert.match(state.filterSummary.value, /saved search/)
 })
 
+test('toolbar shows only active filters and clearing them preserves the chosen library and author', t => {
+  const { state } = setupComponent('Library', t, { rootId:'selected-root' })
+  state.roots.value = [{id:'selected-root',label:'迁移媒体库'}]
+  assert.equal(state.filterSummary.value, '')
+  assert.equal(state.filterCount.value, 0)
+  state.author.value='Selected author'
+  state.query.value='saved search'; state.platform.value='weibo'; state.mediaType.value='image'
+  state.status.value='partial'; state.dateFrom.value='2026-01-01'; state.dateTo.value='2026-02-01'; state.sort.value='asc'
+  assert.equal(state.filterCount.value, 6)
+  state.clearFilters()
+  assert.equal(state.filterCount.value, 0)
+  assert.equal(state.filterSummary.value, '作者：Selected author')
+  assert.equal(state.rootId.value, 'selected-root')
+  assert.equal(state.author.value, 'Selected author')
+  assert.deepEqual([state.query.value,state.platform.value,state.mediaType.value,state.status.value,state.dateFrom.value,state.dateTo.value],['','','','','',''])
+})
+
 test('Live cards only play paired present media and stale playback failure cannot stop the next card', async t => {
   const { state, api } = setupComponent('Library', t)
   api.libraryEntry = () => assert.fail('Card hover must not fetch entry details')

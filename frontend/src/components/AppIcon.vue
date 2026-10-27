@@ -26,6 +26,7 @@ defineProps({ name: { type: String, required: true }, size: { type: [Number, Str
     <g v-else-if="name === 'scan'" stroke-width="4"><path d="M16 6H8C6.89543 6 6 6.89543 6 8V16M16 42H8C6.89543 42 6 41.1046 6 40V32M32 42H40C41.1046 42 42 41.1046 42 40V32M32 6H40C41.1046 6 42 6.89543 42 8V16" stroke="#648cca"/><path d="M34 24H14M27 16H21M27 32H21" stroke="#60a98a"/></g>
     <g v-else-if="name === 'external'" stroke="#648cca" stroke-width="3"><path d="M21 9H9v30h30V27" fill="#e1eaf7"/><path d="M29 7h12v12M41 7 21 27"/></g>
     <g v-else-if="name === 'search'" stroke="#647da6" stroke-width="4"><circle cx="21" cy="21" r="12" fill="#e1eaf7"/><path d="m30 30 10 10"/></g>
+    <g v-else-if="name === 'refresh'" stroke="#648cca" stroke-width="3.5"><path d="M38 19a15 15 0 0 0-25-7L8 17m0-9v9h9M10 29a15 15 0 0 0 25 7l5-5m0 9v-9h-9"/></g>
     <g v-else-if="name === 'play'" stroke="#438f73" stroke-width="3"><circle cx="24" cy="24" r="19" fill="#e0efe5"/><path d="m20 15 13 9-13 9Z" fill="#438f73"/></g>
     <g v-else-if="name === 'chevron-left'" stroke="currentColor" stroke-width="4"><path d="m30 12-12 12 12 12"/></g>
     <g v-else-if="name === 'chevron-right'" stroke="currentColor" stroke-width="4"><path d="m18 12 12 12-12 12"/></g>
