@@ -306,6 +306,7 @@ class LogAndTrayTests(unittest.TestCase):
         service = MagicMock(started=True, should_exit=False)
         with patch.object(sys, 'argv', ['run.py', '--no-browser']), \
                 patch.object(run, '_BACKGROUND', True), \
+                patch('app.windows_host.relaunch_if_needed', return_value=False), \
                 patch.object(runtime, 'probe_server', return_value=None), \
                 patch.object(runtime, 'port_in_use', return_value=False), \
                 patch.object(runtime, 'runtime_identity', return_value={}), \
@@ -333,6 +334,7 @@ class LogAndTrayTests(unittest.TestCase):
             actual.should_exit = True
         with patch.object(sys, 'argv', ['run.py', '--no-browser']), \
                 patch.object(run, '_BACKGROUND', True), \
+                patch('app.windows_host.relaunch_if_needed', return_value=False), \
                 patch.object(runtime, 'probe_server', return_value=None), \
                 patch.object(runtime, 'port_in_use', return_value=False), \
                 patch.object(runtime, 'runtime_identity', return_value={}), \

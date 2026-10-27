@@ -352,6 +352,10 @@ def main():
     ap.add_argument('--autostart', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--paths-file', help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if _BACKGROUND:
+        from app.windows_host import relaunch_if_needed
+        if relaunch_if_needed(sys.argv[1:]):
+            return
     if args.autostart:
         print('[startup] 启动方式：Windows 自启动入口')
     if _BACKGROUND:

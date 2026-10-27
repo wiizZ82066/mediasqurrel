@@ -31,7 +31,7 @@ def runtime_identity(source=None):
     files = {root / name for name in (
         'run.py', 'weibo_downloader.py', 'douyin_downloader.py',
         'package.json', 'requirements.txt', 'app/weibo_emoticons.json',
-        'app/assets/squirrel-tray.png',
+        'app/assets/squirrel-tray.png', 'app/windows_host.cs',
     )}
     files.update(root / 'app' / 'assets' / 'tray' / (name + '.png')
                  for name in ('download', 'library', 'tasks', 'subs', 'settings', 'folder', 'close'))
