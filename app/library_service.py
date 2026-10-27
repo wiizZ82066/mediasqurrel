@@ -28,7 +28,9 @@ def start():
                            (db.utc_now(), '程序退出时索引尚未完成，请重新扫描；旧索引已保留'))
     _default_root_id = catalog.register_root(config.LIBRARY_ROOT, label='默认媒体库')['id']
     media_jobs.start()
-    start_scan(_default_root_id)
+    # Persisted listings are ready without traversing the media disk. New
+    # downloads/recordings index their own directory; external changes use the
+    # explicit Update index action, including the first folder import.
 
 
 def start_scan(root_id=None, *, force_followup=False):

@@ -221,12 +221,24 @@ def _bounded_legacy_items():
         return items
 
 
-def _local_item_ids(items, platform) -> set[str]:
+def _local_item_ids(items, platform, *, blogger_id=None) -> set[str]:
     """Indexed point lookups for this scan only; verify actual matching files."""
     from .archive import entry_status, read_manifest
     ids, candidates = set(), list(dict.fromkeys(str(item['item_id']) for item in items))[:2000]
     if not candidates:
         return ids
+    if blogger_id:
+        # Terminal discoveries and active attempts already have durable owners.
+        # Rechecking their media on every platform scan changes no decision.
+        with _connect() as conn:
+            candidates = [row[0] for row in conn.execute('''
+                SELECT value FROM json_each(?) candidates
+                LEFT JOIN subscription_items i ON i.item_id=candidates.value
+                    AND i.platform=? AND i.blogger_id=?
+                WHERE i.status IS NULL OR i.status IN ('discovered','failed','interrupted','pending_filter')
+                ''', (json.dumps(candidates), platform, blogger_id))]
+        if not candidates:
+            return ids
 
     def verified(folder, identity):
         marker = Path(folder) / 'entry.json'
@@ -252,7 +264,12 @@ def _local_item_ids(items, platform) -> set[str]:
                     ids.add(identity)
                     break
     missing = {f'{platform}:{item_id}' for item_id in candidates} - ids
-    if missing:
+    # Once this root has an index, unknown posts must not provoke a legacy
+    # directory walk. Externally copied archives enter through explicit indexing.
+    with _connect() as conn:
+        indexed = conn.execute('SELECT 1 FROM media_roots WHERE path=?',
+                               (str(Path(config.LIBRARY_ROOT).resolve()),)).fetchone()
+    if missing and not indexed:
         for identity, folder in _bounded_legacy_items().items():
             if identity in missing and verified(folder, identity):
                 ids.add(identity)
@@ -433,7 +450,7 @@ async def _perform_scan(sub: dict, trigger: str = 'manual') -> dict:
                 items = response
                 result['coverage'] = {'complete': True, 'reason': 'legacy_scanner'}
             await _scan_progress(sub["id"], "running", "正在检查完整存档与下载记录…")
-            local_ids = await asyncio.to_thread(_local_item_ids, items, platform)
+            local_ids = await asyncio.to_thread(_local_item_ids, items, platform, blogger_id=sub['blogger_id'])
             for index, it in enumerate(items):
                 await _scan_progress(
                     sub["id"], "running", "正在比对最新内容", index * 100 / len(items),

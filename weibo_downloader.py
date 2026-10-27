@@ -40,6 +40,7 @@ from app.progress import DownloadProgress
 from app import config
 from app.archive import atomic_output, atomic_write_text, begin_entry
 from app.content_text import html_to_text, weibo_post_text
+from app.platform_errors import PlatformAccessError
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
@@ -79,6 +80,10 @@ def parse_publish_datetime(text: str) -> str:
     从 created_at（如 'Sun Aug 09 19:56:59 +0800 2026'）提取 yy-mm-dd hh:mm。
     失败则退回 parse_publish_time 的日期格式。
     """
+    visible = re.search(r'(?<!\d)(\d{2}|\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})', text)
+    if visible:
+        year, month, day, hour, minute = visible.groups()
+        return f'{year[-2:]}-{int(month):02d}-{int(day):02d} {int(hour):02d}:{int(minute):02d}'
     m = re.search(r"(\w{3}) (\w{3}) (\d{2}) (\d{2}):(\d{2}):\d{2} \+0800 (\d{4})", text)
     if m:
         months = {
@@ -232,19 +237,41 @@ def fetch_status_api(page, url: str) -> dict:
         return None
     mblogid = m.group(1)
     api_url = f"https://weibo.com/ajax/statuses/show?id={mblogid}&locale=zh-CN&isGetLongText=true"
-    try:
-        result = page.evaluate(
+    for attempt in range(2):
+        try:
+            response = page.evaluate(
             """async (apiUrl) => {
-                const r = await fetch(apiUrl, { credentials: 'include' });
-                if (!r.ok) return null;
-                const j = await r.json();
-                return j && j.ok ? j : null;
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 10000);
+                try {
+                    const r = await fetch(apiUrl, { credentials: 'include', signal: controller.signal });
+                    let data = null;
+                    try { data = await r.json(); } catch {}
+                    return {status: r.status, data};
+                } finally { clearTimeout(timeout); }
             }""",
             api_url,
-        )
-        return result
-    except Exception:
-        return None
+            )
+        except Exception:
+            response = None
+        if isinstance(response, dict):
+            status, data = response.get('status'), response.get('data')
+            if status in (401, 403, 429):
+                reason = {401: 'login_required', 403: 'risk_control', 429: 'rate_limited'}[status]
+                raise PlatformAccessError('微博详情请求被拒绝，请检查登录、平台验证或限流状态', reason, platform='weibo')
+            if isinstance(data, dict):
+                if data.get('ok') in (-100, '-100') or data.get('errno') in (100001, '100001', 100005, '100005'):
+                    raise PlatformAccessError('微博详情需要登录或平台验证，请登录后重试', 'login_required', platform='weibo')
+                if data.get('ok') in (1, '1'):
+                    identities = {str(data.get(key) or '') for key in ('mblogid', 'idstr', 'id')}
+                    if mblogid not in identities:
+                        raise PlatformAccessError('微博详情与目标作品不匹配，已停止保存', 'invalid_response', platform='weibo')
+                    return data
+                if data.get('ok') is not None:
+                    raise PlatformAccessError('微博未允许读取作品详情，请检查作品可见性或登录状态', platform='weibo')
+        if not attempt:
+            page.wait_for_timeout(750)
+    return None
 
 
 def decode_live_video_url(video_field) -> str:
@@ -307,10 +334,20 @@ def extract_post(page, url: str) -> dict:
             if vurl:
                 live_videos.append(vurl)
             elif orig:
+                if (info.get('type') or '') == 'livephoto':
+                    raise ValueError('微博 Live 图缺少视频地址，未将静态封面当作完整下载')
                 normal_imgs.append(orig)
+
+        expected = max(len(pic_ids), int(api_data.get('pic_num') or 0))
+        if len(normal_imgs) + len(live_videos) != expected:
+            raise ValueError('微博图片列表不完整，未将缺失媒体当作纯文字存档')
+        if (api_data.get('page_info') or {}).get('type') == 'video' or api_data.get('is_show_mixed'):
+            raise ValueError('此微博包含尚未支持的普通视频或混合媒体，未将正文当作完整下载')
 
         # 文本/用户名/时间从 API 提取（比 innerText 更干净）
         full_text = weibo_post_text(api_data)
+        if not full_text.strip() and not expected:
+            raise ValueError('微博没有可保存的正文或媒体，请检查作品状态')
         page_title = page.title()
         username = sanitize_filename((api_data.get("user") or {}).get("screen_name") or "")
         created = api_data.get("created_at") or ""
@@ -367,25 +404,31 @@ def extract_post(page, url: str) -> dict:
     art = page.query_selector("article")
     if not art:
         raise RuntimeError("未找到帖子内容，可能被微博反爬拦截，请重试或使用 --headed 观察")
+    post_id = _post_identity({'url': url})
+    if not art.query_selector(f'a[href$="/{post_id}"], a[href*="/{post_id}?"]'):
+        raise ValueError('页面中的微博与目标链接无法对应，已停止保存')
 
     # innerText omits inline emoji images. Parse their alt text from the HTML,
     # while keeping the original visible layout for the existing metadata rules.
     visible_text = art.inner_text()
-    full_text = html_to_text(art.inner_html())
+    body = art.query_selector('[class*="_wbtext_"]') or art.query_selector('.wbpro-feed-ogText')
+    if not body:
+        raise ValueError('未能定位微博正文，已停止保存以避免混入页面导航或互动文字')
+    full_text = html_to_text(body.inner_html())
     page_title = page.title()
 
     normal_imgs = []
-    for img in page.query_selector_all("article img.woo-picture-img"):
+    for img in art.query_selector_all('img.woo-picture-img, img[class*="_focusImg_"]'):
         src = img.get_attribute("src") or img.get_attribute("currentSrc") or ""
         if "sinaimg" in src:
             normal_imgs.append(src)
 
     live_posters = []
     for _ in range(6):
-        live_posters = page.query_selector_all('article img[class*="customPoster"]')
+        live_posters = art.query_selector_all('img[class*="customPoster"]')
         if len(live_posters) >= 1:
             time.sleep(1.5)
-            again = page.query_selector_all('article img[class*="customPoster"]')
+            again = art.query_selector_all('img[class*="customPoster"]')
             if len(again) == len(live_posters):
                 break
     print(f"[*] [DOM] 普通图片 {len(normal_imgs)} 张, Live 图 {len(live_posters)} 张")
@@ -464,6 +507,13 @@ def extract_post(page, url: str) -> dict:
     }
     normal_imgs = [u for u in normal_imgs if u.split("?")[0] not in live_img_urls]
 
+    if not normal_imgs and not live_posters:
+        raise ValueError('未能确认微博媒体列表；纯文字作品需完整详情确认，请稍后重试')
+    if len(live_video_urls) != len(live_posters):
+        raise ValueError('微博 Live 图未全部解析，未将部分媒体标记为下载成功')
+    if art.query_selector('video') and not live_posters:
+        raise ValueError('此微博包含尚未支持的普通视频，未将正文当作完整下载')
+
     return {
         "title": page_title,
         "text": full_text,
@@ -471,7 +521,7 @@ def extract_post(page, url: str) -> dict:
         "created_at": "",
         "ip_region": extract_ip_region(visible_text),
         "publish_time": parse_publish_time(visible_text),
-        "publish_datetime": parse_publish_time(visible_text),
+        "publish_datetime": parse_publish_datetime(visible_text),
         "normal_imgs": normal_imgs,
         "live_videos": live_video_urls,
         "api": False,
@@ -493,8 +543,12 @@ def _post_identity(data: dict) -> str:
 
 
 def save_content(data: dict, out_root: str) -> str:
+    required = ['context.md']
+    required.extend(f'photo/img{index:02d}.jpg' for index in range(1, len(data['normal_imgs']) + 1))
+    for index in range(1, len(data['live_videos']) + 1):
+        required.extend((f'live/live{index:02d}.mov', f'live/live{index:02d}.jpg'))
     archive = begin_entry(out_root, data["username"], data["publish_time"],
-                          "weibo", _post_identity(data), data.get("url", ""))
+                          "weibo", _post_identity(data), data.get("url", ""), required_files=required)
     folder = archive.folder
     print(f"[*] 保存目录: {folder}")
     if archive.existing_complete:
@@ -597,6 +651,8 @@ def main():
             viewport={"width": 1280, "height": 900},
             locale="zh-CN",
         )
+        from app.weibo_auth import attach_cookies
+        attach_cookies(ctx)
         page = ctx.new_page()
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=args.timeout)

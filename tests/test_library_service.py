@@ -30,6 +30,14 @@ class LibraryServiceTests(unittest.TestCase):
         db.migrate()
         self.media_root = catalog.register_root(self.library)
 
+    def test_start_reuses_index_without_scanning_media(self):
+        with patch.object(config, 'LIBRARY_ROOT', str(self.library)), \
+                patch.object(media_jobs, 'start'), patch.object(library_service, 'start_scan') as scan, \
+                patch.object(library_service, '_default_root_id', None):
+            library_service.start()
+            self.assertEqual(library_service.default_root_id(), self.media_root['id'])
+            scan.assert_not_called()
+
     def test_real_cover_pipeline_keeps_full_text_and_accepts_video_poster(self):
         cv2.imwrite(str(self.folder / 'clip_cover.jpg'), np.full((180, 240, 3), 180, dtype=np.uint8))
         (self.folder / 'clip.mp4').write_bytes(b'fixture-video-not-decoded-when-poster-present')

@@ -132,11 +132,13 @@ Only a verified complete manifest can establish a local download as complete.
             # Retain extracted topics outside task logs. Already-filtered
             # decisions stay final; loosening a rule never backfills old posts.
             metadata = subscription_filters.content_metadata(item)
+            values = (str(item.get("title") or ""), _json(item.get("params") or {}),
+                      item.get("script_id") or platform, _json(metadata))
             conn.execute(
                 "UPDATE subscription_items SET title=?,params_json=?,script_id=?,content_json=? WHERE "
-                "platform=? AND blogger_id=? AND item_id=?",
-                (str(item.get("title") or ""), _json(item.get("params") or {}),
-                 item.get("script_id") or platform, _json(metadata), *identity),
+                "platform=? AND blogger_id=? AND item_id=? "
+                "AND (title IS NOT ? OR params_json IS NOT ? OR script_id IS NOT ? OR content_json IS NOT ?)",
+                (*values, *identity, *values),
             )
             if complete:
                 # An active attempt remains owned by its task until settlement.

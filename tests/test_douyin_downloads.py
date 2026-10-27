@@ -152,6 +152,30 @@ class DouyinLinkTests(unittest.TestCase):
 
 
 class DouyinFetchTests(unittest.TestCase):
+    def test_detail_arriving_after_six_seconds_is_captured_in_same_session(self):
+        clock = [0.0]
+        detail = {'aweme_id': '123', 'video': {'play_addr': {'url_list': ['https://media.invalid/video']}}}
+        class DelayedHunter:
+            def attach(self, page):
+                return self
+            @property
+            def results(self):
+                return [] if clock[0] < 8 else [{'status': 200, 'body': json.dumps({'status_code': 0, 'aweme_detail': detail})}]
+        browser, context = MagicMock(), MagicMock()
+        page = context.new_page.return_value
+        page.goto.return_value.status = 200
+        page.locator.return_value.evaluate_all.return_value = []
+        page.wait_for_timeout.side_effect = lambda ms: clock.__setitem__(0, clock[0] + ms / 1000)
+        with patch.object(downloader, 'sync_playwright'), patch.object(downloader, 'launch_chrome', return_value=browser), \
+                patch.object(downloader, 'stealth_context', return_value=context), patch.object(downloader, '_attach_dy_cookies'), \
+                patch.object(downloader, 'XHRHunter', return_value=DelayedHunter()), \
+                patch.object(downloader.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.dict(os.environ, {'MS_DOWNLOAD_TIMEOUT': '120'}):
+            self.assertEqual(downloader._fetch_aweme_detail_once('https://www.douyin.com/video/123'), detail)
+        self.assertGreaterEqual(clock[0], 8)
+        self.assertLess(clock[0], 9)
+        browser.close.assert_called_once()
+
     def test_streamed_note_detail_normalizes_images_without_account_fields(self):
         post = {'awemeId': '1234567', 'awemeType': 68, 'authorInfo': {'nickname': 'Fixture', 'secUid': 'fixture-author'},
                 'desc': '图集 😀', 'createTime': 1791518400, 'authenticationToken': 'not-a-real-secret',

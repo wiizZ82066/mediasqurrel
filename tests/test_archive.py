@@ -119,6 +119,18 @@ class DownloaderArchiveTests(unittest.TestCase):
                 "url": f"https://weibo.com/123/{item_id}", "mblogid": item_id,
                 "normal_imgs": photos or [], "live_videos": lives or []}
 
+    def test_retry_repairs_old_text_only_marker_when_post_has_photos(self):
+        folder = Path(weibo.save_content(self.weibo_data(), str(self.root)))
+        identity = archive.read_manifest(folder)['entry_id']
+        with patch.object(weibo, 'download_file', side_effect=self.fake_weibo_download) as download:
+            repaired = Path(weibo.save_content(self.weibo_data(photos=['one', 'two']), str(self.root)))
+        self.assertEqual(repaired, folder)
+        self.assertEqual(download.call_count, 2)
+        self.assertEqual(archive.read_manifest(folder)['entry_id'], identity)
+        self.assertEqual({item['path'] for item in archive.read_manifest(folder)['files']},
+                         {'context.md', 'photo/img01.jpg', 'photo/img02.jpg'})
+        self.assertEqual(archive.entry_status(folder, verify_files=True), 'complete')
+
     def douyin_data(self, item_id="12345", cover=False):
         return {"author": {"nickname": "example", "uid": "42", "sec_uid": "example-id"},
                 "aweme_id": item_id, "create_time": 1791518400, "desc": "test body",

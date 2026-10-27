@@ -22,10 +22,11 @@ import warnings
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except (AttributeError, OSError, ValueError):
-    pass
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
 
 import requests
 from app.progress import DownloadProgress
@@ -150,7 +151,9 @@ def _fetch_aweme_detail_once(url: str) -> dict | None:
                                  referer="https://www.google.com/")
             if response is not None:
                 _check_access_status(response.status)
-            deadline = time.monotonic() + 6
+            # Hydration can request the detail well after DOMContentLoaded.
+            # Wait within one bounded page session; access errors still stop.
+            deadline = time.monotonic() + max(6, min(30, int(os.environ.get('MS_DOWNLOAD_TIMEOUT', '120'))))
             checked = 0
             next_page_check = 0
             while True:
@@ -171,7 +174,7 @@ def _fetch_aweme_detail_once(url: str) -> dict | None:
                     scripts = page.locator('script').evaluate_all("""nodes => {
                         const result = []; let total = 0;
                         for (const node of nodes) {
-                            const text = node.textContent;
+                            const text = (node.textContent || '').trimStart();
                             if (node.id !== 'RENDER_DATA' && !text.startsWith('self.__pace_f.push(')) continue;
                             total += text.length;
                             if (total > 8 * 1024 * 1024) return null;

@@ -131,7 +131,7 @@ class ArchiveEntry:
 
 
 def begin_entry(root: str, author: str, date_prefix: str, platform: str,
-                item_id: str, source_url: str = "") -> ArchiveEntry:
+                item_id: str, source_url: str = "", *, required_files=None) -> ArchiveEntry:
     """Reuse the same post on retry, including a changed date or author label.
 
     Only versioned, matching entries are reused. Unmarked old archives remain
@@ -166,7 +166,9 @@ def begin_entry(root: str, author: str, date_prefix: str, platform: str,
         folder, previous = matches[0]
         if previous.get("schema_version") != SCHEMA_VERSION:
             raise ValueError("存档标记版本不兼容，未覆盖已有数据")
-        if entry_status(folder, verify_files=True) == "complete":
+        recorded_files = {item.get('path') for item in previous.get('files', []) if isinstance(item, dict)}
+        if (entry_status(folder, verify_files=True) == "complete" and
+                set(required_files or ()).issubset(recorded_files)):
             return ArchiveEntry(folder, previous, True)
     else:
         folder = _inside(root_path, f"{_author_component(author)}/{date_prefix}{suffix}")

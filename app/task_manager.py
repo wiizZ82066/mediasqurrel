@@ -388,6 +388,7 @@ async def _run(task_id):
             proc = await asyncio.create_subprocess_exec(*task['command'], stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                 cwd=config.RESOURCE_DIR, env={**os.environ, 'MS_PROGRESS': '1',
+                    'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8',
                     'MS_DOWNLOAD_TIMEOUT': str(config.DOWNLOAD_TIMEOUT),
                     'MS_DOUYIN_DETAIL_CHANNEL': config.DOUYIN_DETAIL_CHANNEL,
                     'MS_DOWNLOAD_RETRIES': str(config.DOWNLOAD_RETRIES)}, **kwargs)

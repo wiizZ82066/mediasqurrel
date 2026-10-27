@@ -239,6 +239,24 @@ class SubscriptionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(watcher._bounded_legacy_items(), first)
             self.assertEqual(read.call_count, 3)
 
+    async def test_settled_discoveries_never_recheck_media_on_regular_scans(self):
+        from app import archive
+        await self.scan('baseline')
+        self.manifest('done')
+        await self.scan('done')
+        self.assertEqual(self.state('done')['status'], 'downloaded')
+        with patch.object(archive, 'entry_status', side_effect=AssertionError('repeated media access')), \
+                patch.object(watcher, '_bounded_legacy_items', side_effect=AssertionError('unexpected disk walk')):
+            self.assertEqual(watcher._local_item_ids([self.item('done'), self.item('baseline')],
+                'weibo', blogger_id=self.sub['blogger_id']), set())
+
+    async def test_new_post_on_indexed_root_never_walks_old_media(self):
+        from app import catalog
+        root = catalog.register_root(str(self.library))
+        catalog.scan_root(root['id'])
+        with patch.object(watcher, '_bounded_legacy_items', side_effect=AssertionError('unexpected disk walk')):
+            self.assertEqual(watcher._local_item_ids([self.item('new')], 'weibo'), set())
+
     async def test_cancelled_download_only_retries_explicitly(self):
         await self.discover()
         self.enqueue()

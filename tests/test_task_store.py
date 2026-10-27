@@ -242,6 +242,17 @@ class TaskRuntimeTests(StoreFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get('queued1')['status'], 'queued')
         self.assertIn('不支持断点续传', self.store.read_logs('running1')['items'][0]['text'])
 
+    async def test_child_stderr_keeps_chinese_and_emoji(self):
+        command = [sys.executable, '-c', "import sys; print('解析失败，请稍后重试 😀', file=sys.stderr); raise SystemExit(1)"]
+        with patch.object(tm.script_registry, 'build_command', return_value=command), \
+                patch.dict(os.environ, {'PYTHONIOENCODING': 'gbk', 'PYTHONUTF8': '0'}):
+            created = await tm.create('weibo', {'url': 'https://weibo.com/test'})
+            await self.wait_jobs()
+        self.assertEqual(self.store.get(created['id'])['status'], 'failed')
+        logs = '\n'.join(item['text'] for item in self.store.read_logs(created['id'])['items'])
+        self.assertIn('解析失败，请稍后重试 😀', logs)
+        self.assertNotIn('\ufffd', logs)
+
     async def test_active_duplicate_returns_same_task_and_metadata_reconciles(self):
         with patch.object(tm, '_run', new=AsyncMock()):
             original = await tm.create('weibo', {'url': 'https://weibo.com/test'}, content_key='post1',
