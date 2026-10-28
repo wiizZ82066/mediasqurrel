@@ -60,6 +60,18 @@ class SettingsApiTests(unittest.TestCase):
         self.assertEqual(kwargs['metadata'], {'diagnostic': True})
         self.assertFalse(destination.exists())
 
+    def test_lightweight_checks_do_not_invoke_full_diagnostics(self):
+        expected = {'checks': [{'id': 'douyin_login', 'status': 'passed'}]}
+        with patch('app.site_checks.check_sites', return_value=expected) as check, \
+                patch.object(settings, 'diagnostics') as full:
+            response = self.client.post('/api/settings/check-sites')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), expected)
+        check.assert_called_once_with()
+        full.assert_not_called()
+        with patch('app.site_checks.check_sites', side_effect=RuntimeError('检测正在进行，请稍候')):
+            self.assertEqual(self.client.post('/api/settings/check-sites').status_code, 409)
+
     def test_preferences_validate_before_persist_and_keep_retention_permanent(self):
         with patch.object(settings, 'apply'):
             response = self.client.patch('/api/settings', json={'retries': 3, 'density': 'compact'})

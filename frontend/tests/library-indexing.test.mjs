@@ -77,6 +77,31 @@ function component(name, t) {
   }
 }
 
+test('download preview waits for success, follows its platform and resets on a new task', async t => {
+  const { state, api } = component('Download', t)
+  api.libraryLocate = async () => ({ entry_id:'entry-a' })
+  api.libraryEntry = async () => entry('entry-a')
+  assert.equal(state.previewVisible.value, false)
+  for (const status of ['queued','failed','cancelled','interrupted']) {
+    state.updateTask({id:'task-a',status})
+    assert.equal(state.previewVisible.value, false)
+    assert.equal(state.currentTask.value.status, status)
+  }
+  state.updateTask(completed('task-a'))
+  await flush()
+  assert.equal(state.previewVisible.value, true)
+  state.select('douyin')
+  assert.equal(state.previewVisible.value, false)
+  assert.equal(state.currentTask.value, null)
+  state.select('weibo')
+  assert.equal(state.previewVisible.value, true)
+  api.createTask = async () => ({id:'task-b',script_id:'weibo',status:'queued'})
+  await state.submit()
+  assert.equal(state.previewVisible.value, false)
+  assert.equal(state.entry.value, null)
+  assert.equal(state.currentTask.value.id, 'task-b')
+})
+
 test('library locate waits through 202 responses and returns the first ready entry without manual retry', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const urls = [], messages = []

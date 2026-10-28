@@ -53,6 +53,15 @@ def browser_check():
     return settings.check_browser()
 
 
+@router.post('/api/settings/check-sites')
+def site_check():
+    from .site_checks import check_sites
+    try:
+        return check_sites()
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from None
+
+
 @router.post('/api/settings/check-download')
 async def download_check(body: dict):
     if body.get('confirmed') is not True:

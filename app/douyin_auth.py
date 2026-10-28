@@ -7,6 +7,8 @@
 import datetime as _dt
 import json
 import os
+import math
+import time
 
 try:
     from . import config as _config
@@ -18,7 +20,7 @@ except ImportError:  # 脚本独立运行时被 importlib 加载
 COOKIE_PATH = os.path.join(_DATA, "douyin_cookies.json")
 STATUS_PATH = os.path.join(_DATA, "douyin_auth.json")
 
-# 登录态标志 cookie（存在即视为已登录）
+# Only a nonempty, unexpired session cookie belongs to a saved login.
 _LOGIN_COOKIE = "sessionid"
 _DY_DOMAINS = [".douyin.com"]
 
@@ -28,7 +30,7 @@ def save_cookies(cookies: list[dict]) -> bool:
     os.makedirs(os.path.dirname(COOKIE_PATH), exist_ok=True)
     with open(COOKIE_PATH, "w", encoding="utf-8") as f:
         json.dump(cookies, f, ensure_ascii=False)
-    logged = any(c.get("name") == _LOGIN_COOKIE and c.get("value") for c in cookies)
+    logged = has_login_cookie(cookies)
     _write_status(logged_in=logged, cookie_count=len(cookies))
     return logged
 
@@ -66,12 +68,17 @@ def _write_status(logged_in: bool, cookie_count: int, note: str = ""):
 
 
 def auth_status() -> dict:
-    """当前登录状态（供 UI 展示）。"""
+    """Read current saved credentials, never trust the historical status flag."""
     try:
         with open(STATUS_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            saved = json.load(f)
     except (OSError, ValueError):
-        return {"logged_in": False, "cookie_count": 0, "updated_at": "", "note": ""}
+        saved = {}
+    if not isinstance(saved, dict):
+        saved = {}
+    cookies = load_cookies()
+    return {"logged_in": has_login_cookie(cookies), "cookie_count": len(cookies),
+            "updated_at": saved.get("updated_at", ""), "note": ""}
 
 
 def is_logged_in() -> bool:
@@ -79,7 +86,20 @@ def is_logged_in() -> bool:
 
 
 def has_login_cookie(cookies: list[dict]) -> bool:
-    return any(c.get("name") == _LOGIN_COOKIE and c.get("value") for c in cookies)
+    for cookie in cookies:
+        if not isinstance(cookie, dict) or cookie.get('name') != _LOGIN_COOKIE:
+            continue
+        value = cookie.get('value')
+        domain = str(cookie.get('domain') or '').lower().lstrip('.')
+        if not isinstance(value, str) or not value or not (domain == 'douyin.com' or domain.endswith('.douyin.com')):
+            continue
+        try:
+            expiry = float(cookie.get('expires', -1))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(expiry) and (expiry < 0 or expiry > time.time()):
+            return True
+    return False
 
 
 def clear():

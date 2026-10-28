@@ -110,6 +110,7 @@ export const api = {
   openLocalFolder: (kind) => req('/api/settings/open-folder', { method:'POST', body:JSON.stringify({kind}) }),
   diagnostics: () => req('/api/settings/diagnostics'),
   checkBrowser: () => req('/api/settings/check-browser', { method:'POST' }),
+  checkSites: () => req('/api/settings/check-sites', { method:'POST' }),
   checkDownload: (body) => req('/api/settings/check-download', { method:'POST', body:JSON.stringify(body) }),
   exportDiagnostics: () => req('/api/settings/diagnostics-export', { method:'POST' }),
   maintenancePlans: () => req('/api/maintenance/plans'),

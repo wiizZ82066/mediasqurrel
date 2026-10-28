@@ -71,7 +71,7 @@ onBeforeUnmount(() => {
     <div v-if="error" class="home-error" role="status"><span>{{ error }}{{ data ? ' 当前保留上次读取的状态。' : '' }}</span><button class="btn btn-ghost btn-sm" @click="refresh">重试</button></div>
     <section class="status-grid" aria-label="运行状态" :aria-busy="loading">
       <article class="status-card card download-status">
-        <div class="widget-heading"><span class="widget-icon"><AppIcon name="download" :size="26"/></span><h2>下载任务</h2><router-link to="/tasks" class="widget-link" aria-label="查看下载任务"><AppIcon name="chevron-right" :size="16"/></router-link></div>
+        <div class="widget-heading"><span class="widget-icon"><AppIcon name="download" :size="26"/></span><h2>下载任务</h2></div>
         <div class="widget-number"><strong>{{ downloads ? downloads.running : '—' }}</strong><span>正在下载</span></div>
         <p class="widget-description">{{ downloads ? (downloads.queued ? `${downloads.queued} 个任务排队中` : downloads.running ? '正在保存喜欢的内容' : '队列空闲，随时可以添加内容') : '正在读取任务状态…' }}</p>
         <div class="widget-detail" v-if="firstTask">
@@ -83,7 +83,7 @@ onBeforeUnmount(() => {
         <router-link class="widget-footer" to="/tasks">查看任务记录<AppIcon name="chevron-right" :size="14"/></router-link>
       </article>
       <article class="status-card card live-status">
-        <div class="widget-heading"><span class="widget-icon"><AppIcon name="video" :size="26"/></span><h2>直播录制</h2><router-link to="/subs" class="widget-link" aria-label="查看直播订阅"><AppIcon name="chevron-right" :size="16"/></router-link></div>
+        <div class="widget-heading"><span class="widget-icon"><AppIcon name="video" :size="26"/></span><h2>直播录制</h2></div>
         <div class="widget-number"><strong>{{ live ? live.active : '—' }}</strong><span>场正在录制或保存</span></div>
         <p class="widget-description">{{ live ? `${live.enabled} 位博主已开启直播监控` : '正在读取录播状态…' }}</p>
         <div v-if="live?.current" class="widget-detail">
@@ -98,7 +98,7 @@ onBeforeUnmount(() => {
         <router-link class="widget-footer" to="/subs">管理直播监控<AppIcon name="chevron-right" :size="14"/></router-link>
       </article>
       <article class="status-card card scan-status">
-        <div class="widget-heading"><span class="widget-icon"><AppIcon name="scan" :size="26"/></span><h2>订阅扫描</h2><router-link to="/subs" class="widget-link" aria-label="查看扫描计划"><AppIcon name="chevron-right" :size="16"/></router-link></div>
+        <div class="widget-heading"><span class="widget-icon"><AppIcon name="scan" :size="26"/></span><h2>订阅扫描</h2></div>
         <div class="widget-number"><strong>{{ scans ? scans.active : '—' }}</strong><span>正在检查更新</span></div>
         <p class="widget-description">{{ scans ? `${scans.enabled} 位博主已启用内容订阅` : '正在读取扫描状态…' }}</p>
         <div class="widget-detail" v-if="scans">
@@ -136,7 +136,6 @@ onBeforeUnmount(() => {
 .widget-heading { display:flex; align-items:center; gap:10px; }.widget-heading h2 { font-size:14px; font-weight:600; }
 .widget-icon { width:40px; height:40px; border-radius:10px; display:grid; place-items:center; background:var(--soft-blue); }
 .live-status .widget-icon { background:var(--soft-orange); }.scan-status .widget-icon { background:var(--soft-green); }
-.widget-link { margin-left:auto; color:var(--text-2); padding:6px; border-radius:6px; }.widget-link:hover { background:var(--selected); }
 .widget-number { display:flex; gap:10px; align-items:baseline; margin:20px 0 5px; }.widget-number strong { font-size:38px; font-weight:650; letter-spacing:-.04em; line-height:1.1; font-variant-numeric:tabular-nums; }.widget-number span { color:var(--text-2); font-size:12px; }
 .widget-description,.widget-idle { font-size:12px; color:var(--text-2); line-height:1.7; overflow-wrap:anywhere; }
 .widget-detail,.widget-idle { margin-top:18px; min-height:89px; }.widget-detail { padding:14px 0 8px; border-top:1px solid var(--border); }

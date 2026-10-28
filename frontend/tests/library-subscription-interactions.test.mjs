@@ -460,10 +460,10 @@ test('Weibo login only follows explicit action and keeps its platform when selec
   state.addOpen.value = false
   await vue.nextTick()
   await state.loadAuth()
-  assert.ok(statusChecks > 0)
+  assert.equal(statusChecks, 0)
   assert.equal(weiboLogins, 0)
   assert.equal(douyinLogins, 0)
-  assert.match(state.authLabel.value, /联网有效性待验证/)
+  assert.equal(state.authLabel.value, '')
   const login = state.login()
   assert.equal(weiboLogins, 1)
   state.form.platform = 'douyin'
@@ -474,6 +474,28 @@ test('Weibo login only follows explicit action and keeps its platform when selec
   assert.equal(douyinLogins, 0)
   assert.equal(state.wbAuth.value.logged_in, true)
   assert.equal(state.dyAuth.value.logged_in, false)
+  assert.equal(state.authLabel.value, '抖音未登录')
+  api.douyinAuth = async () => ({ logged_in: true })
+  await state.loadAuth()
+  assert.equal(state.authLabel.value, '抖音已登录')
+  assert.equal(statusChecks, 0)
+})
+
+test('settings performs only the explicit lightweight checks and prevents repeated submissions', async t => {
+  const { state, api } = setupComponent('Settings', t)
+  const pending = deferred()
+  let calls = 0
+  api.checkSites = async () => { calls++; return pending.promise }
+  api.diagnostics = api.checkBrowser = api.checkDownload = () => assert.fail('Unrelated diagnostics must not run')
+  const request = state.diagnose()
+  await state.diagnose()
+  assert.equal(calls, 1)
+  assert.equal(state.busy.value, 'checks')
+  const checks = [{id:'douyin_login',status:'passed'}, {id:'douyin_website',status:'failed'}, {id:'weibo_website',status:'passed'}]
+  pending.resolve({ checks })
+  await request
+  assert.deepEqual(state.checks.value, checks)
+  assert.equal(state.busy.value, '')
 })
 
 test('continuous library loading appends batches, deduplicates, and preserves items for retry', async t => {

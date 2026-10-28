@@ -20,6 +20,8 @@ const loadError = ref('')
 const rootPath = ref('')
 const defaultOutput = ref('')
 const task = ref(saved.task)
+const currentTask = computed(() => task.value?.script_id === selectedId.value ? task.value : null)
+const previewVisible = computed(() => currentTask.value?.status === 'success')
 const entry = ref(null)
 const previewError = ref('')
 const previewLoading = ref(false)
@@ -198,7 +200,7 @@ onBeforeUnmount(()=>{disposed=true; cancelPreview(); clearInterval(pollTimer); u
 <template>
   <div class="download-view">
     <h1 class="page-title">下载内容</h1>
-    <div class="download-columns">
+    <div class="download-columns" :class="{'has-preview':previewVisible}">
       <section class="card download-form">
         <div class="platforms" aria-label="下载平台">
           <button v-for="script in scripts" :key="script.id" class="platform-choice" :class="{selected:script.id===selectedId}" :aria-pressed="script.id===selectedId" @click="select(script.id)"><PlatformLogo :platform="script.id" :size="34"/><span>{{ script.name }}</span></button>
@@ -223,29 +225,31 @@ onBeforeUnmount(()=>{disposed=true; cancelPreview(); clearInterval(pollTimer); u
             </div>
           </template>
           <div class="form-actions"><button class="btn btn-primary" :disabled="submitting || !selected.available">{{ submitting?'提交中…':'开始下载' }}</button><router-link to="/tasks" class="btn btn-ghost">任务队列</router-link></div>
-          <p v-if="!selected.available" class="error-text">脚本文件不可用，请在设置中检测环境。</p>
+          <p v-if="!selected.available" class="error-text">脚本文件不可用，请检查项目文件是否完整。</p>
         </form>
+        <div v-if="currentTask && !previewVisible" class="download-activity" aria-label="当前下载任务">
+          <div class="result-task"><PlatformLogo :platform="task.script_id"/><strong>{{ statusLabels[task.status] || task.status }}</strong><button type="button" class="text-button" @click="openTask">查看任务</button></div>
+          <ActivityProgress :status="task.status" :progress="task.progress" label="当前下载进度"/>
+          <button v-if="['queued','running'].includes(task.status)" type="button" class="btn btn-danger-ghost btn-sm" @click="api.cancelTask(task.id).then(updateTask).catch(e=>toast(e.message,'error'))">取消下载</button>
+        </div>
       </section>
-      <section class="card result-panel" aria-label="下载结果预览">
-        <h2>本次下载</h2>
-        <div v-if="!task" class="result-empty"><AppIcon name="library" :size="72"/><h3>内容会在这里等你</h3><p>提交下载后显示对应任务的进度，完成后可进入媒体库查看。</p></div>
-        <template v-else>
+      <section v-if="previewVisible" class="card result-panel" aria-label="预览">
+        <h2>预览</h2>
           <div class="result-task"><PlatformLogo :platform="task.script_id"/><div><strong>{{ task.script_name }}</strong><p class="task-id">任务 {{ task.id }}</p></div><span :class="'tag tag-'+task.status">{{ statusLabels[task.status] || task.status }}</span></div>
-          <ActivityProgress :status="task.status" :progress="task.progress" label="本次下载进度"/>
-          <div v-if="task.status==='success'" class="completed-preview">
+          <div class="completed-preview">
             <button v-if="entry" class="cover-button" aria-label="在媒体库打开本次下载" @click="openLibrary"><img v-if="coverUrl" :src="coverUrl" alt="本次下载的内容封面" :style="entry.cover_face?{objectPosition:`${entry.cover_face.x*100}% ${entry.cover_face.y*100}%`}:{}"><span v-else class="text-cover"><AppIcon name="library" :size="60"/>文字内容已保存</span></button>
             <p v-if="entry" class="result-caption">{{ entry.author }} · {{ entry.sort_at || entry.date_dir }}</p>
             <p v-if="previewMessage" class="muted" role="status">{{ previewMessage }} <button v-if="!previewLoading" class="text-button" @click="loadPreview">继续查看</button></p><p v-if="previewError" class="muted" role="alert">{{ previewError }} <button class="text-button" @click="loadPreview">重试</button></p><p v-if="!entry && !previewLoading && !previewError && !previewMessage" class="muted">可继续加载此任务的内容。<button class="text-button" @click="loadPreview">加载预览</button></p>
           </div>
-          <div v-else class="result-empty pending"><AppIcon :name="task.status==='running'?'download':'tasks'" :size="58"/><p>{{ ['running','queued'].includes(task.status)?'完成后在这里显示本次内容的封面。':'此次任务尚未完成，可在任务记录中查看原因或重试。' }}</p></div>
-          <div class="form-actions"><button class="btn btn-ghost btn-sm" @click="openTask">定位任务</button><button v-if="entry" class="btn btn-primary btn-sm" @click="openLibrary">打开媒体库</button><button v-if="['queued','running'].includes(task.status)" class="btn btn-danger-ghost btn-sm" @click="api.cancelTask(task.id).then(updateTask).catch(e=>toast(e.message,'error'))">取消下载</button></div>
-        </template>
+          <div class="form-actions"><button class="btn btn-ghost btn-sm" @click="openTask">查看任务</button><button v-if="entry" class="btn btn-primary btn-sm" @click="openLibrary">打开媒体库</button></div>
       </section>
     </div>
     <div v-if="browsing" class="modal-mask" @click.self="browsing=false"><section class="browse-panel card" role="dialog" aria-modal="true" aria-label="选择输出目录"><div class="browse-head"><button class="btn btn-ghost btn-sm" :disabled="!browsePath || browseBusy" @click="browseUp">上级</button><strong>{{ browsePath || '默认媒体目录' }}</strong><button class="btn btn-ghost btn-sm" @click="browsing=false">关闭</button></div><p class="hint path-hint">{{ rootPath }}</p><div class="browse-list"><p v-if="browseBusy">正在读取目录…</p><p v-else-if="!browseDirs.length" class="muted">此目录没有子目录。</p><div v-for="dir in browseDirs" :key="dir.rel" class="browse-row"><button @click="loadBrowse(dir.rel)"><AppIcon name="folder" :size="22"/>{{ dir.name }}</button><button class="text-button" @click="pickDir(dir.rel)">选择</button></div></div><button class="btn btn-primary btn-sm" :disabled="browseBusy" @click="pickDir(browsePath)">使用当前目录</button></section></div>
   </div>
 </template>
 <style scoped>
+.download-columns:not(.has-preview) { grid-template-columns:minmax(0,720px); }
+.download-activity { border-top:1px solid var(--border); margin-top:24px; padding-top:18px; }.download-activity .result-task { justify-content:space-between; }.download-activity .result-task strong { flex:1; }.download-activity>.btn { margin-top:12px; }
 .download-columns { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:24px; align-items:start; }.download-form,.result-panel { min-width:0; }.platforms { display:flex; gap:10px; margin-bottom:24px; }.platform-choice { flex:1; display:flex; align-items:center; gap:10px; border:1px solid var(--border); border-radius:14px; padding:12px; background:#fff; cursor:pointer; font-size:13px; text-align:left; }.platform-choice.selected { border-color:var(--blue); background:#f1f7fc; }.form-description { color:var(--text-2); font-size:13px; line-height:1.6; margin-bottom:22px; }.field-label { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }.field-label label { margin:0; }.required,.error-text { color:#bb392d; }.error-text,.clipboard-message { font-size:12px; margin-top:8px; line-height:1.6; }.clipboard-message { color:#47766a; }.main-input { position:relative; }.main-input textarea { min-height:150px; padding-bottom:36px; }.clear-input { position:absolute; right:12px; bottom:12px; border:0; background:#eef0f3; padding:4px 10px; border-radius:8px; font-size:12px; cursor:pointer; }.directory-input { display:flex; gap:8px; }.directory-input .input { min-width:0; }.directory-input .btn { flex-shrink:0; }.path-hint { overflow-wrap:anywhere; }.form-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:22px; }.result-panel h2 { font-size:18px; margin-bottom:22px; }.result-empty { min-height:335px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; text-align:center; padding:25px 10px; }.result-empty h3 { font-size:17px; }.result-empty p,.muted { color:var(--text-2); font-size:13px; line-height:1.7; }.result-empty.pending { min-height:260px; }.result-task { display:flex; gap:10px; align-items:center; }.result-task>div { min-width:0; flex:1; }.result-task strong { font-size:14px; }.task-id { font:11px Consolas,monospace; color:var(--text-2); overflow-wrap:anywhere; margin-top:4px; }.completed-preview { margin-top:20px; }.cover-button { border:0; width:100%; border-radius:14px; overflow:hidden; cursor:pointer; background:#e9eeec; aspect-ratio:4/3; }.cover-button img { width:100%; height:100%; object-fit:cover; display:block; }.text-cover { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:15px; color:var(--text-2); }.result-caption { margin-top:14px; font-size:13px; line-height:1.6; overflow-wrap:anywhere; }.text-button { border:0; background:transparent; color:var(--blue); cursor:pointer; font-size:13px; padding:4px; }.modal-mask { position:fixed; inset:0; z-index:600; background:#19242f55; display:grid; place-items:center; padding:20px; }.browse-panel { width:min(560px,100%); background:#f8f9fb; }.browse-head { display:flex; align-items:center; gap:12px; margin-bottom:12px; }.browse-head strong { flex:1; font-size:13px; overflow-wrap:anywhere; }.browse-list { max-height:48vh; overflow:auto; margin:20px 0; }.browse-row { display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--border); }.browse-row>button:first-child { flex:1; border:0; background:transparent; text-align:left; padding:12px 0; display:flex; align-items:center; gap:10px; cursor:pointer; overflow-wrap:anywhere; }.hint { color:var(--text-2); font-size:12px; line-height:1.6; }
 @media(max-width:1050px) { .download-columns { grid-template-columns:minmax(0,1fr); }.result-empty { min-height:230px; }.cover-button { max-height:420px; } }
 @media(max-width:450px) { .platform-choice { padding:10px 8px; gap:6px; }.platform-choice span { font-size:12px; }.result-task { flex-wrap:wrap; } }

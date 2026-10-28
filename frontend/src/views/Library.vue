@@ -360,7 +360,7 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;releaseRecording();stopCardLiv
       </aside>
     </Teleport>
       <div class="library-feed">
-    <div v-if="!loading && !error && !entries.length" class="card library-empty"><AppIcon name="library" :size="72"/><h2>{{ query || author || dateFrom || dateTo || status || platform || mediaType?'没有符合条件的内容':'这里还没有媒体内容' }}</h2><p>已有媒体文件夹可在设置中只建立索引；文件不会复制或移动。</p><p v-if="selectedRoot" class="root-path">当前目录：{{ selectedRoot.path }}</p><div><router-link to="/settings" class="btn btn-ghost">媒体目录与导入</router-link><router-link to="/" class="btn btn-primary">下载内容</router-link></div></div>
+    <div v-if="!loading && !error && !entries.length" class="card library-empty"><AppIcon name="library" :size="72"/><h2>{{ query || author || dateFrom || dateTo || status || platform || mediaType?'没有符合条件的内容':'这里还没有媒体内容' }}</h2><p>下载内容后会自动入库；当前目录中已有的存档可通过“更新索引”读取。</p><p v-if="selectedRoot" class="root-path">当前目录：{{ selectedRoot.path }}</p><div><router-link to="/settings" class="btn btn-ghost">查看数据位置</router-link><router-link to="/" class="btn btn-primary">下载内容</router-link></div></div>
         <div ref="gridEl" class="virtual-entries" :style="{height:virtualLayout.height+'px'}">
           <div v-for="row in visibleRows" :key="row.key" class="virtual-row" :style="{transform:'translateY('+row.top+'px)',height:row.height+'px'}">
             <h2 v-if="row.type==='heading'" class="group-heading">{{ row.date }}<span>{{ row.count }} 条已载入</span></h2>
