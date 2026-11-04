@@ -13,7 +13,8 @@ from PIL import Image
 
 import douyin_downloader as downloader
 from app import archive
-from app.douyin_content import album_images, content_id, is_album
+from app.douyin_content import (album_images, clean_play_url, content_id, image_source_urls,
+                               is_album, video_source_urls)
 from app.platform_errors import PlatformAccessError
 from app.douyin_page import detail_from_scripts
 from app.scanners.douyin import parse_page
@@ -109,6 +110,39 @@ class DouyinAlbumTests(unittest.TestCase):
         self.assertEqual(result.name, 'image.png')
         self.assertEqual(sorted(path.name for path in self.root.iterdir()), ['image.png'])
 
+    def test_original_is_saved_before_watermarked_source_without_changing_pixels(self):
+        clean = picture('PNG')
+        post = self.post([{'url_list': ['https://media.invalid/clean'],
+                           'download_url_list': ['https://media.invalid/watermarked']}])
+        with patch.object(downloader.urllib.request, 'urlopen', return_value=Response(clean)) as request:
+            folder = Path(downloader.save_content(post, str(self.root)))
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args[0].full_url, 'https://media.invalid/clean')
+        self.assertEqual((folder / 'photo/img0001.png').read_bytes(), clean)
+        self.assertNotIn('可能含水印', self.output.getvalue())
+
+    def test_invalid_clean_source_falls_back_with_warning_and_one_completed_file(self):
+        post = self.post([{'url_list': ['https://media.invalid/clean'],
+                           'download_url_list': ['https://media.invalid/watermarked']}])
+        with patch.object(downloader.urllib.request, 'urlopen', side_effect=[Response(b'<html>expired</html>'), Response(picture())]):
+            folder = Path(downloader.save_content(post, str(self.root)))
+        self.assertEqual(archive.entry_status(folder, verify_files=True), 'complete')
+        self.assertEqual(list(folder.rglob('*.part')), [])
+        self.assertIn('可能含水印', self.output.getvalue())
+        events = [json.loads(line.split('__MS_PROGRESS__', 1)[1]) for line in self.output.getvalue().splitlines() if line.startswith('__MS_PROGRESS__')]
+        self.assertEqual(max(event['completed'] for event in events), 1)
+
+    def test_video_error_page_does_not_replace_existing_file_or_complete_progress(self):
+        destination = self.root / 'video.mp4'
+        destination.write_bytes(b'previous archive')
+        progress = MagicMock()
+        with patch.object(downloader.urllib.request, 'urlopen', return_value=Response(b'<html>expired</html>')):
+            with self.assertRaises(ValueError):
+                downloader.download('https://media.invalid/play', str(destination), progress)
+        self.assertEqual(destination.read_bytes(), b'previous archive')
+        self.assertEqual(list(self.root.glob('*.part')), [])
+        progress.finish_file.assert_not_called()
+
     def test_images_without_type_are_album_and_topic_scanner_keeps_note_url(self):
         post = self.post()
         post.pop('aweme_type')
@@ -124,6 +158,34 @@ class DouyinAlbumTests(unittest.TestCase):
 
 
 class DouyinLinkTests(unittest.TestCase):
+    def test_playback_cleanup_preserves_signature_encoding_and_cdn_urls(self):
+        source = 'https://www.douyin.com/aweme/v1/playwm/?video_id=abc&sign=a%2Fb%2Bc&watermark=1&logo_name=demo&ratio=720p'
+        clean = 'https://www.douyin.com/aweme/v1/play/?video_id=abc&sign=a%2Fb%2Bc&watermark=0&ratio=720p'
+        self.assertEqual(clean_play_url(source), clean)
+        for url in ('https://media.invalid/aweme/v1/playwm/?logo_name=demo',
+                    'https://douyin.com.evil.invalid/aweme/v1/playwm/',
+                    'https://v26-web.douyinvod.com/video/playwm/?watermark=1&sign=a%2Fb'):
+            self.assertEqual(clean_play_url(url), url)
+
+    def test_larger_watermarked_download_stays_after_playback(self):
+        video = {'play_addr': {'url_list': ['https://media.invalid/play'], 'data_size': 100},
+                 'download_addr': {'url_list': ['https://media.invalid/download'], 'data_size': 999}}
+        preferred, fallback = video_source_urls(video)
+        self.assertEqual(preferred, ['https://media.invalid/play'])
+        self.assertEqual(fallback, ['https://media.invalid/download'])
+
+    def test_watermark_template_and_camel_case_fields_keep_all_slots_and_fallbacks(self):
+        marked = 'https://p3.douyinpic.com/id~tplv-dy-water-v2:label.webp?signature=test'
+        image = {'urlList': [marked, 'https://media.invalid/clean'],
+                 'originImage': {'urlList': ['https://media.invalid/original']},
+                 'downloadUrlList': ['https://media.invalid/download', marked]}
+        preferred, fallback = image_source_urls(image)
+        self.assertEqual(preferred, ['https://media.invalid/original', 'https://media.invalid/clean'])
+        self.assertEqual(fallback, [marked, 'https://media.invalid/download'])
+        self.assertEqual(album_images({'images': [image]}), [preferred + fallback])
+        with self.assertRaises(ValueError):
+            album_images({'images': [image, None]})
+
     def test_note_video_and_modal_links_are_canonical_without_network(self):
         for url, expected in (('https://www.douyin.com/note/123?x=1', 'note/123'),
                               ('https://www.douyin.com/slides/123', 'note/123'),
@@ -183,7 +245,8 @@ class DouyinFetchTests(unittest.TestCase):
         frame = ['$', '$L9', None, {'awemeId': '1234567', 'aweme': {'detail': post}, 'accountInfo': {'private': 'excluded'}}]
         script = 'self.__pace_f.push(' + json.dumps([1, '7:' + json.dumps(frame)]) + ')'
         detail = detail_from_scripts([script], '1234567')
-        self.assertEqual(detail['images'][0]['url_list'], ['https://media.invalid/original', 'https://media.invalid/preview'])
+        self.assertEqual(detail['images'][0]['url_list'], ['https://media.invalid/preview'])
+        self.assertEqual(detail['images'][0]['download_url_list'], ['https://media.invalid/original'])
         self.assertEqual(detail['author']['sec_uid'], 'fixture-author')
         self.assertNotIn('authenticationToken', detail)
         self.assertNotIn('accountInfo', detail)

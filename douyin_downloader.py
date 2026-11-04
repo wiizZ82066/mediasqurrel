@@ -32,7 +32,8 @@ import requests
 from app.progress import DownloadProgress
 from app import config
 from app.archive import atomic_output, atomic_write_text, begin_entry
-from app.douyin_content import album_images, content_id, is_album, is_douyin_url, media_urls, source_url
+from app.douyin_content import (album_images, content_id, image_source_urls, is_album,
+                               is_douyin_url, media_urls, source_url, video_source_urls)
 from app.platform_errors import PlatformAccessError
 from app.douyin_page import detail_from_scripts
 
@@ -260,9 +261,27 @@ def download(url: str, dest: str, progress=None) -> int:
 def _download_once(url: str, dest: str, progress=None) -> int:
     with atomic_output(dest) as temporary:
         _transfer(url, temporary, progress)
+        if Path(dest).suffix.lower() == '.mp4':
+            _validate_video(temporary)
     if progress:
         progress.finish_file()
     return os.path.getsize(dest)
+
+
+def _validate_video(path):
+    """Reject error pages and unplayable responses before publishing a video."""
+    import cv2
+    with open(path, 'rb') as stream:
+        header = stream.read(12)
+    if len(header) < 12 or header[4:8] != b'ftyp':
+        raise ValueError('视频地址未返回有效 MP4，尝试其他播放源')
+    capture = cv2.VideoCapture(str(path))
+    try:
+        valid, frame = capture.read()
+        if not valid or frame is None:
+            raise ValueError('视频无法解码，尝试其他播放源')
+    finally:
+        capture.release()
 
 
 def _transfer(url, temporary, progress=None):
@@ -303,7 +322,7 @@ def _image_extension(path):
     return extension
 
 
-def download_image(urls, base, progress=None):
+def download_image(urls, base, progress=None, *, fallback_urls=()):
     """Try each candidate; failures never count as a completed image."""
     base = Path(base)
     base.parent.mkdir(parents=True, exist_ok=True)
@@ -320,6 +339,8 @@ def download_image(urls, base, progress=None):
                 os.replace(temporary, destination)
                 if progress:
                     progress.finish_file()
+                if url in fallback_urls:
+                    print('未能获取无水印图片，已使用普通下载源（可能含水印）', flush=True)
                 return destination
             except (OSError, ValueError, Warning, SyntaxError, HTTPTransferError):
                 if attempt + 1 < attempts:
@@ -382,7 +403,8 @@ def save_content(ad: dict, out_root: str) -> str:
     desc = (ad.get("desc") or "").strip()
     create_time = ad.get("create_time")
     video = ad.get("video") or {}
-    urls = list(dict.fromkeys(media_urls(video.get('play_addr_h264')) + media_urls(video.get('play_addr'))))
+    preferred_urls, fallback_urls = video_source_urls(video)
+    urls = preferred_urls + fallback_urls
 
     if not urls:
         print("没有可用的视频直链")
@@ -406,9 +428,12 @@ def save_content(ad: dict, out_root: str) -> str:
     last_err = None
     cover_urls = list(dict.fromkeys(media_urls(video.get('origin_cover')) + media_urls(video.get('cover'))))
     progress = DownloadProgress(1 + bool(cover_urls))
+    print('优先下载平台播放源，避免使用带水印的下载副本', flush=True)
     for u in urls:
         try:
             size = download(u, out_path, progress=progress)
+            if u in fallback_urls:
+                print('无水印播放源不可用，已使用普通下载源（可能含水印）', flush=True)
             print("下载完成:", out_path, f"({size} bytes)")
             break
         except Exception as e:  # noqa: BLE001
@@ -484,7 +509,9 @@ def _save_album(ad, out_root):
     progress = DownloadProgress(len(candidates))
     files = ['context.md']
     for index, urls in enumerate(candidates, 1):
-        image = download_image(urls, folder / 'photo' / f'img{index:04d}', progress)
+        _, fallback_urls = image_source_urls(ad['images'][index - 1])
+        image = download_image(urls, folder / 'photo' / f'img{index:04d}', progress,
+                               fallback_urls=fallback_urls)
         relative = image.relative_to(folder).as_posix()
         files.append(relative)
         print(f'图集图片 {index}/{len(candidates)} 已保存: {relative}', flush=True)

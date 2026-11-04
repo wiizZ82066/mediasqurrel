@@ -8,7 +8,7 @@ import json
 import re
 from urllib.parse import unquote
 
-from .douyin_content import media_urls
+from .douyin_content import image_source_urls, media_urls
 from .platform_errors import PlatformAccessError
 
 _LIMIT = 8 * 1024 * 1024
@@ -47,14 +47,14 @@ def _normalize(value, identity):
             if not isinstance(image, dict):
                 result['images'].append({})
                 continue
-            urls = _urls(image.get('download_url_list', image.get('downloadUrlList')))
-            urls += _urls(image.get('url_list', image.get('urlList')))
-            result['images'].append({'url_list': list(dict.fromkeys(urls))})
+            preferred, fallback = image_source_urls(image)
+            result['images'].append({'url_list': preferred, 'download_url_list': fallback})
     video = value.get('video')
     if isinstance(video, dict):
         result['video'] = {
-            'play_addr_h264': {'url_list': _urls(video.get('play_addr_h264'))},
+            'play_addr_h264': {'url_list': _urls(video.get('play_addr_h264', video.get('playAddrH264')))},
             'play_addr': {'url_list': _urls(video.get('play_addr', video.get('playAddr')))},
+            'download_addr': {'url_list': _urls(video.get('download_addr', video.get('downloadAddr')))},
             'origin_cover': {'url_list': _urls(video.get('origin_cover', video.get('originCoverUrlList')))},
             'cover': {'url_list': _urls(video.get('coverUrlList', video.get('cover')))}}
     if not isinstance(result['desc'], str) or not ('video' in result or 'images' in result):
