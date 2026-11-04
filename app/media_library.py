@@ -236,6 +236,13 @@ def _scan_entry(path: str) -> Optional[dict]:
                     if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
                         normal_photos.append(f"photo/{f}")
                         total_size += os.path.getsize(os.path.join(full, f))
+            elif name == '.originals':
+                # Preserved sources count towards disk use, but are not a second
+                # gallery item or a candidate cover.
+                with os.scandir(full) as originals:
+                    for f in originals:
+                        if f.is_file(follow_symlinks=False):
+                            total_size += f.stat(follow_symlinks=False).st_size
             elif name == "live":
                 for f in sorted(os.listdir(full)):
                     low = f.lower()

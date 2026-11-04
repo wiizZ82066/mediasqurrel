@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from PIL import Image
 
 from app import archive
 import douyin_downloader as douyin
@@ -69,6 +70,19 @@ class ArchiveTests(unittest.TestCase):
                 entry.complete(["context.md"])
         self.assertEqual(archive.entry_status(entry.folder), "partial")
         self.assertEqual(list(Path(entry.folder).glob("*.part")), [])
+
+    def test_alternative_image_extensions_still_require_every_photo_slot(self):
+        entry = self.begin()
+        folder = Path(entry.folder)
+        archive.atomic_write_text(folder/'context.md', '# Example')
+        archive.atomic_write_text(folder/'photo/img01.webp', 'fixture')
+        entry.complete(['context.md','photo/img01.webp'])
+        def reopen(groups):
+            return archive.begin_entry(str(self.root),'example','26-10-09','weibo','Ab123',
+                                       required_files=['context.md'], required_file_groups=groups)
+        self.assertTrue(reopen([['photo/img01.jpg','photo/img01.webp']]).existing_complete)
+        self.assertFalse(reopen([['photo/img01.jpg','photo/img01.webp'],
+                                 ['photo/img02.jpg','photo/img02.webp']]).existing_complete)
 
     def test_atomic_media_write_preserves_previous_file_on_interruption(self):
         path = self.root / "existing.jpg"
@@ -139,8 +153,17 @@ class DownloaderArchiveTests(unittest.TestCase):
 
     @staticmethod
     def fake_weibo_download(url, path, **_kwargs):
-        Path(path).write_bytes(url.encode())
+        if url == 'movie':
+            Path(path).write_bytes(b'movie')
+        else:
+            Path(path).write_bytes(DownloaderArchiveTests.picture(url))
         return True
+
+    @staticmethod
+    def picture(label):
+        output = io.BytesIO()
+        Image.new('RGB', (32, 32), (sum(label.encode()) % 255, 70, 90)).save(output, 'JPEG')
+        return output.getvalue()
 
     @staticmethod
     def fake_douyin_download(url, path, **_kwargs):
@@ -155,8 +178,8 @@ class DownloaderArchiveTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertEqual(first, repeated)
         self.assertEqual(download.call_count, 2)
-        self.assertEqual((Path(first) / "photo/img01.jpg").read_bytes(), b"one")
-        self.assertEqual((Path(second) / "photo/img01.jpg").read_bytes(), b"two")
+        self.assertEqual((Path(first) / "photo/img01.jpg").read_bytes(), self.picture('one'))
+        self.assertEqual((Path(second) / "photo/img01.jpg").read_bytes(), self.picture('two'))
         text = weibo.save_content(self.weibo_data("Text123"), str(self.root))
         self.assertEqual(archive.entry_status(text, verify_files=True), "complete")
 

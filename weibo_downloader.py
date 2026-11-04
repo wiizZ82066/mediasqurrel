@@ -20,10 +20,13 @@
 """
 
 import argparse
+import hashlib
 import os
 import re
 import sys
+import tempfile
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 # Windows 控制台默认 GBK，强制用 UTF-8 输出避免中文/emoji 报错
@@ -41,6 +44,7 @@ from app import config
 from app.archive import atomic_output, atomic_write_text, begin_entry
 from app.content_text import html_to_text, weibo_post_text
 from app.platform_errors import PlatformAccessError
+from app.weibo_images import EXTENSIONS, PatchSkipped, eligibility, image_info, patch_image, reference_url
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
@@ -139,13 +143,16 @@ def download_file(url: str, path: str, referer: str = "https://weibo.com/", prog
     return False
 
 
-def _download_file_once(url: str, path: str, referer: str = "https://weibo.com/", progress=None) -> bool:
+def _download_file_once(url: str, path: str, referer: str = "https://weibo.com/", progress=None,
+                        *, timeout=None, max_bytes=None, quiet=False) -> bool:
     """带 Referer 下载文件（绕过微博反盗链），返回是否成功。"""
     headers = {"Referer": referer, "User-Agent": UA}
     try:
-        with requests.get(url, headers=headers, timeout=max(10, min(600, int(os.environ.get('MS_DOWNLOAD_TIMEOUT', '120')))), stream=True) as r:
+        timeout = timeout or max(10, min(600, int(os.environ.get('MS_DOWNLOAD_TIMEOUT', '120'))))
+        with requests.get(url, headers=headers, timeout=timeout, stream=True) as r:
             if r.status_code != 200:
-                print(f"    [x] HTTP {r.status_code}: {url[:80]}")
+                if not quiet:
+                    print(f"    [x] 下载请求返回 HTTP {r.status_code}")
                 return False
             if progress:
                 progress.start_file(r.headers.get("Content-Length")
@@ -154,6 +161,8 @@ def _download_file_once(url: str, path: str, referer: str = "https://weibo.com/"
                 written = 0
                 with open(temporary, "wb") as f:
                     for chunk in r.iter_content(65536):
+                        if max_bytes is not None and written + len(chunk) > max_bytes:
+                            raise ValueError('参考图片超过大小限制')
                         f.write(chunk)
                         written += len(chunk)
                         if progress:
@@ -165,8 +174,104 @@ def _download_file_once(url: str, path: str, referer: str = "https://weibo.com/"
                 progress.finish_file()
         return True
     except Exception as e:
-        print(f"    [x] 下载失败 {url[:60]}: {e}")
+        if not quiet:
+            print(f"    [x] 下载失败（{type(e).__name__}）")
         return False
+
+
+class _PendingImageProgress:
+    """A source transfer is not a completed image until repair/publication ends."""
+    def __init__(self, progress):
+        self.progress = progress
+
+    def start_file(self, length):
+        self.progress.start_file(length)
+
+    def advance(self, size):
+        self.progress.advance(size)
+
+    def finish_file(self):
+        pass
+
+
+def _publish_image(source, destination):
+    # Source is already validated and fsynced, on the same filesystem.
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(source, destination)
+
+
+def download_photo(url, folder, index, progress=None):
+    """Save one verified photo, preserving the source of every patched image."""
+    folder = Path(folder)
+    for directory in ('photo', '.originals'):
+        target = folder / directory
+        if (target.is_symlink() or getattr(target, 'is_junction', lambda:False)()
+                or target.resolve().parent != folder.resolve()):
+            raise ValueError('图片保存目录存在路径重定向，未写入文件')
+    stem = f'img{index:02d}'
+    with tempfile.TemporaryDirectory(prefix='.weibo-image-', dir=folder) as working:
+        working = Path(working)
+        original = working / 'source'
+        if not download_file(url, str(original), progress=_PendingImageProgress(progress) if progress else None):
+            return None
+        try:
+            info = image_info(original)
+        except Exception as exc:
+            print(f'    [x] {stem} 原图校验失败（{type(exc).__name__}）')
+            return None
+        reason = eligibility(info)
+        candidate = reference_url(url)
+        if not candidate:
+            reason = reason or '图片来源不支持无水印参考图'
+        record = {'status':'original', 'size':info['size']}
+        prepared = None
+        if not reason:
+            if progress:
+                progress.stage('正在获取无水印参考图与局部补图…')
+            reference = working / 'reference'
+            if not _download_file_once(candidate, str(reference), timeout=20, max_bytes=8*1024*1024, quiet=True):
+                reason = '无水印参考图不可用'
+            else:
+                try:
+                    prepared = working / 'patched.webp'
+                    record.update(patch_image(original, reference, prepared))
+                except PatchSkipped as exc:
+                    reason = str(exc)
+                    prepared = None
+                except Exception as exc:
+                    reason = f'补图处理异常（{type(exc).__name__}）'
+                    prepared = None
+        try:
+            files = []
+            if prepared is not None:
+                backup = f'.originals/{stem}{info["extension"]}'
+                with original.open('rb') as source:
+                    digest = hashlib.file_digest(source, 'sha256').hexdigest()
+                _publish_image(original, folder / backup)
+                relative = f'photo/{stem}.webp'
+                _publish_image(prepared, folder / relative)
+                record.update(status='patched', original=backup, original_sha256=digest)
+                files.append(backup)
+                print(f'    [+] {stem} 已局部补图，原图已保留')
+            else:
+                relative = f'photo/{stem}{info["extension"]}'
+                _publish_image(original, folder / relative)
+                record['reason'] = reason
+                print(f'    [*] {stem} 保留高清原图：{reason}')
+            # A partial retry can change from a patched WebP to an original JPG.
+            # Remove only alternate files belonging to this exact managed slot.
+            for extension in (*set(EXTENSIONS.values()), '.jpeg'):
+                alternate = folder / 'photo' / (stem + extension)
+                if alternate != folder / relative:
+                    alternate.unlink(missing_ok=True)
+            files.append(relative)
+            record.update(file=relative, files=files)
+            if progress:
+                progress.finish_file()
+            return record
+        except OSError as exc:
+            print(f'    [x] {stem} 图片保存失败（{type(exc).__name__}）')
+            return None
 
 
 def orj360_to_large(url: str) -> str:
@@ -544,11 +649,13 @@ def _post_identity(data: dict) -> str:
 
 def save_content(data: dict, out_root: str) -> str:
     required = ['context.md']
-    required.extend(f'photo/img{index:02d}.jpg' for index in range(1, len(data['normal_imgs']) + 1))
+    photo_groups = [[f'photo/img{index:02d}{extension}' for extension in (*EXTENSIONS.values(), '.jpeg')]
+                    for index in range(1, len(data['normal_imgs']) + 1)]
     for index in range(1, len(data['live_videos']) + 1):
         required.extend((f'live/live{index:02d}.mov', f'live/live{index:02d}.jpg'))
     archive = begin_entry(out_root, data["username"], data["publish_time"],
-                          "weibo", _post_identity(data), data.get("url", ""), required_files=required)
+                          "weibo", _post_identity(data), data.get("url", ""), required_files=required,
+                          required_file_groups=photo_groups)
     folder = archive.folder
     print(f"[*] 保存目录: {folder}")
     if archive.existing_complete:
@@ -557,6 +664,7 @@ def save_content(data: dict, out_root: str) -> str:
     progress = DownloadProgress(len(data["normal_imgs"]) + len(data["live_videos"]))
     failed = 0
     files = ["context.md"]
+    photo_processing = []
     # 只有存在对应内容时才创建 photo/ 或 live/ 文件夹
     has_photos = bool(data["normal_imgs"])
     has_lives = bool(data["live_videos"])
@@ -573,10 +681,10 @@ def save_content(data: dict, out_root: str) -> str:
         print(f"[*] 下载 {len(data['normal_imgs'])} 张普通图片 -> {photo_dir}")
         for idx, url in enumerate(data["normal_imgs"], 1):
             large = orj360_to_large(url)
-            path = os.path.join(photo_dir, f"img{idx:02d}.jpg")
-            if download_file(large, path, progress=progress):
-                print(f"    [+] img{idx:02d}.jpg  <- {large.split('/')[-1][:40]}")
-                files.append(f"photo/img{idx:02d}.jpg")
+            result = download_photo(large, folder, idx, progress)
+            if result:
+                files.extend(result.pop('files'))
+                photo_processing.append(result)
             else:
                 failed += 1
     else:
@@ -616,6 +724,9 @@ def save_content(data: dict, out_root: str) -> str:
         md.append(f"- **IP属地**: {data['ip_region']}")
     if has_photos:
         md.append(f"- **图片数量**: {len(data['normal_imgs'])} 张 (photo/)")
+        patched = sum(item['status'] == 'patched' for item in photo_processing)
+        md.append(f'- **图片处理**: {patched} 张局部补图（无损 WebP，平台原图保留在 .originals/），'
+                  f'{len(photo_processing)-patched} 张保留原图；补图区域可能损失细节。')
     if has_lives:
         md.append(f"- **Live 图数量**: {len(data['live_videos'])} 个 (live/)\n")
     md.append("## 页面文本\n")
@@ -627,6 +738,7 @@ def save_content(data: dict, out_root: str) -> str:
     print(f"[*] 已保存: {md_path}")
     if failed:
         raise RuntimeError(f"{failed} 个媒体文件下载失败，请查看日志后重试")
+    archive.marker['photo_processing'] = photo_processing
     archive.complete(files)
     return folder
 
@@ -666,7 +778,8 @@ def main():
 
     folder = save_content(data, os.path.abspath(args.out))
     print(f"\n✅ 完成！文件保存在: {folder}")
-    print("   - photo/   普通图片 (原图)")
+    print("   - photo/   普通图片 (局部补图或高清原图)")
+    print("   - .originals/  已补图图片的平台原文件（如有）")
     print("   - live/    Live 图 (.mov 视频 + .jpg 封面)")
     print("   - context.md  文本内容")
 

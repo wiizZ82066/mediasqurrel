@@ -132,9 +132,13 @@ def _inventory(folder, *, include_unfinished=False):
         sidecars.add('recording.mp4.part')
     result = []
     for child in sorted(folder.iterdir(), key=lambda p: p.name):
-        if child.name.startswith(".") or (child.name.endswith(".part") and child.name not in sidecars):
+        if (child.name.startswith(".") and child.name != '.originals') or (child.name.endswith(".part") and child.name not in sidecars):
             continue
-        paths = sorted(child.iterdir()) if child.name in ("photo", "live") and child.is_dir() else [child]
+        if child.name in ("photo", "live", ".originals") and child.is_dir():
+            _safe(folder, child.name)
+            paths = sorted(child.iterdir())
+        else:
+            paths = [child]
         for path in paths:
             if not path.is_file():
                 continue
@@ -259,7 +263,7 @@ def _metadata(folder, inventory):
         available &= {item["path"] for item in marker["files"]}
     for item in inventory:
         relative, extension = item["path"], Path(item["path"]).suffix.lower()
-        if relative not in available or relative in ("context.md", "entry.json"):
+        if relative not in available or relative in ("context.md", "entry.json") or relative.startswith('.originals/'):
             continue
         poster = None
         if relative.startswith("live/") and extension == ".mov":
@@ -283,7 +287,8 @@ def _metadata(folder, inventory):
                 search_text="\n".join((folder.parent.name, folder.name, body, *meta.values())).lower(),
                 platform=platform, item_id=str(item_id) if item_id else None, archive_status=status,
                 sort_at=date, date_source=date_source, assets=assets, marker=marker,
-                size=sum(item["size"] for item in assets),
+                size=sum(item["size"] for item in assets) +
+                     sum(item["size"] for item in inventory if item['path'].startswith('.originals/')),
                 photo_count=sum(a["kind"] == "image" for a in assets),
                 video_count=sum(a["kind"] == "video" for a in assets),
                 live_count=sum(a["kind"] == "live" for a in assets),

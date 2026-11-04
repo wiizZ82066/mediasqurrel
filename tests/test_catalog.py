@@ -309,6 +309,32 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(self.entries()["items"][0]["id"], original_id)
         self.assertTrue(self.root.is_dir())
 
+    def test_preserved_image_sources_count_for_storage_and_rebind_but_not_gallery(self):
+        entry = archive.begin_entry(str(self.root), 'Example', '26-10-09', 'weibo', 'Ab123')
+        folder = Path(entry.folder)
+        for relative, content in (('context.md', b'# example'), ('photo/img01.webp', b'patched'),
+                                  ('.originals/img01.jpg', b'original image bytes')):
+            destination = folder/relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+        entry.complete(['context.md','photo/img01.webp','.originals/img01.jpg'])
+        self.scan()
+        item = self.entries()['items'][0]
+        self.assertEqual(item['counts'], {'photos':1,'videos':0,'lives':0})
+        self.assertEqual(item['size'], len(b'patched')+len(b'original image bytes'))
+        self.assertEqual(item['file_count'], 4)
+        detail = catalog.get_entry(item['id'], database=self.database)
+        self.assertEqual([g['rel'] for g in detail['gallery']], ['photo/img01.webp'])
+        self.assertEqual(detail['cover_rel'], 'photo/img01.webp')
+        self.assertEqual(catalog.preflight_root(self.root)['files'], 4)
+        copied = self.base/'copy'
+        shutil.copytree(self.root,copied)
+        source_copy = copied/folder.relative_to(self.root)/'.originals/img01.jpg'
+        source_copy.unlink()
+        with self.assertRaises(ValueError):
+            catalog.rebind_root(self.root_id,copied,database=self.database)
+        self.assertEqual(catalog.get_root(self.root_id,database=self.database)['path'],str(self.root))
+
     def test_duplicate_platform_identity_is_reported_without_merging(self):
         first = archive.begin_entry(str(self.root), "Example", "26-10-09", "weibo", "Ab123")
         (Path(first.folder) / "context.md").write_text("# example", encoding="utf-8")

@@ -131,11 +131,13 @@ class ArchiveEntry:
 
 
 def begin_entry(root: str, author: str, date_prefix: str, platform: str,
-                item_id: str, source_url: str = "", *, required_files=None) -> ArchiveEntry:
+                item_id: str, source_url: str = "", *, required_files=None,
+                required_file_groups=None) -> ArchiveEntry:
     """Reuse the same post on retry, including a changed date or author label.
 
     Only versioned, matching entries are reused. Unmarked old archives remain
-    untouched. The caller must finish with complete() after all required media.
+    untouched. A required group accepts one of several extensions for a media
+    slot. The caller must finish with complete() after all required media.
     """
     if platform not in ("weibo", "douyin") or not _POST_ID.fullmatch(str(item_id)):
         raise ValueError("无法确定有效的平台内容 ID，已停止保存以避免覆盖其他内容")
@@ -168,7 +170,8 @@ def begin_entry(root: str, author: str, date_prefix: str, platform: str,
             raise ValueError("存档标记版本不兼容，未覆盖已有数据")
         recorded_files = {item.get('path') for item in previous.get('files', []) if isinstance(item, dict)}
         if (entry_status(folder, verify_files=True) == "complete" and
-                set(required_files or ()).issubset(recorded_files)):
+                set(required_files or ()).issubset(recorded_files) and
+                all(set(group) & recorded_files for group in (required_file_groups or ()))):
             return ArchiveEntry(folder, previous, True)
     else:
         folder = _inside(root_path, f"{_author_component(author)}/{date_prefix}{suffix}")
