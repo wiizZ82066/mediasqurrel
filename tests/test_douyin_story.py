@@ -175,6 +175,10 @@ class DouyinStoryTests(unittest.TestCase):
                 with self.assertRaises(PlatformAccessError) as raised:
                     story._request({'to_uid': '456'}, 'sessionid=fixture-session', 10)
                 self.assertEqual(raised.exception.reason, reason)
+                if data == {'status_code': 5}:
+                    self.assertIn('状态 5', str(raised.exception))
+                    self.assertIn('不能判定登录失效', str(raised.exception))
+                    self.assertNotIn('重新登录', str(raised.exception))
                 request.assert_called_once()
                 self.assertFalse(request.call_args.kwargs['allow_redirects'])
         response.status_code = 200; response.iter_content.return_value = [b' ' * (story._LIMIT + 1)]

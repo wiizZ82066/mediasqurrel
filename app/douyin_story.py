@@ -148,7 +148,7 @@ def _request(params, cookie, timeout):
     if str(code) in ('8', '12', '2483'):
         raise _error('抖音登录已失效或无法用于日常读取，请在设置中重新登录', 'login_required')
     if str(code) == '5':
-        raise _error('抖音日常接口返回参数错误（状态 5），已停止下载；可尝试在设置中重新登录后重试')
+        raise _error('抖音日常接口返回“参数不合法”（状态 5），已停止下载；此错误不能判定登录失效')
     if code not in (0, '0'):
         raise _error('抖音未允许读取日常，请检查账号可见性或平台验证', 'platform_error')
     return payload
