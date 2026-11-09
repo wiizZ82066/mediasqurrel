@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from playwright.sync_api import Error as BrowserError
 
@@ -27,6 +27,20 @@ def payload(items=None, **values):
     return {'status_code': 0, 'active_data': {'story_group_v2_items': [
         {'story_group_v2': {'aweme_list': items if items is not None else [post()]}}]},
             'has_more': False, **values}
+
+
+def registered_device():
+    return {'device_id': '1234567890123456', 'install_id': '2345678901234567',
+            'cdid': 'a8b0dd3c-5a1f-4bda-a491-ff610ec7715c',
+            'openudid': '0123456789abcdef', 'registered': True}
+
+
+def response(data, status=200):
+    value = MagicMock()
+    value.__enter__.return_value = value
+    value.status_code = status
+    value.iter_content.return_value = [json.dumps(data).encode()]
+    return value
 
 
 class DouyinStoryTests(unittest.TestCase):
@@ -146,6 +160,118 @@ class DouyinStoryTests(unittest.TestCase):
         with self.assertRaises(PlatformAccessError):
             story._device()
         self.assertEqual(path.read_text(encoding='utf8'), '{incomplete')
+
+    def test_registered_device_keeps_server_id_lengths_and_original_openudid(self):
+        device = registered_device()
+        path = self.root / 'douyin_mobile_device.json'
+        path.write_text(json.dumps(device), encoding='utf8')
+        self.assertEqual(story._device(), device)
+        self.assertEqual(story._params(story._device(), '456', '0', 20)['openudid'], device['openudid'])
+        # A broken binding must not silently switch to a freshly invented ID.
+        del device['openudid']
+        path.write_text(json.dumps(device), encoding='utf8')
+        with patch.object(story.requests, 'post') as register:
+            with self.assertRaises(PlatformAccessError):
+                story._device()
+            register.assert_not_called()
+        self.assertEqual(json.loads(path.read_text(encoding='utf8')), device)
+
+    def test_registered_client_reads_only_requested_item_without_profile_list_or_registration(self):
+        (self.root / 'douyin_mobile_device.json').write_text(json.dumps(registered_device()), encoding='utf8')
+        target = post()
+        target.update(aweme_type=68, images=[{'url_list': ['https://media.invalid/photo']}])
+        with patch.object(story.requests, 'get', return_value=response({'status_code': 0, 'aweme_detail': target})) as request, \
+                patch.object(story.requests, 'post') as register:
+            detail = story.fetch_story_detail('123', '456')
+        self.assertEqual(len(detail['images']), 1)
+        self.assertTrue(detail['is_story'])
+        self.assertNotIn('authentication_token', detail)
+        request.assert_called_once()
+        register.assert_not_called()
+        url = urlsplit(request.call_args.args[0])
+        self.assertEqual(url.scheme + '://' + url.netloc + url.path, story._DETAIL_ENDPOINT)
+        query = parse_qs(url.query)
+        self.assertEqual(query['aweme_id'], ['123'])
+        self.assertEqual(query['openudid'], ['0123456789abcdef'])
+        self.assertNotIn('to_uid', query)
+        self.assertNotIn('story_ttl', query)
+        self.assertFalse(request.call_args.kwargs['allow_redirects'])
+        self.assertTrue(request.call_args.kwargs['stream'])
+        headers = request.call_args.kwargs['headers']
+        self.assertEqual(headers['X-Gorgon'], story.get_xgorgon(url.query, int(headers['X-Khronos']), cookie=headers['Cookie']))
+
+    def test_registered_item_rejects_mismatch_private_or_non_story_without_fallback(self):
+        (self.root / 'douyin_mobile_device.json').write_text(json.dumps(registered_device()), encoding='utf8')
+        private = post(); private['status'] = {'is_private': True}
+        ordinary = post(); ordinary.pop('is_25_story')
+        for target in (None, post('789'), post(author='789'), private, ordinary):
+            data = {'status_code': 0, 'aweme_detail': target, 'recommendations': [post()]}
+            with self.subTest(target=target), patch.object(story.requests, 'get', return_value=response(data)) as request, \
+                    patch.object(story.requests, 'post') as register:
+                with self.assertRaises(PlatformAccessError):
+                    story.fetch_story_detail('123', '456')
+                request.assert_called_once()
+                register.assert_not_called()
+
+    def test_registered_item_auth_or_parameter_error_does_not_register_or_scan(self):
+        (self.root / 'douyin_mobile_device.json').write_text(json.dumps(registered_device()), encoding='utf8')
+        for http_status, code in ((403, 0), (429, 0), (200, 5), (200, 8)):
+            with patch.object(story.requests, 'get', return_value=response({'status_code': code}, http_status)) as request, \
+                    patch.object(story.requests, 'post') as register:
+                with self.assertRaises(PlatformAccessError):
+                    story.fetch_story_detail('123', '456')
+                request.assert_called_once()
+                register.assert_not_called()
+
+    def test_explicit_registration_is_once_cookie_free_and_discards_server_tokens(self):
+        old = story._device()
+        server = {'device_id_str': '1234567890123456', 'install_id_str': '2345678901234567',
+                  'device_token': 'sensitive-fixture', 'bind_dtrait': 'private-fixture'}
+        with patch.object(story.requests, 'post', return_value=response(server)) as request, \
+                patch.object(story, 'load_cookies') as credentials:
+            registered = story.register_device()
+            self.assertEqual(story.register_device(), registered)
+            request.assert_called_once()
+            credentials.assert_not_called()
+        self.assertTrue(registered['registered'])
+        self.assertEqual(registered['cdid'], old['cdid'])
+        request_url = urlsplit(request.call_args.args[0])
+        self.assertEqual(request_url.scheme + '://' + request_url.netloc + request_url.path, story._REGISTER_ENDPOINT)
+        query = parse_qs(request_url.query)
+        sent = json.loads(request.call_args.kwargs['data'])
+        self.assertEqual(sent['header']['openudid'], registered['openudid'])
+        self.assertEqual(query['openudid'], [registered['openudid']])
+        self.assertNotIn('Cookie', request.call_args.kwargs['headers'])
+        self.assertFalse(request.call_args.kwargs['allow_redirects'])
+        for path in self.root.glob('*.json'):
+            self.assertNotIn('sensitive-fixture', path.read_text())
+            self.assertNotIn('private-fixture', path.read_text())
+
+    def test_uncertain_registration_preserves_old_identity_and_never_retries(self):
+        old = story._device()
+        with patch.object(story.requests, 'post', side_effect=story.requests.Timeout('private-url')) as request:
+            with self.assertRaises(PlatformAccessError) as raised:
+                story.register_device()
+            self.assertNotIn('private-url', str(raised.exception))
+            with self.assertRaises(PlatformAccessError):
+                story.register_device()
+            request.assert_called_once()
+        self.assertEqual(story._device(), old)
+
+    def test_invalid_or_oversized_registration_response_cannot_replace_binding(self):
+        for server in ({'device_id': 0, 'install_id': 0}, {'device_id': '../123', 'install_id': 123456}, [1]):
+            with self.subTest(server=server):
+                with tempfile.TemporaryDirectory() as root, patch.object(story.config, 'DATA_DIR', root):
+                    old = story._device()
+                    with patch.object(story.requests, 'post', return_value=response(server)) as request:
+                        with self.assertRaises(PlatformAccessError):
+                            story.register_device()
+                    request.assert_called_once()
+                    self.assertEqual(story._device(), old)
+        huge = response({}); huge.iter_content.return_value = [b'x' * 524289]
+        with patch.object(story.requests, 'post', return_value=huge):
+            with self.assertRaises(PlatformAccessError):
+                story.register_device()
 
     def test_bounded_pagination_matches_target_and_stops_on_stalled_cursor(self):
         first = payload([post('789')], has_more=True, next_offset=20)
