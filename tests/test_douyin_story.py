@@ -166,7 +166,8 @@ class DouyinStoryTests(unittest.TestCase):
         for status, data, reason in (
                 (302, {}, 'platform_error'), (401, {}, 'login_required'),
                 (403, {}, 'risk_control'), (429, {}, 'rate_limited'),
-                (200, {'status_code': 8}, 'login_required'), (200, {}, 'platform_error'),
+                (200, {'status_code': 8}, 'login_required'),
+                (200, {'status_code': 5}, 'invalid_response'), (200, {}, 'platform_error'),
                 (200, [1], 'invalid_response')):
             response = MagicMock(); response.__enter__.return_value = response
             response.status_code = status; response.iter_content.return_value = [json.dumps(data).encode()]
