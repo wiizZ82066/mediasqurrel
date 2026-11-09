@@ -88,6 +88,22 @@ class DouyinAlbumTests(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in (folder / 'photo').iterdir()), ['img0001.png', 'img0002.webp'])
         self.assertEqual(archive.entry_status(folder, verify_files=True), 'complete')
 
+    def test_daily_album_preserves_images_text_and_story_type(self):
+        post = self.post([{'url_list': ['https://media.invalid/daily-image']}])
+        post.update(is_25_story=1)
+        post['author']['uid'] = '456'
+        normalized = detail_from_scripts([json.dumps({'aweme_detail': post})], post['aweme_id'])
+        self.assertTrue(normalized['is_story'])
+        with patch.object(downloader.urllib.request, 'urlopen', return_value=Response(picture('PNG'))):
+            folder = Path(downloader.save_content(normalized, str(self.root)))
+        self.assertEqual(archive.entry_status(folder, verify_files=True), 'complete')
+        marker = archive.read_manifest(folder)
+        self.assertEqual(marker['source_url'], 'https://www.douyin.com/note/1234567')
+        self.assertEqual({item['path'] for item in marker['files']}, {'context.md', 'photo/img0001.png'})
+        context = (folder / 'context.md').read_text(encoding='utf-8')
+        self.assertIn('- **内容类型**: 日常图集', context)
+        self.assertIn('正文 😀 #旅行#', context)
+
     def test_missing_image_or_empty_list_is_not_silently_completed(self):
         for images in ([], [{'url_list': []}], [{'url_list': ['https://media.invalid/a']}, {}]):
             with self.subTest(images=images), patch.object(downloader.urllib.request, 'urlopen') as request:

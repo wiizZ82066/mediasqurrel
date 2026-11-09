@@ -549,7 +549,7 @@ def _save_album(ad, out_root):
                f'- **作者sec_uid**: {author.get("sec_uid", "")}\n'
                f'- **原文链接**: {canonical}\n'
                f'- **发布时间**: {published}\n'
-               '- **内容类型**: 图集\n'
+               f'- **内容类型**: {"日常图集" if ad.get("is_story") else "图集"}\n'
                f'- **视频标题**: {title}\n')
     atomic_write_text(folder / 'context.md', context)
     candidates = album_images(ad)  # Missing one image is an error, never silently skip.

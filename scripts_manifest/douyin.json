@@ -3,7 +3,7 @@
   "name": "抖音下载器",
   "icon": "🎵",
   "script": "douyin_downloader.py",
-  "description": "粘贴分享文案或作品链接，下载视频、图集与正文；日常为实验支持",
+  "description": "粘贴分享文案或作品链接，下载视频、图集与正文；日常视频与图集为实验支持",
   "capabilities": {
     "download": true,
     "search": true,
@@ -19,7 +19,7 @@
       "required": true,
       "positional": true,
       "placeholder": "例如：3.30 复制打开抖音，看看【xx的作品】... https://v.douyin.com/xxxx/",
-      "help": "支持分享文案、短链、/video/{id} 视频及 /note/{id} 图集；日常为实验支持，需先登录并使用手机 App 分享链接，接口可能返回参数错误"
+      "help": "支持分享文案、短链、/video/{id} 视频及 /note/{id} 图集；日常视频与图集为实验支持，需在订阅页登录抖音后使用手机 App 分享链接，接口仍可能读取失败"
     },
     {
       "name": "out",
