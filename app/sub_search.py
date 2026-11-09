@@ -474,46 +474,48 @@ class CaptchaRequiredError(RuntimeError):
 
 
 def _douyin_login(timeout_s: int = 180) -> dict:
-    """可见浏览器窗口：用户完成滑块验证 + 扫码登录，导出登录 cookies。
+    """Require a new sign-in; retain the saved session until it completes.
 
-    流程（全程用户可见）:
-      1. 打开抖音搜索页（persistent profile）
-      2. 如有验证码 -> 用户拖一下滑块
-      3. 用户点头像/登录按钮扫码登录
-      4. 程序轮询: 验证消失 + 登录 cookie(sessionid) 出现 -> 导出 cookies
-    登录态保存于 app_data/douyin_cookies.json（仅本地）。
+    The search profile can contain an older session. Reusing it here made
+    “重新登录” immediately export that session and close before any sign-in.
+    An ephemeral context also leaves existing searches and saved data intact.
     """
-    import time as _t
-
+    from playwright.sync_api import Error as BrowserError
     from . import douyin_auth
+    from .browser import launch_chrome
+
+    def incomplete(detail):
+        return {'ok': False, 'logged_in': douyin_auth.is_logged_in(),
+                'detail': detail + '；未更改原有登录信息'}
 
     with sync_playwright() as p:
-        ctx, page, hunter = _dy_open(p, "抖音", headless=False)
+        browser = launch_chrome(p, headless=False)
         try:
-            deadline = _t.time() + timeout_s
-            stage = "等待人机验证与登录"
-            while _t.time() < deadline:
-                _wait_search(page, 2000)
-                cookies = ctx.cookies()
-                if douyin_auth.has_login_cookie(cookies):
-                    logged = douyin_auth.save_cookies(cookies)
-                    return {
-                        "ok": True,
-                        "logged_in": logged,
-                        "detail": "登录成功，登录态已保存到本地",
-                    }
-            # 超时：导出当前 cookies（即使未登录，验证信任态也有价值）
-            cookies = ctx.cookies()
-            logged = douyin_auth.save_cookies(cookies)
-            if logged:
-                return {"ok": True, "logged_in": True, "detail": "登录成功"}
-            return {
-                "ok": False,
-                "logged_in": False,
-                "detail": f"等待超时（{timeout_s}s）。若已完成滑块，可稍后重试搜索；扫码登录可获得完整体验",
-            }
+            ctx = browser.new_context(locale='zh-CN', viewport={'width': 1380, 'height': 900})
+            try:
+                page = ctx.new_page()
+                page.goto('https://www.douyin.com/', wait_until='domcontentloaded', timeout=_timeout_ms())
+                deadline = time.monotonic() + timeout_s
+                while time.monotonic() < deadline:
+                    _check_search()
+                    if page.is_closed():
+                        return incomplete('登录窗口已关闭')
+                    cookies = ctx.cookies()
+                    if douyin_auth.has_login_cookie(cookies):
+                        logged = douyin_auth.save_cookies(cookies)
+                        return {'ok': logged, 'logged_in': logged,
+                                'detail': '登录成功，新登录态已保存到本地'}
+                    try:
+                        _wait_search(page, 500)
+                    except BrowserError:
+                        if page.is_closed():
+                            return incomplete('登录窗口已关闭')
+                        raise
+                return incomplete(f'等待登录超时（{timeout_s}s），请重新打开窗口扫码登录')
+            finally:
+                ctx.close()
         finally:
-            ctx.close()
+            browser.close()
 
 
 def douyin_login_sync(timeout_s: int = 180, *, cancel=None) -> dict:

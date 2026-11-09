@@ -26,13 +26,13 @@ _DY_DOMAINS = [".douyin.com"]
 
 
 def save_cookies(cookies: list[dict]) -> bool:
-    """保存登录 cookies，返回是否包含登录标志。"""
-    os.makedirs(os.path.dirname(COOKIE_PATH), exist_ok=True)
-    with open(COOKIE_PATH, "w", encoding="utf-8") as f:
-        json.dump(cookies, f, ensure_ascii=False)
-    logged = has_login_cookie(cookies)
-    _write_status(logged_in=logged, cookie_count=len(cookies))
-    return logged
+    """Atomically replace a saved session only after a successful sign-in."""
+    from app.archive import atomic_write_text
+    if not has_login_cookie(cookies):
+        return False
+    atomic_write_text(COOKIE_PATH, json.dumps(cookies, ensure_ascii=False))
+    _write_status(logged_in=True, cookie_count=len(cookies))
+    return True
 
 
 def load_cookies() -> list[dict]:
@@ -57,14 +57,13 @@ def attach_cookies(ctx) -> bool:
 
 
 def _write_status(logged_in: bool, cookie_count: int, note: str = ""):
-    os.makedirs(os.path.dirname(STATUS_PATH), exist_ok=True)
-    with open(STATUS_PATH, "w", encoding="utf-8") as f:
-        json.dump({
-            "logged_in": logged_in,
-            "cookie_count": cookie_count,
-            "updated_at": _dt.datetime.now().isoformat(timespec="seconds"),
-            "note": note,
-        }, f, ensure_ascii=False)
+    from app.archive import atomic_write_text
+    atomic_write_text(STATUS_PATH, json.dumps({
+        "logged_in": logged_in,
+        "cookie_count": cookie_count,
+        "updated_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "note": note,
+    }, ensure_ascii=False))
 
 
 def auth_status() -> dict:
