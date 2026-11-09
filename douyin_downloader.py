@@ -1,4 +1,4 @@
-"""抖音视频/图集下载器（默认 Playwright；媒体由本机保存）。
+"""抖音视频/日常/图集下载器（默认 Playwright；媒体由本机保存）。
 
 用法:
     python douyin_downloader.py <作品URL|v.douyin.com短链|分享文案> [-o 输出根目录]
@@ -20,7 +20,7 @@ import tempfile
 import urllib.request
 import warnings
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -90,14 +90,35 @@ def extract_video_id(url: str) -> str | None:
 
 def resolve_to_video_url(raw: str) -> str:
     """Compatibility name: retain note URLs, including short-link redirects."""
+    return resolve_douyin_link(raw)[0]
+
+
+def _share_author(url):
+    """Keep only the author hint; never retain device IDs or share credentials."""
+    try:
+        query = parse_qs(urlsplit(url).query, max_num_fields=100)
+        text = (query.get('activity_info') or [''])[0]
+        if len(text) > 16384:
+            return ''
+        activity = json.loads(text)
+        author = str(activity.get('social_author_id') or '') if isinstance(activity, dict) else ''
+        return author if re.fullmatch(r'[0-9]{1,30}', author) else ''
+    except (ValueError, TypeError, RecursionError):
+        return ''
+
+
+def resolve_douyin_link(raw: str) -> tuple[str, str]:
+    """Resolve once, retaining the author needed by the mobile daily endpoint."""
     url = extract_douyin_url(raw)
     if not url:
         raise ValueError("未找到抖音链接")
+    author = ''
     for _ in range(6):
+        author = _share_author(url) or author
         vid = extract_video_id(url)
         if vid:
             kind = 'note' if any(f'/{kind}/' in urlsplit(url).path for kind in ('note', 'slides')) else 'video'
-            return f"https://www.douyin.com/{kind}/{vid}"
+            return f"https://www.douyin.com/{kind}/{vid}", author
         # Check each redirect before following it; never fetch an unrelated host.
         try:
             with requests.get(url, headers={"User-Agent": _ua()}, allow_redirects=False,
@@ -140,6 +161,7 @@ def _attach_dy_cookies(ctx):
 
 def _fetch_aweme_detail_once(url: str) -> dict | None:
     """Return matching detail as soon as it arrives; do not sleep six extra seconds."""
+    from playwright.sync_api import Error as BrowserError
     expected = content_id(url)
     with sync_playwright() as p:
         browser = launch_chrome(p, headless=True)
@@ -170,19 +192,32 @@ def _fetch_aweme_detail_once(url: str) -> dict | None:
                     detail = payload.get('aweme_detail')
                     if isinstance(detail, dict) and str(detail.get('aweme_id')) == expected:
                         return detail
+                    filtered = payload.get('filter_detail')
+                    if isinstance(filtered, dict) and str(filtered.get('aweme_id')) == expected:
+                        if filtered.get('filter_reason') == 'story_25_filter':
+                            raise PlatformAccessError('此内容是限时日常，电脑版不提供详情', 'story_web_unsupported', platform='douyin')
+                        raise PlatformAccessError('此作品当前不可读取，请检查作品可见性和登录状态', 'content_unavailable', platform='douyin')
                 checked = len(hits)
                 if time.monotonic() >= next_page_check:
-                    scripts = page.locator('script').evaluate_all("""nodes => {
-                        const result = []; let total = 0;
-                        for (const node of nodes) {
-                            const text = (node.textContent || '').trimStart();
-                            if (node.id !== 'RENDER_DATA' && !text.startsWith('self.__pace_f.push(')) continue;
-                            total += text.length;
-                            if (total > 8 * 1024 * 1024) return null;
-                            result.push(text);
-                        }
-                        return result;
-                    }""")
+                    try:
+                        scripts = page.locator('script').evaluate_all("""nodes => {
+                            const result = []; let total = 0;
+                            for (const node of nodes) {
+                                const text = (node.textContent || '').trimStart();
+                                if (node.id !== 'RENDER_DATA' && !text.startsWith('self.__pace_f.push(')) continue;
+                                total += text.length;
+                                if (total > 8 * 1024 * 1024) return null;
+                                result.push(text);
+                            }
+                            return result;
+                        }""")
+                    except BrowserError as error:
+                        # A redirect can destroy this context while the detail
+                        # response is still being delivered. Read that response
+                        # on the next tick within the original time limit.
+                        if 'Execution context was destroyed' not in str(error):
+                            raise
+                        scripts = []
                     if scripts is None:
                         raise PlatformAccessError('抖音页面数据过大，已停止解析', 'invalid_response', platform='douyin')
                     detail = detail_from_scripts(scripts, expected)
@@ -205,7 +240,7 @@ def _check_access_status(status):
         raise PlatformAccessError('抖音暂时无法返回作品详情，请稍后重试', 'platform_error', platform='douyin')
 
 
-def fetch_aweme_detail(url: str) -> dict:
+def fetch_aweme_detail(url: str, *, author_uid: str = '') -> dict:
     """Browser remains default; an optional adapter never bypasses access errors."""
     from playwright.sync_api import Error as BrowserError, TimeoutError as BrowserTimeout
     channel = os.environ.get('MS_DOUYIN_DETAIL_CHANNEL', 'browser')
@@ -230,6 +265,13 @@ def fetch_aweme_detail(url: str) -> dict:
         try:
             detail = _fetch_aweme_detail_once(url)
         except PlatformAccessError as error:
+            if error.reason == 'story_web_unsupported':
+                from app.douyin_story import fetch_story_detail
+                print('检测到限时日常，正在使用已保存的抖音登录态读取…', flush=True)
+                detail = fetch_story_detail(content_id(url), author_uid,
+                                            timeout=max(10, min(60, int(os.environ.get('MS_DOWNLOAD_TIMEOUT', '120')))))
+                print(f'日常详情解析完成，耗时 {time.monotonic() - started:.2f} 秒', flush=True)
+                return detail
             if not error.retryable:
                 raise
             last_err = error
@@ -384,14 +426,18 @@ def main() -> None:
         print("用法: python douyin_downloader.py <作品URL|v.douyin.com短链|分享文案> [-o 输出根目录]")
         sys.exit(1)
     try:
-        url = resolve_to_video_url(raw)
+        url, author_uid = resolve_douyin_link(raw)
     except ValueError as e:
         print(e)
         sys.exit(1)
     print("解析到:", url, flush=True)
 
-    ad = fetch_aweme_detail(url)
-    save_content(ad, out_root)
+    try:
+        ad = fetch_aweme_detail(url, author_uid=author_uid)
+        save_content(ad, out_root)
+    except PlatformAccessError as error:
+        print(f'下载未完成：{error}', flush=True)
+        sys.exit(1)
 
 
 def save_content(ad: dict, out_root: str) -> str:
@@ -465,6 +511,7 @@ def save_content(ad: dict, out_root: str) -> str:
         f"- **作者sec_uid**: {ad['author'].get('sec_uid', '')}\n"
         f"- **原文链接**: https://www.douyin.com/video/{aweme_id}\n"
         f"- **发布时间**: {pub_time}\n"
+        + ('- **内容类型**: 日常视频\n' if ad.get('is_story') else '') +
         f"- **视频标题**: {title_field}\n"
         f"- **视频文件**: {aweme_id}.mp4\n"
         + (f"- **封面文件**: {aweme_id}_cover.jpg\n" if cover_urls else "")

@@ -100,6 +100,7 @@ CURRENT_BASELINE.md
 **/*storage-state*.json
 **/*storageState*.json
 **/*session*.json
+**/douyin_mobile_device.json
 **/browser-profile/
 **/douyin_profile/
 **/playwright-report/

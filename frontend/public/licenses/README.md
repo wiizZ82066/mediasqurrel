@@ -25,3 +25,7 @@ Simple Icons 项目采用 CC0-1.0（完整文本：`simple-icons-cc0.txt`），�
 ## 录播播放引擎
 
 HLS.js 1.7.3（https://github.com/video-dev/hls.js/tree/v1.7.3），Apache-2.0；完整许可见 `hls-js-apache-2.0.txt`。按需加载本地打包的 light 版本，不访问第三方播放 CDN。
+
+## 抖音日常读取
+
+`app/douyin_mobile_sign.py` 的请求编码来自 [Ivan494/douyin-live-recorder](https://github.com/Ivan494/douyin-live-recorder/blob/a318f20c215bd3b463d34f0513dfa459b5c7db3f/src/signer/gorgon.py)，MIT，Copyright (c) 2026 Ivan494；完整许可见 `douyin-mobile-mit.txt`。日常作者列表的路径和参数也参考同一版本。本项目自行实现限定作品与作者的读取、现有登录态复用、响应上限与错误处理，不引入该项目的应用、登录界面或批量采集流程。

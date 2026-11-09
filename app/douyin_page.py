@@ -33,12 +33,16 @@ def _normalize(value, identity):
     if value.get('pcNeedLogin') is True:
         raise PlatformAccessError('此作品需要登录后查看，请先完成抖音登录', 'login_required', platform='douyin')
     if (value.get('isPrivate') is True or value.get('isFriendLimit') is True or
-            isinstance(status, dict) and any(status.get(key) is True for key in ('isDelete', 'isProhibited', 'isReviewing'))):
+            isinstance(status, dict) and any(status.get(key) is True for key in (
+                'isDelete', 'isProhibited', 'isReviewing', 'is_delete', 'is_prohibited',
+                'is_private', 'in_reviewing', 'self_see'))):
         raise PlatformAccessError('此作品当前不可公开读取，已停止下载', 'platform_error', platform='douyin')
     result = {'aweme_id': identity, 'aweme_type': value.get('aweme_type', value.get('awemeType')),
               'author': {'nickname': author['nickname'], 'uid': author.get('uid', ''),
                          'sec_uid': author.get('sec_uid', author.get('secUid', ''))},
               'desc': value.get('desc'), 'create_time': value.get('create_time', value.get('createTime'))}
+    if any(value.get(key) in (True, 1) for key in ('is_story', 'is_24_story', 'is_25_story')):
+        result['is_story'] = True
     images = value.get('images')
     if isinstance(images, list):
         result['images'] = []
