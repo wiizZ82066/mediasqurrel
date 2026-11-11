@@ -1,9 +1,11 @@
 """Douyin post collection, with pinned-aware overlap and explicit limits."""
 import re
-from .. import watcher
-from ..browser import launch_chrome, stealth_context
+from .. import douyin_auth, watcher
+from ..browser import stealth_context
 from .common import collect_browser, published_at, run_sync_scan
 from ..douyin_content import source_url
+
+_POST_URL = r'^https://(?:www|www-hj)\.douyin\.com/aweme/v1/web/aweme/post/?(?:\?|$)'
 
 def parse_page(payload):
     if not isinstance(payload, dict) or payload.get('status_code') != 0:
@@ -28,15 +30,48 @@ def parse_page(payload):
     more = payload.get('has_more')
     return items, bool(more) if more is not None else (False if not items else None)
 
+def page_restriction(payload):
+    module = payload.get('not_login_module')
+    if isinstance(module, dict) and module.get('guide_login_tip_exist') in (True, 1, '1'):
+        return 'guest_preview'
+
+
 def _scan_sync(sub):
     sec_uid = str(sub['blogger_id']).strip()
     if not re.fullmatch(r'[A-Za-z0-9_.-]+', sec_uid):
         raise ValueError('抖音订阅sec_uid格式无效')
+    revision = observation = None
     def context(browser):
-        from ..douyin_auth import attach_cookies
+        nonlocal revision, observation
         ctx = stealth_context(browser)
-        attach_cookies(ctx)
+        revision = douyin_auth.restore_session(ctx)
+        observation = douyin_auth.AccountObservation(ctx)
         return ctx
+
+    def collected(page, result, collector):
+        if result['coverage']['reason'] == 'guest_preview':
+            douyin_auth.record_scan_session(revision, guest=True)
+            return
+        if not revision or not result['coverage']['complete']:
+            return
+        # The account and post responses are independent. Allow a short window
+        # for the normal account response only when a checkpoint is due.
+        if not observation.confirmed and douyin_auth.checkpoint_due(revision):
+            for _ in range(12):
+                collector.check()
+                if observation.confirmed or collector.remaining() <= 0:
+                    break
+                try:
+                    page.wait_for_timeout(min(250, max(1, int(collector.remaining() * 1000))))
+                except Exception:
+                    return  # A closed page cannot confirm a session; keep its valid posts.
+        if observation.confirmed:
+            try:
+                cookies = page.context.cookies()
+            except Exception:
+                return
+            douyin_auth.record_scan_session(revision, verified_cookies=cookies)
+
     def launch(p):
         try:
             return p.chromium.launch(channel='chrome', headless=True, timeout=10000)
@@ -44,8 +79,11 @@ def _scan_sync(sub):
             if sub.get('_cancel_event') and sub['_cancel_event'].is_set():
                 raise
             return p.chromium.launch(headless=True, timeout=10000)
-    return collect_browser(sub, parse_page, launch, context,
-                           f'https://www.douyin.com/user/{sec_uid}', r'aweme/v1/web/aweme/post(?:/|\?)')
+    result = collect_browser(sub, parse_page, launch, context, f'https://www.douyin.com/user/{sec_uid}', _POST_URL,
+                             page_restriction=page_restriction, on_collected=collected)
+    if sub.get('scan_options', {}).get('baseline') and result['coverage']['reason'] == 'guest_preview':
+        result['error'] = '抖音只返回了部分公开作品，请在订阅页检查抖音登录；尚未建立基线'
+    return result
 
 def scan(sub):
     return run_sync_scan(_scan_sync, sub)

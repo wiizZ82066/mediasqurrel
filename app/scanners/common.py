@@ -49,13 +49,15 @@ SCROLL_LIST = '''() => {
 
 
 class Collector:
-    def __init__(self, sub, parser):
+    def __init__(self, sub, parser, *, page_restriction=None):
         self.options = {**DEFAULT_LIMITS, **sub.get('scan_options', {})}
         self.cancel = sub.get('_cancel_event') or threading.Event()
         self.parser = parser
+        self.page_restriction = page_restriction
         self.started = time.monotonic()
         self.items, self.signatures = {}, set()
         self.pages, self.complete, self.reason = 0, False, ''
+        self.restriction = None
         self.oldest, self.valid, self.error = None, False, None
         self.avatar_source = None
 
@@ -76,11 +78,15 @@ class Collector:
             return
         try:
             items, has_more = self.parser(payload)
+            restriction = self.page_restriction(payload) if self.page_restriction else None
         except (ValueError, TypeError, KeyError) as error:
             self.error = redact_text(str(error))
             return
         signature = (tuple(item['item_id'] for item in items), has_more)
+        self.restriction = restriction
         if signature in self.signatures:
+            if restriction:
+                self.complete, self.reason = False, restriction
             return
         self.signatures.add(signature)
         self.valid, self.pages = True, self.pages + 1
@@ -93,6 +99,10 @@ class Collector:
             if len(self.items) >= self.options['max_items']:
                 self.reason = 'item_limit'
                 break
+        # A guest preview can contain old, unpinned posts and even say has_more=0.
+        # Its visible items are useful, but neither condition proves coverage.
+        if restriction:
+            self.complete, self.reason = False, restriction
         if self.reason:
             return
         if self.options.get('baseline'):
@@ -136,14 +146,14 @@ def _interrupted_result(collector, reason, detail):
         raise RuntimeError(detail)
     # A usable response is worth retaining, but a failed browser operation must
     # never imply that the rest of the requested window was checked.
-    collector.complete, collector.reason = False, reason
+    collector.complete, collector.reason = False, collector.restriction or reason
     result = collector.result()
     result['coverage']['detail'] = detail
     return result
 
 
-def collect_browser(sub, parser, launch, setup_context, url, url_pattern):
-    collector = Collector(sub, parser)
+def collect_browser(sub, parser, launch, setup_context, url, url_pattern, *, page_restriction=None, on_collected=None):
+    collector = Collector(sub, parser, page_restriction=page_restriction)
     try:
         from ..browser import sync_playwright
         with sync_playwright() as playwright:
@@ -154,6 +164,11 @@ def collect_browser(sub, parser, launch, setup_context, url, url_pattern):
                 page = context.new_page()
                 page.set_default_timeout(2000)
                 pattern = re.compile(url_pattern)
+                def finish(result):
+                    if on_collected:
+                        on_collected(page, result, collector)
+                    return result
+
                 def on_response(response):
                     if not pattern.search(response.url) or collector.reason or collector.cancel.is_set():
                         return
@@ -173,7 +188,7 @@ def collect_browser(sub, parser, launch, setup_context, url, url_pattern):
                     collector.check()
                     navigation_problem = _browser_problem(error)
                     if navigation_problem[0] != 'navigation_timeout':
-                        return _interrupted_result(collector, *navigation_problem)
+                        return finish(_interrupted_result(collector, *navigation_problem))
                     # DOM readiness is not the list readiness. A slow page can
                     # have already delivered its API response, or deliver it
                     # during the remaining bounded wait. Do not navigate again.
@@ -208,10 +223,10 @@ def collect_browser(sub, parser, launch, setup_context, url, url_pattern):
                         # loop gets the next document; there is no new request.
                         if 'Execution context was destroyed' in str(error):
                             continue
-                        return _interrupted_result(collector, *_browser_problem(error))
+                        return finish(_interrupted_result(collector, *_browser_problem(error)))
                 if navigation_problem and not collector.valid:
                     raise RuntimeError(navigation_problem[1])
-                return collector.result()
+                return finish(collector.result())
             finally:
                 browser.close()
     except ScanCancelled:

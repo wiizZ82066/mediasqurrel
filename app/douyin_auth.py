@@ -8,7 +8,9 @@ import datetime as _dt
 import json
 import os
 import math
+import threading
 import time
+from urllib.parse import urlsplit
 
 try:
     from . import config as _config
@@ -22,16 +24,37 @@ STATUS_PATH = os.path.join(_DATA, "douyin_auth.json")
 
 # Only a nonempty, unexpired session cookie belongs to a saved login.
 _LOGIN_COOKIE = "sessionid"
-_DY_DOMAINS = [".douyin.com"]
+_LOCK = threading.RLock()
+_CHECKPOINT_SECONDS = 6 * 3600
+_SESSION_KEYS = {'sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt', 'uid_tt', 'uid_tt_ss',
+                 'sid_ucp_v1', 'ssid_ucp_v1', 'passport_csrf_token', 'passport_csrf_token_default'}
 
 
-def save_cookies(cookies: list[dict]) -> bool:
+def _first_party(cookies):
+    def allowed(cookie):
+        domain = str(cookie.get('domain') or '').lower().lstrip('.')
+        return domain == 'douyin.com' or domain.endswith('.douyin.com')
+    return [c for c in cookies if isinstance(c, dict) and allowed(c)]
+
+
+def _revision():
+    try:
+        stat = os.stat(COOKIE_PATH)
+        return f'{stat.st_mtime_ns}:{stat.st_size}'
+    except OSError:
+        return None
+
+
+def save_cookies(cookies: list[dict], *, verified=False) -> bool:
     """Atomically replace a saved session only after a successful sign-in."""
     from app.archive import atomic_write_text
+    cookies = _first_party(cookies)
     if not has_login_cookie(cookies):
         return False
-    atomic_write_text(COOKIE_PATH, json.dumps(cookies, ensure_ascii=False))
-    _write_status(logged_in=True, cookie_count=len(cookies))
+    with _LOCK:
+        atomic_write_text(COOKIE_PATH, json.dumps(cookies, ensure_ascii=False))
+        _write_status({'updated_at': _dt.datetime.now().isoformat(timespec='seconds'),
+                       'revision': _revision(), 'verified_at': time.time() if verified else 0})
     return True
 
 
@@ -44,40 +67,106 @@ def load_cookies() -> list[dict]:
         return []
 
 
+def restore_session(ctx):
+    """Return the exact file generation restored into this browser."""
+    with _LOCK:
+        revision = _revision()
+        cookies = _first_party(load_cookies())
+        if revision and cookies:
+            try:
+                ctx.add_cookies(cookies)
+            except Exception:
+                # Browser error messages may echo the rejected cookie.
+                raise RuntimeError('无法恢复本机抖音登录信息，原文件已保留') from None
+            return revision
+    return None
+
+
 def attach_cookies(ctx) -> bool:
-    """向浏览器 context 注入已保存的抖音 cookies（无则跳过）。"""
-    cookies = load_cookies()
-    if not cookies:
-        return False
     try:
-        ctx.add_cookies(cookies)
-        return True
-    except Exception:
+        return restore_session(ctx) is not None
+    except RuntimeError:
         return False
 
 
-def _write_status(logged_in: bool, cookie_count: int, note: str = ""):
+def _write_status(value):
     from app.archive import atomic_write_text
-    atomic_write_text(STATUS_PATH, json.dumps({
-        "logged_in": logged_in,
-        "cookie_count": cookie_count,
-        "updated_at": _dt.datetime.now().isoformat(timespec="seconds"),
-        "note": note,
-    }, ensure_ascii=False))
+    atomic_write_text(STATUS_PATH, json.dumps(value, ensure_ascii=False))
 
 
-def auth_status() -> dict:
-    """Read current saved credentials, never trust the historical status flag."""
+def _status_metadata():
     try:
         with open(STATUS_PATH, "r", encoding="utf-8") as f:
             saved = json.load(f)
     except (OSError, ValueError):
-        saved = {}
-    if not isinstance(saved, dict):
-        saved = {}
-    cookies = load_cookies()
-    return {"logged_in": has_login_cookie(cookies), "cookie_count": len(cookies),
-            "updated_at": saved.get("updated_at", ""), "note": ""}
+        return {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def auth_status() -> dict:
+    with _LOCK:
+        saved, cookies = _status_metadata(), load_cookies()
+        present = has_login_cookie(cookies)
+        limited = present and saved.get('revision') == _revision() and saved.get('profile_limited') is True
+        return {"logged_in": present and not limited, "saved_login": present, "profile_limited": limited,
+                "cookie_count": len(cookies), "updated_at": saved.get("updated_at", ""), "note": ""}
+
+
+class AccountObservation:
+    """Only a first-party response for the signed-in user can confirm a session."""
+
+    def __init__(self, context):
+        self.confirmed = False
+        context.on('response', self._observe)
+
+    def _observe(self, response):
+        try:
+            url = urlsplit(response.url)
+            if (url.scheme != 'https' or url.netloc not in ('www.douyin.com', 'www-hj.douyin.com') or
+                    url.path.rstrip('/') != '/aweme/v1/web/user/profile/self' or response.status != 200):
+                return
+            data = response.json()
+            uid = str((data.get('user') or {}).get('uid') or '')
+            if data.get('status_code') == 0 and uid.isascii() and uid.isdigit() and int(uid) > 0:
+                self.confirmed = True
+        except Exception:
+            # Malformed data or a navigation before the body is ready is not confirmation.
+            pass
+
+
+def checkpoint_due(revision):
+    saved = _status_metadata()
+    last = saved.get('verified_at')
+    return (saved.get('revision') != revision or saved.get('profile_limited') is True or
+            not isinstance(last, (int, float)) or not math.isfinite(last) or
+            time.time() - last >= _CHECKPOINT_SECONDS)
+
+
+def record_scan_session(revision, *, guest=False, verified_cookies=None):
+    """A late worker must never replace a new QR login or save a guest session."""
+    from app.archive import atomic_write_text
+    with _LOCK:
+        if not revision or revision != _revision():
+            return
+        saved = _status_metadata()
+        if guest:
+            if not saved.get('profile_limited') or saved.get('revision') != revision:
+                _write_status({**saved, 'revision': revision, 'profile_limited': True})
+            return
+        if not verified_cookies:
+            return
+        fresh = _first_party(verified_cookies)
+        if not has_login_cookie(fresh):
+            return
+        def session_keys(cookies):
+            return {(c.get('name'), c.get('domain'), c.get('path')): (c.get('value'), c.get('expires'))
+                    for c in cookies if c.get('name') in _SESSION_KEYS}
+        old = _first_party(load_cookies())
+        if not checkpoint_due(revision) and session_keys(old) == session_keys(fresh):
+            return
+        if fresh != old:
+            atomic_write_text(COOKIE_PATH, json.dumps(fresh, ensure_ascii=False))
+        _write_status({**saved, 'revision': _revision(), 'profile_limited': False, 'verified_at': time.time()})
 
 
 def is_logged_in() -> bool:
@@ -103,9 +192,9 @@ def has_login_cookie(cookies: list[dict]) -> bool:
 
 def clear():
     """清除本地登录态。"""
-    for p in (COOKIE_PATH, STATUS_PATH):
-        try:
-            os.remove(p)
-        except OSError:
-            pass
-    _write_status(logged_in=False, cookie_count=0, note="已手动清除")
+    with _LOCK:
+        for p in (COOKIE_PATH, STATUS_PATH):
+            try:
+                os.remove(p)
+            except FileNotFoundError:
+                pass

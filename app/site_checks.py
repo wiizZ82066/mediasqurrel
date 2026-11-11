@@ -61,11 +61,12 @@ def check_sites():
     if not _LOCK.acquire(blocking=False):
         raise RuntimeError('检测正在进行，请稍候')
     try:
-        logged_in = douyin_auth.auth_status()['logged_in']
+        auth = douyin_auth.auth_status()
+        logged_in, limited = auth['logged_in'], auth.get('profile_limited')
         login = {'id': 'douyin_login', 'label': '抖音登录',
                  'status': 'passed' if logged_in else 'warning',
-                 'reason': '已登录' if logged_in else '未登录',
-                 'note': '根据本机保存且未过期的登录信息判断',
+                 'reason': '主页登录受限' if limited else '已登录' if logged_in else '未登录',
+                 'note': '上次扫描只获得游客可见的作品，已保留本机登录信息' if limited else '根据本机保存的登录信息和最近的扫描结果判断',
                  'suggestion': '' if logged_in else '在订阅页点击登录抖音'}
         with ThreadPoolExecutor(max_workers=2) as pool:
             websites = list(pool.map(lambda item: _website(*item), _SITES))

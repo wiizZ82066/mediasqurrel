@@ -46,16 +46,64 @@ class DouyinLoginTests(unittest.TestCase):
         self.context.close.assert_called_once()
         self.browser.close.assert_called_once()
 
-    def test_relogin_waits_for_new_session_in_isolated_context(self):
-        self.context.cookies.side_effect = [[], [], session('new-fixture')]
+    def self_response(self, *, host='www.douyin.com', path='self', uid='123', status=0):
+        response = MagicMock(url=f'https://{host}/aweme/v1/web/user/profile/{path}/', status=200)
+        response.json.return_value = {'status_code': status, 'user': {'uid': uid}}
+        self.context.on.call_args.args[1](response)
+
+    def test_relogin_waits_for_confirmed_account_before_saving_new_session(self):
+        self.context.cookies.return_value = session('new-fixture')
+        def wait(page, millis):
+            self.advance(page, millis)
+            if self.clock == .5:
+                self.self_response(path='other')
+            if self.clock == 1:
+                self.self_response(uid='0')
+            if self.clock == 1.5:
+                self.self_response(host='www.douyin.com.example')
+            if self.clock == 2.5:
+                self.self_response()
+        self.wait.side_effect = wait
         result = search._douyin_login(3)
         self.assertTrue(result['ok'])
-        self.assertEqual(self.wait.call_count, 2)
+        self.assertEqual(self.wait.call_count, 5)
+        self.assertEqual(self.page.goto.call_args.args[0], 'https://www.douyin.com/user/self')
         self.assertEqual(json.loads(self.cookies.read_text()), session('new-fixture'))
         self.context.add_cookies.assert_not_called()
         self.playwright.chromium.launch_persistent_context.assert_not_called()
         self.context.close.assert_called_once()
         self.browser.close.assert_called_once()
+
+    def test_cookie_without_platform_confirmation_keeps_previous_login(self):
+        self.context.cookies.return_value = session('not-confirmed')
+        result = search._douyin_login(1)
+        self.assertFalse(result['ok'])
+        self.assertIn('未确认', result['detail'])
+        self.assert_preserved()
+
+    def test_rotated_session_survives_reopen_and_guest_cannot_replace_it(self):
+        revision = auth.restore_session(self.context)
+        fresh = session('updated-fixture')
+        auth.record_scan_session(revision, guest=True)
+        self.assertTrue(auth.auth_status()['profile_limited'])
+        self.assertFalse(auth.auth_status()['logged_in'])
+        self.assertEqual(self.cookies.read_bytes(), self.before[0])
+        auth.record_scan_session(revision, verified_cookies=fresh + [
+            {'domain': '.example.invalid', 'name': 'unrelated', 'value': 'excluded'}])
+        reopened = MagicMock()
+        current = auth.restore_session(reopened)
+        reopened.add_cookies.assert_called_once_with(fresh)
+        self.assertTrue(auth.auth_status()['logged_in'])
+        self.assertFalse(auth.checkpoint_due(current))
+        before = self.cookies.stat().st_mtime_ns, self.status.stat().st_mtime_ns
+        auth.record_scan_session(current, verified_cookies=fresh)
+        self.assertEqual(before, (self.cookies.stat().st_mtime_ns, self.status.stat().st_mtime_ns))
+        auth.record_scan_session(revision, guest=True)
+        self.assertTrue(auth.auth_status()['logged_in'])
+        auth.save_cookies(session('another-login'), verified=True)
+        auth.record_scan_session(current, verified_cookies=session('late-worker'))
+        self.assertEqual(auth.load_cookies(), session('another-login'))
+        self.assertNotIn('another-login', json.dumps(auth.auth_status()))
 
     def test_timeout_keeps_saved_session_and_status(self):
         result = search._douyin_login(1)

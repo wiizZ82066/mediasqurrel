@@ -38,6 +38,20 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(len(baseline.result()['items']), 1)
         self.assertEqual(baseline.result()['coverage']['scope'], 'baseline_current_page')
 
+    def test_guest_preview_never_proves_a_baseline_end_or_overlap(self):
+        old = self.post('old', 1)
+        for options in ({'cutoff_at':'2026-10-01T00:00:00+00:00'}, {'baseline':True}, {'max_items':1}):
+            for more in (0, 1):
+                collector = Collector({'scan_options':options}, douyin.parse_page, page_restriction=douyin.page_restriction)
+                collector.accept({**self.page(old, more=more), 'not_login_module':{'guide_login_tip_exist':True}})
+                result = collector.result()
+                self.assertEqual([i['item_id'] for i in result['items']], [old['aweme_id']])
+                self.assertEqual(result['coverage']['reason'], 'guest_preview')
+                self.assertFalse(result['coverage']['complete'])
+        collector = Collector({}, douyin.parse_page, page_restriction=douyin.page_restriction)
+        collector.accept({**self.page(old, more=0), 'not_login_module':{'guide_login_tip_exist':False}})
+        self.assertTrue(collector.result()['coverage']['complete'])
+
     def test_invalid_or_challenge_response_is_never_successful_empty(self):
         for payload in ({}, {'status_code': 0}, {'status_code': 8, 'aweme_list': []}):
             with self.assertRaises(ValueError):

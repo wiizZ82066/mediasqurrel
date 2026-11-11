@@ -491,6 +491,8 @@ async def _perform_scan(sub: dict, trigger: str = 'manual') -> dict:
                 label = f"已建立基线，共 {result['baseline']} 条内容"
             elif result["new_items"]:
                 label = f"扫描完成，{len(result['new_items'])} 条内容待下载或重试"
+            elif result.get('coverage', {}).get('complete') is False:
+                label = "仅检查了可见内容，无法确认是否有其他更新"
             else:
                 label = "扫描完成，暂无新内容"
             if result.get('filtered'):

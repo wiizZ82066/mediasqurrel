@@ -1,4 +1,5 @@
 const coverageReasons = {
+  guest_preview: '抖音只返回了部分公开作品，最新作品也可能缺失。请在订阅页检查抖音登录后重新扫描',
   network_error: '后续分页网络中断或请求超时，已取得的内容保留，请稍后重试',
   network_changed: '网络连接发生变化，已取得的内容保留，请网络稳定后重新扫描',
   network_unavailable: '网络暂时不可用，已取得的内容保留，请检查连接后重新扫描',

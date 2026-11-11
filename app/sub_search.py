@@ -493,24 +493,40 @@ def _douyin_login(timeout_s: int = 180) -> dict:
         try:
             ctx = browser.new_context(locale='zh-CN', viewport={'width': 1380, 'height': 900})
             try:
+                account = douyin_auth.AccountObservation(ctx)
                 page = ctx.new_page()
                 page.goto('https://www.douyin.com/', wait_until='domcontentloaded', timeout=_timeout_ms())
                 deadline = time.monotonic() + timeout_s
+                cookie_seen_at, opened_self = None, False
                 while time.monotonic() < deadline:
                     _check_search()
                     if page.is_closed():
                         return incomplete('登录窗口已关闭')
                     cookies = ctx.cookies()
                     if douyin_auth.has_login_cookie(cookies):
-                        logged = douyin_auth.save_cookies(cookies)
-                        return {'ok': logged, 'logged_in': logged,
-                                'detail': '登录成功，新登录态已保存到本地'}
+                        if account.confirmed:
+                            logged = douyin_auth.save_cookies(cookies, verified=True)
+                            return {'ok': logged, 'logged_in': logged, 'detail': '抖音已确认登录，登录信息已保存到本机'}
+                        if cookie_seen_at is None:
+                            cookie_seen_at = time.monotonic()
+                        elif not opened_self and time.monotonic() - cookie_seen_at >= 2:
+                            # Some home pages do not load the signed-in account
+                            # until the user opens their own profile.
+                            opened_self = True
+                            try:
+                                page.goto('https://www.douyin.com/user/self', wait_until='domcontentloaded',
+                                          timeout=min(_timeout_ms(), max(1, int((deadline-time.monotonic())*1000))))
+                            except BrowserError:
+                                if page.is_closed():
+                                    return incomplete('登录窗口已关闭')
                     try:
                         _wait_search(page, 500)
                     except BrowserError:
                         if page.is_closed():
                             return incomplete('登录窗口已关闭')
                         raise
+                if cookie_seen_at is not None:
+                    return incomplete('抖音未确认当前账号已登录，请检查登录窗口的提示')
                 return incomplete(f'等待登录超时（{timeout_s}s），请重新打开窗口扫码登录')
             finally:
                 ctx.close()

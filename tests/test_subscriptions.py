@@ -139,6 +139,39 @@ class SubscriptionTests(unittest.IsolatedAsyncioTestCase):
         result = await self.scan("new")
         self.assertEqual(len(result["new_items"]), 1)
 
+    async def test_douyin_guest_preview_does_not_swallow_later_tagged_update(self):
+        from app import scheduling
+        from app.scanners import douyin
+        from app.scanners.common import Collector
+        sub = watcher.add_sub('douyin', 'sample', download_filter={'tags':['新歌']})
+        def page(*items, guest=False):
+            payload = {'status_code':0, 'has_more':0, 'aweme_list':[
+                {'aweme_id':identity, 'desc':caption, 'create_time':123} for identity, caption in items]}
+            if guest:
+                payload['not_login_module'] = {'guide_login_tip_exist':True}
+            return payload
+        previous = ('1001', '之前的作品')
+        pages = iter([page(previous,guest=True), page(previous), page(previous,guest=True),
+                      page(('1002','昨天发布 #新歌'),('1003','其他话题 #新歌手'),previous)])
+        def collect(context, parser, *args, page_restriction, **kwargs):
+            collector = Collector(context, parser, page_restriction=page_restriction)
+            collector.accept(next(pages))
+            return collector.result()
+        with patch.object(douyin, 'collect_browser', side_effect=collect), \
+                patch.dict(watcher.SCANNERS, douyin=douyin.scan):
+            first = await watcher.scan_sub(sub)
+            self.assertIn('尚未建立基线', first['error'])
+            self.assertTrue(scheduling.scan_options(sub['id'])['baseline'])
+            self.assertEqual((await watcher.scan_sub(sub))['baseline'], 1)
+            cutoff = scheduling.scan_options(sub['id'])['cutoff_at']
+            limited = await watcher.scan_sub(sub)
+            self.assertFalse(limited['coverage']['complete'])
+            self.assertEqual(scheduling.scan_options(sub['id'])['cutoff_at'], cutoff)
+            recovered = await watcher.scan_sub(sub)
+        self.assertEqual([i['item_id'] for i in recovered['new_items']], ['1002'])
+        self.assertEqual(json.loads(self.state('1002', 'douyin')['filter_decision_json'])['matched'], ['新歌'])
+        self.assertEqual(self.state('1003', 'douyin')['status'], 'filtered')
+
     async def test_failed_first_scan_does_not_establish_baseline(self):
         with patch.dict(watcher.SCANNERS, weibo=AsyncMock(side_effect=RuntimeError("network unavailable"))):
             failure = await watcher.scan_sub(self.sub)
