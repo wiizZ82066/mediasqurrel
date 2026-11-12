@@ -2,6 +2,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import shutil
+import sqlite3
 import threading
 import time
 
@@ -256,7 +257,7 @@ async def retry_publish(identity):
 
 
 async def recover():
-    for record in live_store.unfinished():
+    for record in await asyncio.to_thread(live_store.unfinished):
         try:
             live_store.update_record(record['id'], chat_status='interrupted')
             await asyncio.to_thread(live_recorder.wait_for_previous, record)
@@ -272,10 +273,17 @@ async def _loop():
     global _recovering
     _recovering = True
     try:
-        await recover()
+        while not _stopping:
+            try:
+                await recover()
+            except (OSError, sqlite3.Error):
+                await asyncio.sleep(5)
+            else:
+                break
     finally:
         _recovering = False
     next_sync = 0
+    read_failed = False
     while not _stopping:
         if time.monotonic() >= next_sync and not config.MAINTENANCE_ACTIVE:
             try:
@@ -285,10 +293,19 @@ async def _loop():
                 print('[live] 录播任务摘要同步暂未完成，将在后台重试')
             next_sync = time.monotonic() + 30
         if not config.MAINTENANCE_ACTIVE:
+            try:
+                monitors = await asyncio.to_thread(live_store.monitors)
+            except (OSError, sqlite3.Error):
+                if not read_failed:
+                    print('[live] 暂时无法读取录播计划，5 秒后重试')
+                read_failed = True
+                await asyncio.sleep(5)
+                continue
+            read_failed = False
             now = db.utc_now()
-            for monitor in live_store.monitors():
+            for monitor in monitors:
                 identity = monitor['sub_id']
-                if len(_checks) >= MAX_CHECKS:
+                if _stopping or config.MAINTENANCE_ACTIVE or len(_checks) >= MAX_CHECKS:
                     break
                 if monitor['enabled'] and identity not in _checks and monitor['next_check_at'] and monitor['next_check_at'] <= now:
                     task = asyncio.create_task(check(identity))

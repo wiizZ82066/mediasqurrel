@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 
 from .redaction import redact_text
 from . import startup_shortcut
@@ -198,6 +199,27 @@ def message_box(message, *, question=False):
     return result == 6 if question else True
 
 
+class StartupLogHandler(RotatingFileHandler):
+    """A failed startup log must never report its own failure to redirected stderr."""
+
+    _retry_at = 0.0
+
+    def emit(self, record):
+        if time.monotonic() >= self._retry_at:
+            super().emit(record)
+
+    def handleError(self, record):
+        # logging's default handleError writes a traceback to sys.stderr, which
+        # is this very logger in a tray launch. Reopen on a later record instead.
+        self._retry_at = time.monotonic() + 30
+        stream, self.stream = self.stream, None
+        if stream is not None:
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                pass
+
+
 class LogStream(io.TextIOBase):
     """Bounded line buffering keeps split print writes together before redaction."""
     encoding = 'utf-8'
@@ -208,6 +230,7 @@ class LogStream(io.TextIOBase):
         self.logger = logger
         self.pending = ''
         self.overflow = False
+        self._emitting = False
         self.lock = threading.RLock()
 
     def isatty(self):
@@ -216,6 +239,8 @@ class LogStream(io.TextIOBase):
     def write(self, value):
         text = str(value)
         with self.lock:
+            if self._emitting:
+                return len(text)
             for part in text.splitlines(keepends=True):
                 end = part.endswith(('\n', '\r'))
                 if not self.overflow:
@@ -230,16 +255,19 @@ class LogStream(io.TextIOBase):
         return len(text)
 
     def _emit(self):
-        if self.pending.strip():
-            self.logger.info(redact_text(self.pending.rstrip('\r\n')))
-        self.pending = ''
+        line, self.pending = self.pending, ''
         self.overflow = False
+        if line.strip():
+            self._emitting = True
+            try:
+                self.logger.info(redact_text(line.rstrip('\r\n')))
+            finally:
+                self._emitting = False
 
     def flush(self):
-        # Uvicorn flushes every record. Keep partial print lines until newline;
-        # close() is the only place to finalize an incomplete line.
-        for handler in self.logger.handlers:
-            handler.flush()
+        # The file handler flushes on each emitted line. Uvicorn also flushes
+        # this adapter; incomplete lines must wait for a newline or close().
+        pass
 
     def close(self):
         if not self.closed:
@@ -254,8 +282,8 @@ def configure_background_logging(directory):
     directory.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     path = directory / f'startup-{stamp}-{os.getpid()}.log'
-    handler = RotatingFileHandler(path, maxBytes=1024 * 1024, backupCount=2,
-                                  encoding='utf-8', errors='replace')
+    handler = StartupLogHandler(path, maxBytes=1024 * 1024, backupCount=2,
+                                encoding='utf-8', errors='replace')
     handler.setFormatter(logging.Formatter('%(asctime)s %(message)s', datefmt='%Y-%m-%dT%H:%M:%S%z'))
     logger = logging.Logger('media-squirrel-startup', level=logging.INFO)
     logger.addHandler(handler)

@@ -580,11 +580,17 @@ async def _scheduled_scan(sub, group, on_new_items):
 async def scheduler_tick(on_new_items=None, *, now=None):
     if getattr(config, 'MAINTENANCE_ACTIVE', False):
         return
-    subs = {sub['id']: sub for sub in list_subs() if sub['enabled']}
+    # A delayed read on a removable database must not stall the web event loop.
+    due = await asyncio.to_thread(scheduling.due_groups, now, limit=100)
+    if not due:
+        return
+    subs = {sub['id']: sub for sub in await asyncio.to_thread(list_subs) if sub['enabled']}
+    if getattr(config, 'MAINTENANCE_ACTIVE', False):
+        return
     available = max(1, min(4, getattr(config, 'MAX_SCAN_CONCURRENCY', 2))) - len(_scheduled_jobs)
     if available <= 0:
         return
-    for sub_id in scheduling.due_groups(now, limit=100):
+    for sub_id in due:
         if sub_id not in subs or sub_id in _scheduled_jobs:
             continue
         group = scheduling.claim_group(sub_id, now)

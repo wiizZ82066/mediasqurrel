@@ -48,7 +48,8 @@ def _prepare_background():
     from app.windows_runtime import configure_background_logging
     try:
         from app import config as launch_config
-        directory = Path(launch_config.LOG_DIR) / 'startup'
+        # Keep process diagnostics on the host even when task archives use a removable store.
+        directory = Path(launch_config.DATA_DIR) / 'logs' / 'startup'
     except Exception:
         directory = Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'Media Squirrel' / 'startup-logs'
     try:
