@@ -81,6 +81,8 @@ def media_path(relative, *, root=None, file_only=False, allow_root=False):
         raise HTTPException(403, "需要指定媒体路径")
     base = Path(root or config.LIBRARY_ROOT).resolve()
     target = (base / value).resolve()
+    if config.is_library_data_path(target):
+        raise HTTPException(403, "应用数据目录不提供媒体访问")
     try:
         target.relative_to(base)
     except ValueError:

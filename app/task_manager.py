@@ -253,7 +253,10 @@ def _output_params(params):
         if not os.path.isabs(output) and '..' in output.replace('\\', '/').split('/'):
             raise ValueError('输出目录不能包含上级目录跳转')
         values['out'] = os.path.abspath(output if os.path.isabs(output) else os.path.join(config.LIBRARY_ROOT, output))
-    if os.path.normcase(os.path.realpath(values['out'])) == os.path.normcase(os.path.realpath(config.RESOURCE_DIR)):
+    resolved = os.path.realpath(values['out'])
+    if config.is_library_data_path(resolved):
+        raise ValueError('应用数据目录不能作为下载目录')
+    if os.path.normcase(resolved) == os.path.normcase(os.path.realpath(config.RESOURCE_DIR)):
         raise ValueError('媒体输出目录必须独立于项目根目录')
     return values
 

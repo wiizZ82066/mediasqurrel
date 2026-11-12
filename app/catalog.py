@@ -86,7 +86,7 @@ def _safe(root, relative):
     if value.is_absolute() or value.drive or str(relative).startswith(("/", "\\")):
         raise ValueError("媒体路径必须是相对路径")
     target = (root / value).resolve()
-    if target == root or not target.is_relative_to(root):
+    if target == root or not target.is_relative_to(root) or config.is_library_data_path(target):
         raise ValueError("媒体路径越界")
     return target
 
@@ -102,6 +102,8 @@ def _folders(root, cancel=None):
     Private/code containers are excluded when indexing a legacy source checkout.
     """
     from .security import PRIVATE_SEGMENTS
+    if config.is_library_data_path(root):
+        raise ValueError('应用数据目录不能作为媒体根目录')
     excluded = PRIVATE_SEGMENTS | {'build', 'dist', 'release', 'portable', 'src-tauri', 'backend-dist'}
     pending = [root]
     while pending:
@@ -112,7 +114,10 @@ def _folders(root, cancel=None):
         for entry in sorted(parent.iterdir(), key=lambda p: p.name):
             if entry.name.startswith('.') or entry.name.casefold() in excluded or not entry.is_dir() or entry.is_symlink():
                 continue
-            if not entry.resolve().is_relative_to(root):
+            resolved = entry.resolve()
+            if config.is_library_data_path(resolved):
+                continue
+            if not resolved.is_relative_to(root):
                 raise ValueError('媒体条目包含越界目录链接')
             if _DATE.match(entry.name) and parent != root:
                 yield parent.name, entry
@@ -169,6 +174,8 @@ def preflight_root(path):
 
 def register_root(path, label="", *, database=None):
     root = Path(path).resolve()
+    if config.is_library_data_path(root):
+        raise ValueError("应用数据目录不能作为媒体根目录")
     if not root.is_dir():
         raise FileNotFoundError("媒体根目录不存在；索引不会创建或移动媒体目录")
     path_key = _key(root)

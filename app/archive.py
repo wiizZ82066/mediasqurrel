@@ -143,8 +143,11 @@ def begin_entry(root: str, author: str, date_prefix: str, platform: str,
         raise ValueError("无法确定有效的平台内容 ID，已停止保存以避免覆盖其他内容")
     if not _DATE_PREFIX.fullmatch(date_prefix):
         raise ValueError("存档日期格式无效")
+    from . import config
     item_id = str(item_id)
     root_path = Path(root).resolve()
+    if config.is_library_data_path(root_path):
+        raise ValueError("应用数据目录不能用来保存媒体")
     root_path.mkdir(parents=True, exist_ok=True)
     suffix = f"_{platform}_{item_id}"
     matches = []
@@ -153,11 +156,13 @@ def begin_entry(root: str, author: str, date_prefix: str, platform: str,
     for author_dir in root_path.iterdir():
         if author_dir.is_symlink() or not author_dir.is_dir() or author_dir.name.startswith("."):
             continue
-        if not author_dir.resolve().is_relative_to(root_path):
+        resolved = author_dir.resolve()
+        if not resolved.is_relative_to(root_path) or config.is_library_data_path(resolved):
             continue
         for entry_dir in author_dir.iterdir():
             if entry_dir.name.endswith(suffix) and not entry_dir.is_symlink() and entry_dir.is_dir():
-                if not entry_dir.resolve().is_relative_to(root_path):
+                resolved = entry_dir.resolve()
+                if not resolved.is_relative_to(root_path) or config.is_library_data_path(resolved):
                     continue
                 marker = read_manifest(entry_dir)
                 if marker and marker.get("platform") == platform and marker.get("item_id") == item_id:
@@ -175,6 +180,8 @@ def begin_entry(root: str, author: str, date_prefix: str, platform: str,
             return ArchiveEntry(folder, previous, True)
     else:
         folder = _inside(root_path, f"{_author_component(author)}/{date_prefix}{suffix}")
+        if config.is_library_data_path(folder):
+            raise ValueError("作者目录与应用数据目录冲突")
         if folder.exists():
             raise FileExistsError("目标目录已有未确认归属的数据，已停止保存")
         folder.mkdir(parents=True)

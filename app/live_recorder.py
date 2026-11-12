@@ -27,7 +27,7 @@ def folder_for(record):
     root = Path(config.LIBRARY_ROOT).resolve()
     relative = record.get('output_rel') or ''
     folder = (root / relative).resolve()
-    if not relative or not folder.is_relative_to(root) or folder == root:
+    if not relative or not folder.is_relative_to(root) or folder == root or config.is_library_data_path(folder):
         raise ValueError('录播目录不存在或超出媒体库范围')
     return folder
 

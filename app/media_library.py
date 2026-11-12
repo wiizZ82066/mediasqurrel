@@ -397,7 +397,7 @@ def _scan_root_nocache() -> list[dict]:
         author_path = os.path.join(root, name)
         if not os.path.isdir(author_path):
             continue
-        if name in _SKIP_DIRS or name.startswith("."):
+        if name in _SKIP_DIRS or name.startswith(".") or config.is_library_data_path(os.path.realpath(author_path)):
             continue
         entries = []
         for sub in sorted(os.listdir(author_path), reverse=True):

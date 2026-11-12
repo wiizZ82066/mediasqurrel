@@ -61,6 +61,8 @@ def validate(values):
         if not Path(output).is_absolute():
             raise ValueError('默认下载目录需要绝对路径')
         chosen = Path(output).resolve()
+        if config.is_library_data_path(chosen):
+            raise ValueError('应用数据目录不能作为下载目录')
         if chosen.is_relative_to(Path(config.SOURCE_DIR).resolve()):
             raise ValueError('新媒体不能保存在项目目录内')
         if not chosen.is_relative_to(Path(config.LIBRARY_ROOT).resolve()):

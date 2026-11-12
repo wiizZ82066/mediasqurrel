@@ -76,6 +76,10 @@ def _preferred_store(paths):
         raw = spec.get(name)
         if not isinstance(raw, str) or not raw:
             raise ValueError("首选媒体库子路径无效")
+        if name == "library" and raw == ".":
+            if root.parent == root:
+                raise ValueError("媒体库需要独立目录")
+            return root
         rel = Path(raw)
         if not rel.parts or rel.anchor or ".." in rel.parts:
             raise ValueError("首选媒体库子路径必须位于已配对目录内")
@@ -88,6 +92,8 @@ def _preferred_store(paths):
     real_root = root.resolve(strict=True)
     if not all(p.resolve().is_relative_to(real_root) for p in (database, library, marker)):
         raise ValueError("首选媒体库路径越界")
+    if library.resolve() == real_root and database.resolve().parent == real_root:
+        raise ValueError("直接使用配对目录作为媒体库时，数据库需要独立子目录")
     if not database.is_file() or not library.is_dir():
         return None
     with database.open("rb") as stream:
@@ -108,8 +114,17 @@ LIBRARY_ROOT = os.path.abspath(os.environ.get("MS_LIBRARY_DIR") or
 DB_PATH = os.path.join(DATA_DIR, "app.db")
 _store = _preferred_store(_paths)
 _paired = _pair_requested(_paths)
+_nested_data_dir = None
 if _store:
     DB_PATH, LIBRARY_ROOT = _store[:2]
+    data_parent = Path(DB_PATH).resolve().parent
+    if Path(LIBRARY_ROOT).resolve() in data_parent.parents:
+        _nested_data_dir = data_parent
+
+
+def is_library_data_path(resolved_path):
+    """Keep an embedded database directory out of the media namespace."""
+    return _nested_data_dir is not None and Path(resolved_path).is_relative_to(_nested_data_dir)
 
 
 def store_data_dir():
