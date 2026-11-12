@@ -7,6 +7,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from uuid import UUID
 
 DOUYIN_DETAIL_CHANNEL = 'browser'
 _FROZEN = getattr(sys, "frozen", False)
@@ -40,6 +41,61 @@ def _read_paths():
         return {}
 
 
+def _store_matches(marker, expected):
+    try:
+        with marker.open(encoding="utf-8") as stream:
+            record = json.load(stream)
+            return isinstance(record, dict) and record.get("id") == expected
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        if getattr(error, "winerror", None) in (15, 21, 1167):  # Unmounted, not ready, disconnected.
+            return False
+        raise
+
+
+def _pair_requested(paths):
+    overrides = ("MS_HOME", "MS_DATA_DIR", "MS_APP_DATA_DIR", "MS_LIBRARY_DIR")
+    return paths.get("preferred_store") is not None and not paths.get("pending_transition") and not any(
+        os.environ.get(name) for name in overrides)
+
+
+def _preferred_store(paths):
+    """Select an already prepared library/database pair without creating either."""
+    if not _pair_requested(paths):
+        return None
+    spec = paths["preferred_store"]
+    if not isinstance(spec, dict) or not isinstance(spec.get("root"), str) or not Path(spec["root"]).is_absolute():
+        raise ValueError("首选媒体库根目录必须是绝对路径")
+    identity = spec.get("id")
+    if not isinstance(identity, str) or UUID(identity).hex != identity:
+        raise ValueError("首选媒体库标识无效")
+    root = Path(spec["root"])
+
+    def child(name):
+        raw = spec.get(name)
+        if not isinstance(raw, str) or not raw:
+            raise ValueError("首选媒体库子路径无效")
+        rel = Path(raw)
+        if not rel.parts or rel.anchor or ".." in rel.parts:
+            raise ValueError("首选媒体库子路径必须位于已配对目录内")
+        return root / rel
+
+    database, library = child("database"), child("library")
+    marker = root / ".media-squirrel-ready.json"
+    if not _store_matches(marker, identity):
+        return None
+    real_root = root.resolve(strict=True)
+    if not all(p.resolve().is_relative_to(real_root) for p in (database, library, marker)):
+        raise ValueError("首选媒体库路径越界")
+    if not database.is_file() or not library.is_dir():
+        return None
+    with database.open("rb") as stream:
+        if stream.read(16) != b"SQLite format 3\x00":
+            raise ValueError("首选媒体库的数据库文件无效，未进行写入")
+    return str(database), str(library), marker, identity
+
+
 _paths = _read_paths()
 _legacy_home = os.environ.get("MS_DATA_DIR")
 BASE_DIR = os.path.abspath(_legacy_home or os.environ.get("MS_HOME") or _default_home())
@@ -50,9 +106,19 @@ LIBRARY_ROOT = os.path.abspath(os.environ.get("MS_LIBRARY_DIR") or
                               (_paths.get("library_root") if not _legacy_home else None) or
                               os.path.join(BASE_DIR, "library"))
 DB_PATH = os.path.join(DATA_DIR, "app.db")
-LOG_DIR = os.path.join(DATA_DIR, "logs")
+_store = _preferred_store(_paths)
+_paired = _pair_requested(_paths)
+if _store:
+    DB_PATH, LIBRARY_ROOT = _store[:2]
+
+
+def store_data_dir():
+    return str(Path(DB_PATH).parent) if _store else DATA_DIR
+
+
+LOG_DIR = os.path.join(store_data_dir(), "logs")
 CACHE_DIR = os.path.join(DATA_DIR, "cache")
-BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+BACKUP_DIR = os.path.join(store_data_dir(), "backups")
 MANIFEST_DIR = os.path.join(RESOURCE_DIR, "scripts_manifest")
 FRONTEND_DIST = os.path.join(RESOURCE_DIR, "frontend", "dist")
 FACE_MODEL_PATH = os.path.join(RESOURCE_DIR, "app_data", "models", "face_detection_yunet.onnx")
@@ -68,8 +134,28 @@ DEFAULT_DOWNLOAD_DIR = None
 MAINTENANCE_ACTIVE = False
 
 
+def uses_prepared_database(path):
+    return bool(_paired and Path(path) == Path(DB_PATH))
+
+
+def paired_store_configured():
+    return bool(_paths.get("preferred_store"))
+
+
+def require_prepared_store():
+    if _store and not _store_matches(*_store[2:]):
+        raise OSError("当前媒体库已断开或磁盘不同；请退出后重新启动以选择可用媒体库")
+    if _paired and not Path(LIBRARY_ROOT).is_dir():
+        raise FileNotFoundError("当前配对的媒体目录不可用")
+
+
 def ensure_runtime_dirs():
-    for path in (DATA_DIR, LIBRARY_ROOT, LOG_DIR, CACHE_DIR):
+    if _paired:
+        require_prepared_store()
+        if not Path(DB_PATH).is_file():
+            raise FileNotFoundError("当前配对的数据库不可用，未创建空库")
+    directories = (DATA_DIR, LOG_DIR, CACHE_DIR) if _paired else (DATA_DIR, LIBRARY_ROOT, LOG_DIR, CACHE_DIR)
+    for path in directories:
         os.makedirs(path, exist_ok=True)
 
 

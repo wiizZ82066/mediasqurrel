@@ -20,8 +20,12 @@ def utc_now():
 @contextmanager
 def connect(path=None):
     target = os.fspath(path or config.DB_PATH)
-    Path(target).parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(target, timeout=10)
+    if config.uses_prepared_database(target):
+        config.require_prepared_store()
+        connection = sqlite3.connect(Path(target).as_uri() + "?mode=rw", uri=True, timeout=10)
+    else:
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(target, timeout=10)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA busy_timeout=10000")
@@ -101,7 +105,6 @@ def migrate(path=None, *, migrations=None):
     steps = _migrations() if migrations is None else migrations
     latest = max((version for version, _name, _script in steps), default=0)
     with _migration_lock:
-        target.parent.mkdir(parents=True, exist_ok=True)
         with connect(target) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version > latest:

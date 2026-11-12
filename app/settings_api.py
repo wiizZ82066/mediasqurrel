@@ -23,7 +23,7 @@ _paths_pending = False
 @router.get('/api/settings')
 def current_settings():
     from .douyin_detail_adapter import configuration_status
-    return {'paths': {'library_root': config.LIBRARY_ROOT, 'data_dir': config.DATA_DIR,
+    return {'paths': {'library_root': config.LIBRARY_ROOT, 'data_dir': config.store_data_dir(),
                      'default_download_dir': config.DEFAULT_DOWNLOAD_DIR or config.LIBRARY_ROOT,
                      'legacy_locations': config.legacy_locations()},
             'values': settings.load(), 'retention': {'tasks': 'forever', 'logs': 'compressed_forever'},

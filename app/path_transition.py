@@ -35,6 +35,8 @@ def reject_environment_overrides():
     active = [key for key in _OVERRIDES if os.environ.get(key)]
     if active:
         raise ValueError("环境变量覆盖路径配置，请先移除覆盖并重启：" + ", ".join(active))
+    if config.paired_store_configured():
+        raise ValueError("已有配对的首选媒体库；更换默认路径前请先解除配对并重启")
 
 
 def _canonical(path):

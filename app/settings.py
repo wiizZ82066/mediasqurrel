@@ -25,7 +25,7 @@ _RANGES = {'download_concurrency': (1, 4), 'timeout_seconds': (10, 600), 'retrie
 
 
 def load():
-    path = Path(config.DATA_DIR) / 'settings.json'
+    path = Path(config.store_data_dir()) / 'settings.json'
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
         if not isinstance(data, dict):
@@ -81,7 +81,8 @@ def apply(values):
 def save(changes):
     with _LOCK:
         values = validate({**load(), **changes})
-        atomic_write_text(Path(config.DATA_DIR) / 'settings.json', json.dumps(values, ensure_ascii=False, indent=2))
+        config.require_prepared_store()
+        atomic_write_text(Path(config.store_data_dir()) / 'settings.json', json.dumps(values, ensure_ascii=False, indent=2))
         apply(values)
         return values
 
@@ -106,18 +107,19 @@ def versions():
 def storage_usage():
     global _storage_cached
     now = time.monotonic()
-    if _storage_cached and _storage_cached[0] == config.DATA_DIR and now - _storage_cached[1] < 60:
+    directory = config.store_data_dir()
+    if _storage_cached and _storage_cached[0] == directory and now - _storage_cached[1] < 60:
         return _storage_cached[2]
     database_bytes = sum(Path(config.DB_PATH + suffix).stat().st_size
                          for suffix in ('', '-wal', '-shm') if Path(config.DB_PATH + suffix).is_file())
     with db.connect() as connection:
         archived = connection.execute('SELECT coalesce(sum(bytes),0) FROM task_log_archives').fetchone()[0]
         tasks = connection.execute('SELECT count(*) FROM tasks').fetchone()[0]
-    free = shutil.disk_usage(config.DATA_DIR).free
+    free = shutil.disk_usage(directory).free
     value = {'database_bytes': database_bytes, 'archived_log_bytes': archived, 'task_count': tasks,
              'free_bytes': free, 'low_space': free < 512 * 1024 * 1024,
              'cache_limit_bytes': config.CACHE_LIMIT_BYTES}
-    _storage_cached = (config.DATA_DIR, now, value)
+    _storage_cached = (directory, now, value)
     return value
 
 
