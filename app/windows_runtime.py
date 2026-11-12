@@ -169,7 +169,7 @@ def set_startup(enabled):
 def open_directory(target):
     """Fixed directory allowlist; no arbitrary path/verb/command input."""
     from . import config
-    directories = {'library': config.LIBRARY_ROOT, 'data': config.DATA_DIR,
+    directories = {'library': config.LIBRARY_ROOT, 'data': config.store_data_dir(),
                    'logs': config.LOG_DIR, 'source': config.SOURCE_DIR}
     if target not in directories:
         raise ValueError('未知目录；请选择媒体、数据、日志或项目目录')
