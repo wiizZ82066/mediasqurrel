@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import threading
 import time
+from urllib.parse import urlsplit
 
 from . import douyin_auth, weibo_auth
 
@@ -64,20 +65,26 @@ def _verify(platform, stop):
             context = browser.new_context(locale='zh-CN')
             if not douyin_auth.restore_session(context):
                 return 'unknown'
-            account = douyin_auth.AccountObservation(context)
             page = context.new_page()
             page.route('**/*', lambda route: route.abort() if route.request.resource_type in ('media', 'image', 'font') else route.continue_())
             try:
-                page.goto('https://www.douyin.com/user/self', wait_until='domcontentloaded', timeout=10000)
+                page.goto('https://www.douyin.com/', wait_until='domcontentloaded', timeout=10000)
             except Exception:
                 if stop.is_set():
                     return 'unknown'
-            until = time.monotonic() + 6
-            while not stop.is_set() and not account.confirmed and not account.signed_out and time.monotonic() < until:
-                page.wait_for_timeout(250)
-            if account.confirmed:
-                return 'signed_in'
-            return 'expired' if account.signed_out else 'unknown'
+            if stop.is_set() or urlsplit(page.url).netloc != 'www.douyin.com':
+                return 'unknown'
+            # The homepage can render without issuing its own self-profile request.
+            # Fetch only from that fixed origin, and return only the verification fields.
+            data = page.evaluate("""async () => {
+                if (location.origin !== 'https://www.douyin.com') return null;
+                const response = await fetch('/aweme/v1/web/user/profile/self/?device_platform=webapp&aid=6383',
+                    {credentials:'same-origin', redirect:'error', signal:AbortSignal.timeout(6500)});
+                if (!response.ok) return null;
+                const {status_code, status_msg, user} = await response.json();
+                return {status_code, status_msg, user:{uid:user?.uid}};
+            }""")
+            return douyin_auth.account_response_status(data)
         finally:
             browser.close()
 

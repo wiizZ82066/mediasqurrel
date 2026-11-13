@@ -5,10 +5,31 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app import account_status, config, database_location as location, db
+
+
+class DouyinAccountRequestTests(unittest.TestCase):
+    def test_verifier_requests_its_own_profile_when_page_never_emits_one(self):
+        context = MagicMock()
+        page = context.new_page.return_value
+        with patch('app.browser.sync_playwright'), patch('app.browser.launch_chrome') as launch, \
+                patch('app.douyin_auth.restore_session', return_value='saved-generation'):
+            launch.return_value.new_context.return_value = context
+            page.url = 'https://www.douyin.com/'
+            for data, expected in (({'status_code': 0, 'user': {'uid': '123'}}, 'signed_in'),
+                                   ({'status_code': 0, 'user': {}}, 'unknown'),
+                                   ({'status_code': 401, 'status_msg': '未登录'}, 'expired')):
+                page.evaluate.return_value = data
+                self.assertEqual(account_status._verify('douyin', threading.Event()), expected)
+            self.assertIn('/user/profile/self/', page.evaluate.call_args.args[0])
+            page.evaluate.reset_mock()
+            page.url = 'https://example.org/'
+            self.assertEqual(account_status._verify('douyin', threading.Event()), 'unknown')
+            page.evaluate.assert_not_called()
 
 
 class DatabaseLocationTests(unittest.TestCase):

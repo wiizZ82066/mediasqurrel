@@ -182,7 +182,7 @@ onBeforeUnmount(() => { disposed = true; clearInterval(timer); clearTimeout(rest
         <div class="sheet">
           <div class="setting-row">
             <div><h3>开机自启动</h3>
-              <p class="muted" role="status">{{ startupSaving?'正在核验 Windows 设置…':startupLoading?'正在读取 Windows 设置…':startupChecked?'已核验，登录 Windows 后在托盘运行。':startup?.enabled?'启动入口指向旧位置，勾选可修复。':startup?.supported===false?'仅 Windows 源码版支持。':'登录 Windows 后在托盘运行。' }}</p>
+              <p class="muted" role="status">{{ startupSaving?'正在核验 Windows 设置…':startupLoading?'正在读取 Windows 设置…':startupChecked?'已核验，登录 Windows 后在托盘运行。':startup?.supported===false?'仅 Windows 源码版支持。':startup && (!startup.available || startup.enabled)?startup.message:'登录 Windows 后在托盘运行。' }}</p>
               <p v-if="startupError" class="issue" role="alert">{{ startupError }} <button class="text-action" @click="loadStartup">重试</button></p>
             </div>
             <input type="checkbox" aria-label="开机自启动" class="startup-checkbox" :checked="startupChecked" :disabled="startupSaving || startupLoading || !startup?.supported || (!startup?.available && !startup?.enabled)" @change="toggleStartup">

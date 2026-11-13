@@ -118,8 +118,8 @@ def startup_status():
         status.update(available=True, matches_current=current)
         status['message'] = ('已核验 Windows 启动快捷方式，登录后在托盘运行，不自动打开网页；可在 Windows 启动应用中管理'
                              if current else
-                             '检测到旧版自启动登记或重复入口，请点击“重新登记”更新' if actual is not None else
-                             '自启动快捷方式指向旧位置，请点击“重新登记”修复' if link else
+                             '检测到旧版自启动登记或重复入口，勾选可修复。' if actual is not None else
+                             '自启动快捷方式指向旧位置，勾选可修复。' if link else
                              '默认关闭；开启后在当前用户登录 Windows 时后台运行，不会唤醒电脑')
     except (OSError, RuntimeError) as error:
         status['message'] = redact_text(str(error))

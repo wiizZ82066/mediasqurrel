@@ -112,6 +112,20 @@ def auth_status() -> dict:
                 "cookie_count": len(cookies), "updated_at": saved.get("updated_at", ""), "note": ""}
 
 
+def account_response_status(data):
+    if not isinstance(data, dict):
+        return 'unknown'
+    user = data.get('user')
+    uid = str(user.get('uid') or '') if isinstance(user, dict) else ''
+    if data.get('status_code') == 0 and uid.isascii() and uid.isdigit() and int(uid) > 0:
+        return 'signed_in'
+    reason = str(data.get('status_msg') or '').lower()
+    if data.get('status_code') not in (0, None) and any(
+            phrase in reason for phrase in ('未登录', '请先登录', '登录已过期', 'not logged in', 'login required')):
+        return 'expired'
+    return 'unknown'
+
+
 class AccountObservation:
     """Only a first-party response for the signed-in user can confirm a session."""
 
@@ -126,13 +140,10 @@ class AccountObservation:
             if (url.scheme != 'https' or url.netloc not in ('www.douyin.com', 'www-hj.douyin.com') or
                     url.path.rstrip('/') != '/aweme/v1/web/user/profile/self' or response.status != 200):
                 return
-            data = response.json()
-            uid = str((data.get('user') or {}).get('uid') or '')
-            if data.get('status_code') == 0 and uid.isascii() and uid.isdigit() and int(uid) > 0:
+            status = account_response_status(response.json())
+            if status == 'signed_in':
                 self.confirmed = True
-            elif data.get('status_code') != 0 and any(
-                    phrase in str(data.get('status_msg') or '').lower()
-                    for phrase in ('未登录', '请先登录', '登录已过期', 'not logged in', 'login required')):
+            elif status == 'expired':
                 self.signed_out = True
         except Exception:
             # Malformed data or a navigation before the body is ready is not confirmation.
