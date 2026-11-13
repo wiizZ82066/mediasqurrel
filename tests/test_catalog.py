@@ -426,6 +426,37 @@ class CatalogTests(unittest.TestCase):
             c.execute("UPDATE media_entries SET author='Unrelated' WHERE id=?", (main_id,))
         self.assertEqual(catalog.viewer_entry(other_id, database=self.database)["id"], other_id)
 
+    def test_official_post_order_and_separately_imported_photo(self):
+        album = archive.begin_entry(str(self.root), "Example", "26-10-09", "weibo", "Album1")
+        folder = Path(album.folder)
+        (folder / "photo").mkdir()
+        (folder / "live").mkdir()
+        expected = ["photo/img02.jpg", "live/live01.mov", "photo/img01.jpg"]
+        paths = [*expected, "live/live01.jpg", "context.md"]
+        for rel in paths:
+            (folder / rel).write_bytes(rel.encode())
+        album.marker["media_order"] = expected
+        album.complete(paths)
+        imported = self.fixture("26-10-10", item="Album1")
+        original_id = str(uuid.uuid4())
+        marker = {"entry_id": original_id, "schema_version": 1, "platform": "weibo", "item_id": "Album1",
+                  "post_companion_of": album.marker["entry_id"], "status": "complete",
+                  "files": [{"path": rel, "size": (imported / rel).stat().st_size} for rel in ("context.md", "photo/img01.jpg")]}
+        (imported / "entry.json").write_text(json.dumps(marker), encoding="utf-8")
+        self.scan()
+        self.assertEqual(self.entries()["total"], 1)
+        self.assertEqual([g["rel"] for g in catalog.viewer_entry(original_id, database=self.database)["gallery"]], expected)
+        album.marker["media_order"] = ["../invalid", "photo/img01.jpg", "photo/img01.jpg"]
+        album.complete(paths)
+        fallback = catalog.get_entry(album.marker["entry_id"], database=self.database)["gallery"]
+        self.assertEqual({g["rel"] for g in fallback}, set(expected))
+        with catalog.db.connect(self.database) as c:
+            c.execute("UPDATE media_entries SET live_count=0 WHERE id=?", (album.marker["entry_id"],))
+        self.assertEqual(catalog.viewer_entry(original_id, database=self.database)["id"], album.marker["entry_id"])
+        with catalog.db.connect(self.database) as c:
+            c.execute("UPDATE media_entries SET item_id='OtherPost' WHERE id=?", (original_id,))
+        self.assertEqual(catalog.viewer_entry(original_id, database=self.database)["id"], original_id)
+
     def test_moved_archive_reuses_stable_entry_and_asset_ids(self):
         original = archive.begin_entry(str(self.root), "Example", "26-10-09", "weibo", "Ab123")
         (Path(original.folder) / "context.md").write_text("# example", encoding="utf-8")

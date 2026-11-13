@@ -124,7 +124,7 @@ class WeiboImageTests(unittest.TestCase):
     def test_archive_preserves_source_and_counts_one_photo_not_the_backup(self):
         data = {'username':'fixture','publish_time':'26-01-01','text':'fixture',
                 'url':'https://weibo.com/123/Ab123','mblogid':'Ab123',
-                'normal_imgs':['https://wx1.sinaimg.cn/large/abcdef.jpg'],'live_videos':[]}
+                'normal_imgs':['https://wx1.sinaimg.cn/large/abcdef.jpg'],'live_videos':[], 'media_order':[('photo',1)]}
         with patch.object(downloader,'download_file',side_effect=self.transfer(self.source)) as source, \
                 patch.object(downloader,'_download_file_once',side_effect=self.transfer(self.reference)) as reference:
             folder = Path(downloader.save_content(data,str(self.root)))
@@ -133,6 +133,7 @@ class WeiboImageTests(unittest.TestCase):
         source.assert_called_once()
         reference.assert_called_once()
         self.assertEqual(archive.entry_status(folder,verify_files=True),'complete')
+        self.assertEqual(archive.read_manifest(folder)['media_order'], ['photo/img01.webp'])
         self.assertEqual((folder/'.originals/img01.jpg').read_bytes(),self.source)
         metadata = archive.read_manifest(folder)['photo_processing'][0]
         self.assertEqual(metadata['original_sha256'],hashlib.sha256(self.source).hexdigest())

@@ -421,6 +421,7 @@ def extract_post(page, url: str) -> dict:
         # 普通图片 & Live 视频：按 pic_ids 顺序
         normal_imgs = []
         live_videos = []
+        media_order = []
         for pid in pic_ids:
             info = pic_infos.get(pid) or {}
             # 图片原图：largest（large/ 前缀）是"下载原图"规格，质量最高；
@@ -438,10 +439,12 @@ def extract_post(page, url: str) -> dict:
                 vurl = decode_live_video_url(info.get("video"))
             if vurl:
                 live_videos.append(vurl)
+                media_order.append(('live', len(live_videos)))
             elif orig:
                 if (info.get('type') or '') == 'livephoto':
                     raise ValueError('微博 Live 图缺少视频地址，未将静态封面当作完整下载')
                 normal_imgs.append(orig)
+                media_order.append(('photo', len(normal_imgs)))
 
         expected = max(len(pic_ids), int(api_data.get('pic_num') or 0))
         if len(normal_imgs) + len(live_videos) != expected:
@@ -478,6 +481,7 @@ def extract_post(page, url: str) -> dict:
             "publish_datetime": publish_datetime,
             "normal_imgs": normal_imgs,
             "live_videos": live_videos,
+            "media_order": media_order,
             "mblogid": api_data.get("mblogid") or "",
             "item_id": str(api_data.get("mblogid") or api_data.get("idstr") or api_data.get("id") or ""),
             "api": True,
@@ -665,6 +669,7 @@ def save_content(data: dict, out_root: str) -> str:
     failed = 0
     files = ["context.md"]
     photo_processing = []
+    saved_media = {}
     # 只有存在对应内容时才创建 photo/ 或 live/ 文件夹
     has_photos = bool(data["normal_imgs"])
     has_lives = bool(data["live_videos"])
@@ -683,6 +688,7 @@ def save_content(data: dict, out_root: str) -> str:
             large = orj360_to_large(url)
             result = download_photo(large, folder, idx, progress)
             if result:
+                saved_media['photo', idx] = result['file']
                 files.extend(result.pop('files'))
                 photo_processing.append(result)
             else:
@@ -700,6 +706,7 @@ def save_content(data: dict, out_root: str) -> str:
             if download_file(url, mov_path, progress=progress):
                 print(f"    [+] {name}.mov")
                 if extract_cover_from_mov(mov_path, jpg_path):
+                    saved_media['live', idx] = f"live/{name}.mov"
                     print(f"    [+] {name}.jpg (封面)")
                     files.extend((f"live/{name}.mov", f"live/{name}.jpg"))
                 else:
@@ -739,6 +746,9 @@ def save_content(data: dict, out_root: str) -> str:
     if failed:
         raise RuntimeError(f"{failed} 个媒体文件下载失败，请查看日志后重试")
     archive.marker['photo_processing'] = photo_processing
+    order = data.get('media_order')
+    if order and len(order) == len(saved_media) and set(order) == saved_media.keys():
+        archive.marker['media_order'] = [saved_media[key] for key in order]
     archive.complete(files)
     return folder
 

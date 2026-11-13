@@ -606,21 +606,24 @@ _ARCHIVE_ORDER = """(archive_status<>'partial') DESC,
                     (photo_count+video_count+live_count) DESC, live_count DESC,
                     (archive_status='complete') DESC, size DESC, imported_at, id"""
 
-# A separately imported photo or movie retains its original archive. Follow
-# its explicit one-hop link only while the combined Live archive is available.
+# A separately imported item retains its original archive. Follow its one-hop
+# link only while the combined Live photo or corresponding post is available.
 _LIVE_ANCHOR_SQL = """SELECT anchor.id FROM media_entries AS anchor
     WHERE anchor.id={source}.live_companion_of AND anchor.root_id={source}.root_id
     AND anchor.author={source}.author AND anchor.platform IS {source}.platform
-    AND anchor.availability='present' AND anchor.archive_status<>'partial' AND anchor.live_count>0
+    AND anchor.availability='present' AND anchor.archive_status<>'partial'
+    AND ((anchor.live_count>0 AND (anchor.item_id IS NULL OR {source}.item_id IS NULL OR anchor.item_id={source}.item_id))
+         OR ({source}.item_id<>'' AND anchor.item_id={source}.item_id AND anchor.photo_count+anchor.video_count>0))
     AND anchor.live_companion_of IS NULL AND anchor.superseded_by IS NULL"""
 _LIVE_ANCHOR = _LIVE_ANCHOR_SQL.format(source='media_entries')
 
 
 def _companion_id(marker, identity):
-    if not marker.get('live_companion_of'):
+    target = marker.get('post_companion_of') or marker.get('live_companion_of')
+    if not target:
         return None
     try:
-        target = str(uuid.UUID(str(marker.get('live_companion_of', ''))))
+        target = str(uuid.UUID(str(target)))
     except ValueError:
         return None
     return target if target != identity else None
@@ -795,6 +798,7 @@ def get_entry(entry_id, *, database=None):
     result["meta"] = json.loads(row["meta_json"])
     # Full text is read for one opened entry only, never for list pages.
     result['text'] = result['meta'].get('视频标题') or result['text_preview']
+    media_order = None
     if result['availability'] == 'present':
         try:
             root_path = Path(get_root(result['root_id'], database=database)['path']).resolve()
@@ -802,6 +806,7 @@ def get_entry(entry_id, *, database=None):
             _safe(root_path, (folder / 'context.md').relative_to(root_path))
             _meta, body = _context(folder)
             result['text'] = result['meta'].get('视频标题') or body
+            media_order = (archive.read_manifest(folder) or {}).get('media_order')
         except (OSError, ValueError):
             pass
     result["assets"] = assets
@@ -814,6 +819,10 @@ def get_entry(entry_id, *, database=None):
                           **({"live": True} if a["kind"] == "live" else {}),
                           **({"poster": a["poster_rel"]} if a["poster_rel"] else {})}
                          for kind in ("image", "live", "video") for a in assets if a["kind"] == kind]
+    if isinstance(media_order, list) and len(media_order) == len(result["gallery"]) and all(isinstance(rel, str) for rel in media_order):
+        items = {item["rel"]: item for item in result["gallery"]}
+        if set(media_order) == items.keys():
+            result["gallery"] = [items[rel] for rel in media_order]
     result["cover_candidates"] = _candidates(assets)
     return result
 
