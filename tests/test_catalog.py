@@ -335,7 +335,7 @@ class CatalogTests(unittest.TestCase):
             catalog.rebind_root(self.root_id,copied,database=self.database)
         self.assertEqual(catalog.get_root(self.root_id,database=self.database)['path'],str(self.root))
 
-    def test_duplicate_platform_identity_is_reported_without_merging(self):
+    def test_duplicate_platform_identity_has_one_card_and_keeps_both_archive_ids(self):
         first = archive.begin_entry(str(self.root), "Example", "26-10-09", "weibo", "Ab123")
         (Path(first.folder) / "context.md").write_text("# example", encoding="utf-8")
         first.complete(["context.md"])
@@ -343,9 +343,48 @@ class CatalogTests(unittest.TestCase):
         shutil.copytree(first.folder, copied)
         self.scan()
         items = self.entries()["items"]
-        self.assertEqual(len(items), 2)
-        self.assertEqual(len({item["id"] for item in items}), 2)
-        self.assertTrue(all(item["conflict"] == "duplicate_platform_id" for item in items))
+        self.assertEqual(len(items), 1)
+        original = catalog.locate_entry(first.folder, database=self.database)
+        other = catalog.locate_entry(copied, database=self.database)
+        self.assertNotEqual(original["id"], other["id"])
+        self.assertTrue(all(item["conflict"] == "duplicate_platform_id" for item in (original, other)))
+        with catalog.db.connect(self.database) as connection:
+            self.assertEqual(catalog.other_archives(connection, original),
+                             [{"id": other["id"], "rel_dir": other["rel_dir"]}])
+
+    def test_album_card_filters_counts_paging_and_fallback_use_available_archives(self):
+        album = self.fixture(name="26-10-01", item="Shared", text="original album")
+        (album / "live").mkdir()
+        (album / "live/live01.jpg").write_bytes(b"poster")
+        (album / "live/live01.mov").write_bytes(b"motion")
+        copy = self.fixture(name="26-10-02", item="Shared", text="alternate photo")
+        self.fixture(name="26-10-03", item="Different", text="original album")
+        self.fixture(name="26-10-04", author="Second", item="Shared")
+        self.scan()
+
+        first = self.entries(page_size=1)
+        ids = [first["items"][0]["id"]]
+        while first["next_cursor"]:
+            first = self.entries(page_size=1, cursor=first["next_cursor"])
+            ids.extend(row["id"] for row in first["items"])
+        self.assertEqual(first["total"], 3)
+        self.assertEqual(len(set(ids)), 3)
+        self.assertEqual(self.entries(author="Example")["total"], 2)
+        primary = catalog.locate_entry(album, database=self.database)
+        alternate = catalog.locate_entry(copy, database=self.database)
+        self.assertIn(primary["id"], ids)
+        self.assertNotIn(alternate["id"], ids)
+        self.assertEqual(self.entries(q="alternate")["items"][0]["id"], alternate["id"])
+        self.assertEqual(self.entries(author="Example", media_type="live")["total"], 1)
+        self.assertEqual(catalog.date_groups(root_id=self.root_id, author="Example", database=self.database),
+                         [{"date": "2026-10", "count": 2}])
+        authors = catalog.list_authors(root_id=self.root_id, database=self.database)["items"]
+        self.assertEqual([(a["name"], a["count"]) for a in authors], [("Example", 2), ("Second", 1)])
+        self.assertEqual({row["id"] for row in catalog.recent_entries(database=self.database)}, set(ids))
+        shutil.rmtree(album)
+        self.scan()
+        self.assertIn(alternate["id"], {row["id"] for row in self.entries()["items"]})
+        self.assertEqual(self.entries(status="missing")["items"][0]["id"], primary["id"])
 
     def test_moved_archive_reuses_stable_entry_and_asset_ids(self):
         original = archive.begin_entry(str(self.root), "Example", "26-10-09", "weibo", "Ab123")

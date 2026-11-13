@@ -2,13 +2,14 @@
 import json
 from urllib.parse import urlencode, quote
 
-from . import author_profiles, db
+from . import author_profiles, catalog, db
 
 
 def enrich(entry):
     platform = entry.get('platform')
     identity = author_profiles.from_metadata(platform, entry.get('meta') or {})
     with db.connect() as connection:
+        entry['other_archives'] = catalog.other_archives(connection, entry)
         recording = connection.execute('''SELECT r.id,s.blogger_id FROM live_recordings r
             LEFT JOIN subscriptions s ON s.id=r.sub_id AND s.platform='douyin'
             WHERE r.entry_id=? ORDER BY r.is_aggregate DESC LIMIT 1''', (entry['id'],)).fetchone()

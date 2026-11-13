@@ -202,7 +202,8 @@ async function openEntry(id) {
   cancelLocate()
   closeOpenMenu()
   stopCardLive()
-  detailController?.abort();detailController=new AbortController();const sequence=++detailSequence;detailBusy.value=true;detailError.value='';detailNotice.value='';restoreFocus=document.activeElement
+  if(!gallery.value)restoreFocus=document.activeElement
+  detailController?.abort();detailController=new AbortController();const sequence=++detailSequence;detailBusy.value=true;detailError.value='';detailNotice.value=''
   try{const result=await api.libraryEntry(id,detailController.signal);if(disposed || sequence!==detailSequence)return;stopLive();++collectionPlaybackSequence;continuationVolume=null;gallery.value=result;document.querySelector('.layout')?.setAttribute('inert','');galleryIndex.value=result.initial_gallery_index || 0;livePlaying.value=false;mediaError.value='';await nextTick();closeButton.value?.focus();preloadNeighbors()}
   catch(e){if(sequence===detailSequence && e.name!=='AbortError')detailError.value=e.message}
   finally{if(sequence===detailSequence)detailBusy.value=false}
@@ -306,7 +307,11 @@ onMounted(async()=>{
     if(!roots.value.some(item=>item.id===rootId.value))rootId.value=result.default_root_id || roots.value[0]?.id || ''
     if(restored){await nextTick();updateViewport();await nextTick();if(contentEl)contentEl.scrollTop=saved.scrollTop || 0;updateViewport()}
     else await loadEntries()
-    await Promise.all([loadAuthors(),loadAuxiliary()]);ready=true
+    await loadAuthors()
+    if(disposed)return
+    ready=true
+    await loadAuxiliary()
+    if(disposed)return
     if(typeof ResizeObserver!=='undefined'){resizeObserver=new ResizeObserver(()=>{updateViewport();maybeLoadMore()});if(gridEl.value)resizeObserver.observe(gridEl.value)}
     updateViewport();maybeLoadMore();await locateRoute();if(disposed)return;await pollScan();if(disposed)return;scanTimer=setInterval(()=>{if(activeScan.value)pollScan()},2000)
   }catch(e){error.value=e.message;ready=true}
@@ -441,12 +446,12 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;releaseRecording();stopCardLiv
 
                 <details v-if="!socialViewer" class="viewer-description" :open="!currentItem">
                   <summary><div><span class="viewer-eyebrow">内容说明</span><p><ContentText :text="gallery.text_preview || (gallery.collection?'查看录播内容与存档信息':'查看正文与存档信息')" :platform="gallery.platform" /></p></div><AppIcon name="chevron-right" :size="17" /></summary>
-                  <div class="viewer-notes"><MediaDetails :entry="gallery" /></div>
+                  <div class="viewer-notes"><MediaDetails :entry="gallery" @open-archive="openEntry" /></div>
                 </details>
               </div>
 
               <aside v-if="socialViewer" class="viewer-sidebar" aria-label="微博正文与作者">
-                <MediaDetails :entry="gallery" :date-text="displayTime(gallery.sort_at)" :date-label="datesLabel[gallery.date_source] || '内容时间'" show-profile />
+                <MediaDetails :entry="gallery" :date-text="displayTime(gallery.sort_at)" :date-label="datesLabel[gallery.date_source] || '内容时间'" show-profile @open-archive="openEntry" />
               </aside>
             </div>
           </section>

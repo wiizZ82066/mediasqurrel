@@ -585,12 +585,53 @@ def _summary(row):
     return result
 
 
+# One published work can have a full album and several separately imported
+# files. Keep each archive addressable by ID, and choose a card only after
+# applying the user's filters. Local-only entries and recordings stay separate.
+_POST_ID = """((entry.platform='douyin' AND length(entry.item_id) BETWEEN 1 AND 20
+                    AND entry.item_id NOT GLOB '*[^0-9]*')
+               OR (entry.platform='weibo' AND length(entry.item_id) BETWEEN 1 AND 32
+                    AND entry.item_id NOT GLOB '*[^A-Za-z0-9]*'))"""
+_SAME_POST = """copy.root_id=entry.root_id AND copy.author=entry.author
+                AND copy.platform=entry.platform AND copy.item_id=entry.item_id"""
+_ARCHIVE_ORDER = """(archive_status<>'partial') DESC,
+                    (photo_count+video_count+live_count) DESC, live_count DESC,
+                    (archive_status='complete') DESC, size DESC, imported_at, id"""
+
+
+def _card_source(conditions):
+    where = ' AND '.join(['superseded_by IS NULL', *conditions])
+    # Let SQLite use its date index for the outer cursor and its platform/ID
+    # index for the matching copies, without materializing the catalog per page.
+    return f"""WITH matching AS NOT MATERIALIZED (SELECT * FROM media_entries WHERE {where}),
+        cards AS (SELECT entry.* FROM matching AS entry
+            WHERE entry.availability<>'present' OR NOT COALESCE({_POST_ID},0)
+            OR entry.id=(SELECT copy.id FROM media_entries AS copy INDEXED BY media_entry_identity
+                         WHERE {_SAME_POST} AND EXISTS (SELECT 1 FROM matching WHERE id=copy.id)
+                         ORDER BY {_ARCHIVE_ORDER} LIMIT 1)) """
+
+
+def other_archives(connection, entry):
+    if not entry.get('item_id') or entry['availability'] != 'present':
+        return []
+    rows = connection.execute(f"""SELECT copy.id,copy.rel_dir FROM media_entries AS entry
+        JOIN media_entries AS copy INDEXED BY media_entry_identity ON {_SAME_POST} WHERE entry.id=? AND {_POST_ID}
+        AND entry.superseded_by IS NULL AND copy.superseded_by IS NULL
+        AND copy.availability='present' AND copy.id<>entry.id ORDER BY copy.rel_dir,copy.id""",
+        (entry['id'],))
+    return [dict(row) for row in rows]
+
+
 def recent_entries(*, limit=8, database=None):
     """Recent imports, rather than recent publication dates. Never return the full catalog."""
+    source = _card_source(["availability='present'"])
     with db.connect(database) as connection:
-        rows = connection.execute(f'''SELECT {_SUMMARY_COLUMNS} FROM media_entries
-            WHERE availability='present' AND superseded_by IS NULL
-            ORDER BY imported_at DESC,id DESC LIMIT ?''', (max(1, min(12, int(limit))),)).fetchall()
+        rows = connection.execute(source + f'''SELECT {_SUMMARY_COLUMNS} FROM cards AS entry
+            ORDER BY CASE WHEN {_POST_ID} THEN (
+                SELECT MAX(copy.imported_at) FROM media_entries AS copy INDEXED BY media_entry_identity
+                WHERE {_SAME_POST} AND copy.superseded_by IS NULL AND copy.availability='present'
+            ) ELSE entry.imported_at END DESC, id DESC LIMIT ?''',
+            (max(1, min(12, int(limit))),)).fetchall()
         live_paths = _cover_live_paths(connection, rows)
     items = [_summary(row) | {'cover_live_rel': live_paths.get(row['id'])} for row in rows]
     from .live_collections import enrich_summaries
@@ -602,7 +643,7 @@ def list_entries(*, root_id=None, author=None, q="", date_from=None, date_to=Non
                  page=1, page_size=60, status=None, sort="desc", platform=None,
                  media_type=None, cursor=None, database=None):
     page, page_size = _page(page, page_size)
-    conditions, params = ["superseded_by IS NULL"], []
+    conditions, params = [], []
     if root_id:
         conditions.append("root_id=?")
         params.append(root_id)
@@ -641,12 +682,12 @@ def list_entries(*, root_id=None, author=None, q="", date_from=None, date_to=Non
                 value += dt.timedelta(days=1)
             conditions.append(f"sort_at{comparison}?")
             params.append(dt.datetime.combine(value, dt.time(), tzinfo=_LOCAL_TZ).astimezone(dt.timezone.utc).isoformat(timespec="seconds"))
-    where = " AND ".join(conditions)
+    source = _card_source(conditions)
     direction = "ASC" if sort == "asc" else "DESC"
     # A filter-bound keyset cursor keeps subsequent batches stable when a new
     # download is indexed at the beginning. Legacy page clients remain supported.
     fingerprint = hashlib.sha256(json.dumps([conditions, params, direction], ensure_ascii=False).encode()).hexdigest()[:24]
-    cursor_where, cursor_params = where, list(params)
+    cursor_where, cursor_params = "", list(params)
     if cursor:
         try:
             if len(cursor) > 1024:
@@ -656,13 +697,13 @@ def list_entries(*, root_id=None, author=None, q="", date_from=None, date_to=Non
                     or not all(isinstance(value, str) and value for value in data)):
                 raise ValueError
             comparison = ">" if direction == "ASC" else "<"
-            cursor_where += f" AND (sort_at,id) {comparison} (?,?)"
+            cursor_where = f" WHERE (sort_at,id) {comparison} (?,?)"
             cursor_params += data[1:]
         except (ValueError, TypeError, UnicodeError):
             raise ValueError("媒体浏览位置已失效，请重新加载") from None
     with db.connect(database) as connection:
-        total = connection.execute(f"SELECT count(*) FROM media_entries WHERE {where}", params).fetchone()[0]
-        rows = connection.execute(f"SELECT {_SUMMARY_COLUMNS} FROM media_entries WHERE {cursor_where} ORDER BY sort_at {direction},id {direction} LIMIT ? OFFSET ?",
+        total = connection.execute(source + "SELECT count(*) FROM cards", params).fetchone()[0]
+        rows = connection.execute(source + f"SELECT {_SUMMARY_COLUMNS} FROM cards{cursor_where} ORDER BY sort_at {direction},id {direction} LIMIT ? OFFSET ?",
                                   [*cursor_params, page_size + 1, 0 if cursor is not None else (page - 1) * page_size]).fetchall()
         has_more = len(rows) > page_size
         rows = rows[:page_size]
@@ -679,7 +720,7 @@ def date_groups(*, root_id=None, author=None, q="", group="month", limit=240, da
     formats = {"year": "%Y", "month": "%Y-%m", "day": "%Y-%m-%d"}
     if group not in formats:
         raise ValueError("日期分组必须是year、month或day")
-    conditions, params = ["availability='present'", "superseded_by IS NULL"], []
+    conditions, params = ["availability='present'"], []
     for column, value in (("root_id", root_id), ("author", author)):
         if value:
             conditions.append(f"{column}=?")
@@ -688,9 +729,9 @@ def date_groups(*, root_id=None, author=None, q="", group="month", limit=240, da
         conditions.append("instr(search_text,?)>0")
         params.append(q.strip().lower())
     with db.connect(database) as connection:
-        rows = connection.execute(
+        rows = connection.execute(_card_source(conditions) +
             f"SELECT strftime('{formats[group]}',sort_at,'+8 hours') AS date,count(*) AS count "
-            f"FROM media_entries WHERE {' AND '.join(conditions)} GROUP BY date ORDER BY date DESC LIMIT ?",
+            "FROM cards GROUP BY date ORDER BY date DESC LIMIT ?",
             [*params, max(1, min(1000, int(limit)))],
         ).fetchall()
     return [dict(row) for row in rows]
@@ -698,17 +739,17 @@ def date_groups(*, root_id=None, author=None, q="", group="month", limit=240, da
 
 def list_authors(*, root_id=None, page=1, page_size=60, q="", database=None):
     page, page_size = _page(page, page_size)
-    conditions, params = ["availability='present'", "superseded_by IS NULL"], []
+    conditions, params = ["availability='present'"], []
     if root_id:
         conditions.append("root_id=?")
         params.append(root_id)
     if q.strip():
         conditions.append("instr(lower(author),?)>0")
         params.append(q.strip().lower())
-    where = " AND ".join(conditions)
+    source = _card_source(conditions)
     with db.connect(database) as connection:
-        total = connection.execute(f"SELECT count(DISTINCT author) FROM media_entries WHERE {where}", params).fetchone()[0]
-        rows = connection.execute(f"SELECT author AS name,count(*) AS count,sum(size) AS total_size FROM media_entries WHERE {where} "
+        total = connection.execute(source + "SELECT count(DISTINCT author) FROM cards", params).fetchone()[0]
+        rows = connection.execute(source + "SELECT author AS name,count(*) AS count,sum(size) AS total_size FROM cards "
                                   "GROUP BY author ORDER BY count DESC,author LIMIT ? OFFSET ?",
                                   [*params, page_size, (page - 1) * page_size]).fetchall()
     return {"items": [dict(row) for row in rows], "total": total, "page": page, "page_size": page_size}

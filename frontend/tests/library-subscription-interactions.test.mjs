@@ -252,6 +252,23 @@ test('collapsed library controls preserve filters without fetching date choices'
   assert.match(state.filterSummary.value, /saved search/)
 })
 
+test('opening date filters while the author list loads populates the month choices', async t => {
+  const { state, api, mount } = setupComponent('Library', t)
+  const started = deferred(), authors = deferred()
+  api.libraryRoots = async () => ({ items: [{ id: 'root' }], default_root_id: 'root' })
+  api.libraryEntries = async () => ({ items: [], total: 0, next_cursor: null })
+  api.libraryAuthors = () => { started.resolve(); return authors.promise }
+  api.libraryDates = async () => ({ items: [{ date: '2026-01', count: 3 }] })
+  api.libraryScans = async () => ({ items: [] })
+  const mounting = mount()
+  await started.promise
+  state.filtersOpen.value = true
+  await vue.nextTick()
+  authors.resolve({ items: [], total: 0 })
+  await mounting
+  assert.deepEqual(state.dates.value, [{ date: '2026-01', count: 3 }])
+})
+
 test('toolbar shows only active filters and clearing them preserves the chosen library and author', t => {
   const { state } = setupComponent('Library', t, { rootId:'selected-root' })
   state.roots.value = [{id:'selected-root',label:'迁移媒体库'}]

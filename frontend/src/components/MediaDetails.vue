@@ -7,6 +7,7 @@ import ContentText from './ContentText.vue'
 import { mediaProfile } from '../viewer-presentation.js'
 
 const props = defineProps({ entry: { type: Object, required: true }, dateText: String, dateLabel: String, showProfile: Boolean })
+defineEmits(['open-archive'])
 const profile = computed(() => mediaProfile(props.entry))
 </script>
 
@@ -30,6 +31,12 @@ const profile = computed(() => mediaProfile(props.entry))
         <dl>
           <template v-for="(value, key) in entry.meta" :key="key"><dt>{{ key }}</dt><dd><ContentText :text="String(value)" :platform="entry.platform" /></dd></template>
           <dt>目录</dt><dd>{{ entry.rel_dir }}</dd>
+          <template v-if="entry.other_archives?.length">
+            <dt>其他存档</dt>
+            <dd class="archive-links">
+              <button v-for="archive in entry.other_archives" :key="archive.id" type="button" @click="$emit('open-archive', archive.id)">{{ archive.rel_dir }}</button>
+            </dd>
+          </template>
           <dt>{{ entry.collection ? '文件完整性' : '完整性' }}</dt>
           <dd>{{ entry.archive_status === 'complete' ? '已验证完整' : entry.archive_status === 'partial' ? '未完成' : '旧格式，尚未确认完整' }}<span v-if="entry.collection">（不代表直播全程）</span></dd>
         </dl>
@@ -59,5 +66,8 @@ const profile = computed(() => mediaProfile(props.entry))
 .details-archive[open] summary svg { transform:rotate(90deg); }
 .details-archive dl { display:grid; grid-template-columns:minmax(55px,auto) minmax(0,1fr); gap:10px 16px; margin-top:20px; font-size:11px; line-height:1.7; }
 .details-archive dd { color:var(--viewer-text, #f5f5f7); overflow-wrap:anywhere; white-space:pre-wrap; }
+.archive-links { display:grid; gap:8px; }
+.archive-links button { color:#b9d4ff; background:none; border:0; padding:0; text-align:left; font:inherit; overflow-wrap:anywhere; cursor:pointer; }
+.archive-links button:is(:hover,:focus-visible) { text-decoration:underline; }
 .details-source:focus-visible,.details-archive summary:focus-visible { outline:2px solid #b9d4ff; outline-offset:5px; }
 </style>
