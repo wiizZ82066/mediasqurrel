@@ -15,6 +15,9 @@ from . import startup_shortcut
 
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 RUN_NAME = 'MediaSquirrel'
+_APPROVED_KEY = r'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved'
+_SHORTCUT_APPROVAL = (_APPROVED_KEY + r'\StartupFolder', startup_shortcut.SHORTCUT_NAME)
+_RUN_APPROVAL = (_APPROVED_KEY + r'\Run', RUN_NAME)
 PATH_OVERRIDES = ('MS_HOME', 'MS_DATA_DIR', 'MS_APP_DATA_DIR', 'MS_LIBRARY_DIR')
 IS_WINDOWS = os.name == 'nt'
 _startup_lock = threading.Lock()
@@ -101,6 +104,35 @@ def _registered_command():
         return None
 
 
+def _read_approval(entry):
+    """Explorer keeps its per-user switch separately from the launcher itself."""
+    registry = _registry()
+    path, name = entry
+    try:
+        with registry.OpenKey(registry.HKEY_CURRENT_USER, path, 0,
+                              registry.KEY_READ | registry.KEY_WOW64_64KEY) as key:
+            data, kind = registry.QueryValueEx(key, name)
+    except FileNotFoundError:
+        return None  # A registered entry without an override is enabled by default.
+    if (kind != registry.REG_BINARY or not isinstance(data, bytes) or len(data) != 12
+            or int.from_bytes(data[:4], 'little') not in (2, 3, 6, 7)):
+        raise RuntimeError('无法识别 Windows 启动项状态，请在 Windows 设置的“应用 → 启动”中核对 Media Squirrel。')
+    return data
+
+
+def _approved(data):
+    return data is None or data[0] in (2, 6)
+
+
+def _write_shortcut_approval(data):
+    # Only called for an existing override of this user's own Startup shortcut.
+    registry = _registry()
+    path, name = _SHORTCUT_APPROVAL
+    with registry.OpenKey(registry.HKEY_CURRENT_USER, path, 0,
+                          registry.KEY_SET_VALUE | registry.KEY_WOW64_64KEY) as key:
+        registry.SetValueEx(key, name, 0, registry.REG_BINARY, data)
+
+
 def startup_status():
     status = {'supported': IS_WINDOWS and not getattr(sys, 'frozen', False), 'available': False,
               'enabled': False, 'matches_current': False, 'method': None,
@@ -109,15 +141,16 @@ def startup_status():
         return status
     try:
         actual = _registered_command()
-        status['enabled'] = actual is not None
         link = startup_shortcut.shortcut()
-        status['enabled'] = status['enabled'] or link is not None
         status['method'] = 'shortcut' if link else 'legacy_run' if actual is not None else None
+        shortcut_on = link is not None and _approved(_read_approval(_SHORTCUT_APPROVAL))
+        legacy_on = actual is not None and _approved(_read_approval(_RUN_APPROVAL))
+        status['enabled'] = shortcut_on or legacy_on
         expected = _startup_shortcut()
         current = startup_shortcut.matches(link, expected) and actual is None
         status.update(available=True, matches_current=current)
-        status['message'] = ('已核验 Windows 启动快捷方式，登录后在托盘运行，不自动打开网页；可在 Windows 启动应用中管理'
-                             if current else
+        status['message'] = ('Windows 已禁用此启动项，勾选可重新启用。' if current and not shortcut_on else
+                             '已核验 Windows 启动项，登录后在托盘运行。' if current else
                              '检测到旧版自启动登记或重复入口，勾选可修复。' if actual is not None else
                              '自启动快捷方式指向旧位置，勾选可修复。' if link else
                              '默认关闭；开启后在当前用户登录 Windows 时后台运行，不会唤醒电脑')
@@ -148,23 +181,41 @@ def set_startup(enabled):
         expected = _startup_shortcut() if enabled else None
         previous_link = startup_shortcut.shortcut()
         previous_command = _registered_command()
+        previous_approval = _read_approval(_SHORTCUT_APPROVAL) if enabled else None
+        link_change = (not startup_shortcut.matches(previous_link, expected)) if enabled else previous_link is not None
+        approval_changed = False
+        legacy_changed = False
         try:
-            current = startup_shortcut.shortcut('write', value=expected) if enabled else startup_shortcut.shortcut('remove')
-            if (current is not None) != enabled or (enabled and not startup_shortcut.matches(current, expected)):
-                raise RuntimeError('无法核实自启动快捷方式是否已保存')
-            # Replace the legacy entry only after the shortcut has been read back.
-            _restore_registered_command(None)
+            if link_change:
+                current = startup_shortcut.shortcut('write', value=expected) if enabled else startup_shortcut.shortcut('remove')
+                if (current is not None) != enabled or (enabled and not startup_shortcut.matches(current, expected)):
+                    raise RuntimeError('无法核实自启动快捷方式是否已保存')
+            if enabled and not _approved(previous_approval):
+                # Preserve the state family (3→2 or 7→6) and clear the disable time.
+                _write_shortcut_approval(bytes([previous_approval[0] - 1]) + bytes(11))
+                approval_changed = True
+            if previous_command is not None:
+                _restore_registered_command(None)
+                legacy_changed = True
             if _registered_command() is not None:
                 raise RuntimeError('无法移除旧自启动登记，已取消修改以避免重复启动')
+            status = startup_status()
+            if enabled and not (status['available'] and status['enabled'] and status['matches_current']):
+                raise RuntimeError('无法核实 Windows 启动项是否已按所选状态保存')
+            if not enabled and (status['method'] is not None or startup_shortcut.shortcut() is not None):
+                raise RuntimeError('无法核实 Windows 启动项是否已关闭')
+            return status
         except Exception:
             try:
-                startup_shortcut.shortcut('restore', content=previous_link['content'] if previous_link else None)
-                if _registered_command() != previous_command:
+                if approval_changed:
+                    _write_shortcut_approval(previous_approval)
+                if link_change:
+                    startup_shortcut.shortcut('restore', content=previous_link['content'] if previous_link else None)
+                if legacy_changed and _registered_command() != previous_command:
                     _restore_registered_command(previous_command)
             except Exception as rollback_error:
                 raise RuntimeError('自启动修改失败且未能完整还原，请重新检查启动状态') from rollback_error
             raise
-        return startup_status()
 
 
 def open_directory(target):

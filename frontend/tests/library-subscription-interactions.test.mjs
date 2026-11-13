@@ -229,6 +229,22 @@ test('startup save prevents duplicate requests and retains last known state on f
   assert.equal(state.startupSaving.value, false)
 })
 
+test('a Windows-disabled shortcut stays unchecked until the system switch is read back as enabled', async t => {
+  const { state, api } = setupComponent('Settings', t)
+  let enabled = false
+  api.startupSettings = async () => ({ supported:true, available:true, method:'shortcut', matches_current:true, enabled,
+    message:enabled ? '已核验' : 'Windows 已禁用此启动项' })
+  api.saveStartup = async value => { enabled = value }
+  await state.loadStartup()
+  assert.equal(state.startupChecked.value, false)
+  assert.match(state.startup.value.message, /已禁用/)
+  await state.toggleStartup({ target:{checked:true} })
+  assert.equal(state.startupChecked.value, true)
+  enabled = false
+  await state.loadStartup()
+  assert.equal(state.startupChecked.value, false)
+})
+
 test('collapsed library controls preserve filters without fetching date choices', async t => {
   const { state, api } = setupComponent('Library', t)
   let requests = 0

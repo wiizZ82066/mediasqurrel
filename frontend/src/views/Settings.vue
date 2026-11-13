@@ -38,6 +38,7 @@ async function load() {
   finally { loading.value = false }
 }
 async function loadStartup() {
+  if (startupLoading.value || startupSaving.value) return
   startupLoading.value = true
   startupError.value = ''
   try { startup.value = await api.startupSettings() }
@@ -148,10 +149,16 @@ onMounted(() => {
   if (content) content.scrollTop = 0
   load()
   loadStartup()
+  window.addEventListener('focus', loadStartup)
   readAccountStatus()
   timer = setInterval(readAccountStatus, 10000)
 })
-onBeforeUnmount(() => { disposed = true; clearInterval(timer); clearTimeout(restartTimer) })
+onBeforeUnmount(() => {
+  disposed = true
+  window.removeEventListener('focus', loadStartup)
+  clearInterval(timer)
+  clearTimeout(restartTimer)
+})
 </script>
 
 <template>
@@ -182,7 +189,7 @@ onBeforeUnmount(() => { disposed = true; clearInterval(timer); clearTimeout(rest
         <div class="sheet">
           <div class="setting-row">
             <div><h3>开机自启动</h3>
-              <p class="muted" role="status">{{ startupSaving?'正在核验 Windows 设置…':startupLoading?'正在读取 Windows 设置…':startupChecked?'已核验，登录 Windows 后在托盘运行。':startup?.supported===false?'仅 Windows 源码版支持。':startup && (!startup.available || startup.enabled)?startup.message:'登录 Windows 后在托盘运行。' }}</p>
+              <p class="muted" role="status">{{ startupSaving?'正在核验 Windows 设置…':startupLoading?'正在读取 Windows 设置…':startup?.message || '登录 Windows 后在托盘运行。' }}</p>
               <p v-if="startupError" class="issue" role="alert">{{ startupError }} <button class="text-action" @click="loadStartup">重试</button></p>
             </div>
             <input type="checkbox" aria-label="开机自启动" class="startup-checkbox" :checked="startupChecked" :disabled="startupSaving || startupLoading || !startup?.supported || (!startup?.available && !startup?.enabled)" @change="toggleStartup">

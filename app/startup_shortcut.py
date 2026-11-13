@@ -11,6 +11,7 @@ import subprocess
 
 from .redaction import redact_text
 
+SHORTCUT_NAME = 'Media Squirrel.lnk'
 
 _SCRIPT = r'''
 $ErrorActionPreference = 'Stop'
@@ -20,7 +21,7 @@ $ProgressPreference = 'SilentlyContinue'
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $folder = [Environment]::GetFolderPath('Startup')
 if (-not $folder) { throw 'Windows Startup folder is unavailable' }
-$path = Join-Path $folder 'Media Squirrel.lnk'
+$path = Join-Path $folder $request.name
 $temporary = Join-Path $folder ('MediaSquirrel-' + [Guid]::NewGuid().ToString('N') + '.tmp')
 $backup = $temporary + '.bak'
 $draft = Join-Path ([IO.Path]::GetTempPath()) ('MediaSquirrel-' + [Guid]::NewGuid().ToString('N') + '.lnk')
@@ -72,7 +73,7 @@ def shortcut(action='read', *, value=None, content=None):
     try:
         result = subprocess.run(
             [str(executable), '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', command],
-            input=json.dumps({'action': action, 'value': value, 'content': content}, ensure_ascii=False),
+            input=json.dumps({'name': SHORTCUT_NAME, 'action': action, 'value': value, 'content': content}, ensure_ascii=False),
             encoding='utf-8', errors='replace', stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=15, check=True)
         response = json.loads(result.stdout.lstrip('\ufeff').strip())

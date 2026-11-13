@@ -1,5 +1,5 @@
 """Windows integration uses temporary files and mocked OS effects only."""
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 import json
 from pathlib import Path
 import subprocess
@@ -35,10 +35,14 @@ class WindowsRuntimeTests(unittest.TestCase):
         self.stack.enter_context(patch.object(config, 'PATHS_FILE', str(self.source / '.mediasquirrel.local.json')))
         self.stack.enter_context(patch.object(config, 'PORT', 8642))
         self.stack.enter_context(patch.dict(windows.os.environ, {name: '' for name in windows.PATH_OVERRIDES}))
-        self.registry = MagicMock(HKEY_CURRENT_USER='current-user', REG_SZ=1, KEY_READ=2, KEY_SET_VALUE=4)
+        self.registry = MagicMock(HKEY_CURRENT_USER='current-user', REG_SZ=1, REG_BINARY=3,
+                                  KEY_READ=2, KEY_SET_VALUE=4, KEY_WOW64_64KEY=256)
         self.values = {'UnrelatedApp': 'untouched'}
+        self.approvals = {}
+        self.registry.OpenKey.side_effect = self.registry.CreateKeyEx.side_effect = (
+            lambda _user, path, _reserved, _access: nullcontext(path))
         self.registry.QueryValueEx.side_effect = self.query
-        self.registry.SetValueEx.side_effect = lambda _key, name, _reserved, _kind, value: self.values.__setitem__(name, value)
+        self.registry.SetValueEx.side_effect = self.set_value
         self.registry.DeleteValue.side_effect = lambda _key, name: self.values.pop(name, None)
         self.stack.enter_context(patch.object(windows, '_registry', return_value=self.registry))
         self.link = None
@@ -53,10 +57,19 @@ class WindowsRuntimeTests(unittest.TestCase):
             self.link = {**json.loads(content), 'content': content} if content else None
         return self.link
 
-    def query(self, _key, name):
-        if name not in self.values:
-            raise FileNotFoundError(name)
-        return self.values[name], self.registry.REG_SZ
+    def query(self, path, name):
+        try:
+            if path == windows.RUN_KEY:
+                return self.values[name], self.registry.REG_SZ
+            return self.approvals[path, name]
+        except KeyError:
+            raise FileNotFoundError(name) from None
+
+    def set_value(self, path, name, _reserved, kind, value):
+        if path == windows.RUN_KEY:
+            self.values[name] = value
+        else:
+            self.approvals[path, name] = (value, kind)
 
     def test_status_is_read_only_and_default_disabled(self):
         status = windows.startup_status()
@@ -86,6 +99,77 @@ class WindowsRuntimeTests(unittest.TestCase):
         self.values[windows.RUN_NAME] = 'old-launcher'
         self.assertFalse(windows.startup_status()['matches_current'])
         self.assertTrue(windows.set_startup(True)['matches_current'])
+
+    def test_windows_disabled_a_correct_shortcut_and_explicit_enable_repairs_only_its_switch(self):
+        windows.set_startup(True)
+        original_link = dict(self.link)
+        for state in (3, 7):
+            with self.subTest(state=state):
+                disabled = state.to_bytes(4, 'little') + b'disabled'
+                other = (windows._SHORTCUT_APPROVAL[0], 'Another app.lnk')
+                self.approvals = {windows._SHORTCUT_APPROVAL: (disabled, self.registry.REG_BINARY),
+                                  other: (disabled, self.registry.REG_BINARY)}
+                self.registry.SetValueEx.reset_mock()
+                self.shortcut.reset_mock()
+                status = windows.startup_status()
+                self.assertFalse(status['enabled'])
+                self.assertTrue(status['matches_current'])
+                self.assertIn('Windows 已禁用', status['message'])
+                self.registry.SetValueEx.assert_not_called()
+                self.assertTrue(windows.set_startup(True)['enabled'])
+                self.assertEqual(self.approvals[windows._SHORTCUT_APPROVAL],
+                                 (bytes([state-1]) + bytes(11), self.registry.REG_BINARY))
+                self.assertEqual(self.approvals[other][0], disabled)
+                self.assertEqual(self.link, original_link)
+                self.assertFalse(any(call.args for call in self.shortcut.call_args_list))
+
+    def test_unrecognized_or_malformed_windows_state_is_not_overwritten(self):
+        windows.set_startup(True)
+        for record in ((bytes([9]) + bytes(11), self.registry.REG_BINARY),
+                       (bytes([2]), self.registry.REG_BINARY), ('unexpected', self.registry.REG_SZ)):
+            with self.subTest(record=record):
+                self.approvals[windows._SHORTCUT_APPROVAL] = record
+                self.assertFalse(windows.startup_status()['available'])
+                with self.assertRaisesRegex(RuntimeError, '无法识别'):
+                    windows.set_startup(True)
+                self.registry.SetValueEx.assert_not_called()
+                self.assertEqual(self.approvals[windows._SHORTCUT_APPROVAL], record)
+
+    def test_windows_block_survives_remove_and_is_cleared_only_on_explicit_reenable(self):
+        windows.set_startup(True)
+        blocked = (bytes([3])+bytes(11), self.registry.REG_BINARY)
+        self.approvals[windows._SHORTCUT_APPROVAL] = blocked
+        self.assertFalse(windows.set_startup(False)['enabled'])
+        self.assertEqual(self.approvals[windows._SHORTCUT_APPROVAL], blocked)
+        self.assertTrue(windows.set_startup(True)['enabled'])
+
+    def test_failed_migration_restores_exact_shell_disable_flag_and_timestamp(self):
+        self.values[windows.RUN_NAME] = 'old-launcher'
+        blocked = (bytes([3, 0, 0, 0])+b'old-time', self.registry.REG_BINARY)
+        self.approvals[windows._SHORTCUT_APPROVAL] = blocked
+        self.registry.DeleteValue.side_effect = PermissionError('legacy entry is busy')
+        with self.assertRaises(PermissionError):
+            windows.set_startup(True)
+        self.assertIsNone(self.link)
+        self.assertEqual(self.approvals[windows._SHORTCUT_APPROVAL], blocked)
+        self.assertEqual(self.values[windows.RUN_NAME], 'old-launcher')
+
+    def test_failed_windows_readback_cannot_claim_success(self):
+        windows.set_startup(True)
+        blocked = (bytes([3])+bytes(11), self.registry.REG_BINARY)
+        self.approvals[windows._SHORTCUT_APPROVAL] = blocked
+        self.registry.SetValueEx.side_effect = lambda *args: None
+        with self.assertRaisesRegex(RuntimeError, '无法核实'):
+            windows.set_startup(True)
+        self.assertEqual(self.approvals[windows._SHORTCUT_APPROVAL], blocked)
+
+    def test_legacy_run_and_shortcut_use_separate_windows_switches(self):
+        self.values[windows.RUN_NAME] = 'old-launcher'
+        blocked = (bytes([3])+bytes(11), self.registry.REG_BINARY)
+        self.approvals[windows._RUN_APPROVAL] = blocked
+        self.assertFalse(windows.startup_status()['enabled'])
+        self.assertTrue(windows.set_startup(True)['enabled'])
+        self.assertEqual(self.approvals, {windows._RUN_APPROVAL: blocked})
 
     def test_disable_still_works_when_pythonw_is_missing(self):
         self.values[windows.RUN_NAME] = 'old-launcher'
