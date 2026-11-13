@@ -26,6 +26,7 @@ class CatalogTests(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(self.database)) as connection:
             connection.executescript(catalog.SCHEMA)
             connection.execute("ALTER TABLE media_entries ADD COLUMN superseded_by TEXT")
+            connection.executescript(catalog.LIVE_COMPANION_SCHEMA)
             connection.commit()
         self.root_record = catalog.register_root(str(self.root), database=self.database)
         self.root_id = self.root_record["id"]
@@ -385,6 +386,45 @@ class CatalogTests(unittest.TestCase):
         self.scan()
         self.assertIn(alternate["id"], {row["id"] for row in self.entries()["items"]})
         self.assertEqual(self.entries(status="missing")["items"][0]["id"], primary["id"])
+
+    def test_live_mp4_original_poster_and_companion_survive_rescan_and_missing_anchor(self):
+        original = archive.begin_entry(str(self.root), "Example", "26-10-09", "weibo", "Post1")
+        folder = Path(original.folder)
+        live = folder / "live"
+        live.mkdir()
+        for name in ("take.mp4", "take.jpeg", "take.jpg", "still.png"):
+            (live / name).write_bytes(name.encode())
+        (folder / "context.md").write_text("album", encoding="utf-8")
+        original.complete(["context.md", *("live/" + f.name for f in live.iterdir())])
+        # The downloader reuses a proven platform ID, so create an independent
+        # imported archive with its own UUID rather than invoking a second download.
+        second = self.root / "Example" / "26-10-11_import"
+        second.mkdir()
+        for name in ("original.jpg", "context.md"):
+            (second / name).write_bytes(name.encode())
+        marker = dict(original.marker, entry_id=str(uuid.uuid4()), live_companion_of=original.marker["entry_id"],
+                      files=[{"path": n, "size": len(n.encode())} for n in ("original.jpg", "context.md")])
+        (second / "entry.json").write_text(json.dumps(marker), encoding="utf-8")
+        self.scan()
+        self.scan()
+        main_id, other_id = original.marker["entry_id"], marker["entry_id"]
+        self.assertEqual([x["id"] for x in self.entries()["items"]], [main_id])
+        entry = catalog.viewer_entry(other_id, database=self.database)
+        self.assertEqual(entry["id"], main_id)
+        clips = [item for item in entry["gallery"] if item.get("live")]
+        self.assertEqual([(item["rel"], item["poster"]) for item in clips], [("live/take.mp4", "live/take.jpeg")])
+        self.assertEqual(entry["photos"], ["live/still.png"])
+        self.assertEqual(catalog.get_entry(other_id, database=self.database)["photos"], ["original.jpg"])
+        with catalog.db.connect(self.database) as c:
+            self.assertEqual(catalog.other_archives(c, entry), [])
+            c.execute("UPDATE media_entries SET availability='missing' WHERE id=?", (main_id,))
+        self.assertEqual([x["id"] for x in self.entries()["items"]], [other_id])
+        self.assertEqual(catalog.viewer_entry(other_id, database=self.database)["id"], other_id)
+        self.scan()
+        self.assertEqual(catalog.viewer_entry(other_id, database=self.database)["id"], main_id)
+        with catalog.db.connect(self.database) as c:
+            c.execute("UPDATE media_entries SET author='Unrelated' WHERE id=?", (main_id,))
+        self.assertEqual(catalog.viewer_entry(other_id, database=self.database)["id"], other_id)
 
     def test_moved_archive_reuses_stable_entry_and_asset_ids(self):
         original = archive.begin_entry(str(self.root), "Example", "26-10-09", "weibo", "Ab123")

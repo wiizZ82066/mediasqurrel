@@ -83,7 +83,7 @@ def backup_database(destination, *, source=None):
 def _migrations():
     from .subscription_store import SCHEMA as subscriptions
     from .task_store import SCHEMA as tasks
-    from .catalog import SCHEMA as catalog
+    from .catalog import SCHEMA as catalog, LIVE_COMPANION_SCHEMA
     from .maintenance import SCHEMA as maintenance
     from .scheduling import SCHEMA as schedules
     from .path_transition import SCHEMA as paths
@@ -97,7 +97,8 @@ def _migrations():
             (5, "subscription-schedules", schedules), (6, "restart-path-transitions", paths),
             (7, "subscription-topic-filters", filters), (8, "douyin-live-recording", live),
             (9, "live-profile-and-schedules", live_schedules), (10, "daily-live-archives", live_daily),
-            (11, "live-recording-collections", live_collections)]
+            (11, "live-recording-collections", live_collections),
+            (12, "live-photo-companions", LIVE_COMPANION_SCHEMA)]
 
 
 def migrate(path=None, *, migrations=None):

@@ -18,6 +18,11 @@ import uuid
 from . import archive, config, db
 
 
+LIVE_COMPANION_SCHEMA = """
+ALTER TABLE media_entries ADD COLUMN live_companion_of TEXT;
+CREATE INDEX media_live_companions ON media_entries(live_companion_of) WHERE live_companion_of IS NOT NULL;
+"""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS media_roots (
  id TEXT PRIMARY KEY, path TEXT NOT NULL, path_key TEXT NOT NULL UNIQUE,
@@ -273,17 +278,19 @@ def _metadata(folder, inventory):
         if relative not in available or relative in ("context.md", "entry.json") or relative.startswith('.originals/'):
             continue
         poster = None
-        if relative.startswith("live/") and extension == ".mov":
+        if relative.startswith("live/") and extension in (".mov", ".mp4"):
             kind = "live"
             poster = next((str(Path(relative).with_suffix(ext)).replace("\\", "/")
-                           for ext in (".jpg", ".jpeg")
+                           for ext in (".jpeg", ".jpg", ".webp", ".png")
                            if str(Path(relative).with_suffix(ext)).replace("\\", "/") in available), None)
         elif extension in _VIDEOS:
             kind = "video"
             candidate = str(Path(relative).with_suffix("")).replace("\\", "/") + "_cover.jpg"
             poster = candidate if candidate in available else None
         elif extension in _IMAGES:
-            kind = "cover" if relative.startswith("live/") or relative.endswith("_cover.jpg") else "image"
+            paired_motion = relative.startswith("live/") and any(
+                Path(relative).with_suffix(ext).as_posix() in available for ext in (".mov", ".mp4"))
+            kind = "cover" if paired_motion or relative.endswith("_cover.jpg") else "image"
         else:
             continue
         assets.append({"rel_path": relative, "kind": kind, "poster_rel": poster,
@@ -362,6 +369,7 @@ def _upsert(connection, root_id, generation, author, folder, inventory, *, base=
                signature=signature, cover_face_json=None, cover_signature=None, file_count=len(inventory),
                imported_at=old["imported_at"] if old else now, updated_at=now,
                scan_generation=generation, conflict=conflict,
+               live_companion_of=_companion_id(value["marker"], identity),
                **{key: value[key] for key in ("platform", "item_id", "archive_status", "sort_at", "date_source",
                   "text_preview", "search_text", "size", "photo_count", "video_count", "live_count", "cover_rel", "cover_type")})
     columns = list(row)
@@ -598,9 +606,29 @@ _ARCHIVE_ORDER = """(archive_status<>'partial') DESC,
                     (photo_count+video_count+live_count) DESC, live_count DESC,
                     (archive_status='complete') DESC, size DESC, imported_at, id"""
 
+# A separately imported photo or movie retains its original archive. Follow
+# its explicit one-hop link only while the combined Live archive is available.
+_LIVE_ANCHOR_SQL = """SELECT anchor.id FROM media_entries AS anchor
+    WHERE anchor.id={source}.live_companion_of AND anchor.root_id={source}.root_id
+    AND anchor.author={source}.author AND anchor.platform IS {source}.platform
+    AND anchor.availability='present' AND anchor.archive_status<>'partial' AND anchor.live_count>0
+    AND anchor.live_companion_of IS NULL AND anchor.superseded_by IS NULL"""
+_LIVE_ANCHOR = _LIVE_ANCHOR_SQL.format(source='media_entries')
+
+
+def _companion_id(marker, identity):
+    if not marker.get('live_companion_of'):
+        return None
+    try:
+        target = str(uuid.UUID(str(marker.get('live_companion_of', ''))))
+    except ValueError:
+        return None
+    return target if target != identity else None
+
 
 def _card_source(conditions):
-    where = ' AND '.join(['superseded_by IS NULL', *conditions])
+    where = ' AND '.join(['superseded_by IS NULL',
+        f"(availability<>'present' OR live_companion_of IS NULL OR NOT EXISTS ({_LIVE_ANCHOR}))", *conditions])
     # Let SQLite use its date index for the outer cursor and its platform/ID
     # index for the matching copies, without materializing the catalog per page.
     return f"""WITH matching AS NOT MATERIALIZED (SELECT * FROM media_entries WHERE {where}),
@@ -617,7 +645,9 @@ def other_archives(connection, entry):
     rows = connection.execute(f"""SELECT copy.id,copy.rel_dir FROM media_entries AS entry
         JOIN media_entries AS copy INDEXED BY media_entry_identity ON {_SAME_POST} WHERE entry.id=? AND {_POST_ID}
         AND entry.superseded_by IS NULL AND copy.superseded_by IS NULL
-        AND copy.availability='present' AND copy.id<>entry.id ORDER BY copy.rel_dir,copy.id""",
+        AND copy.availability='present' AND copy.id<>entry.id
+        AND (copy.live_companion_of IS NULL OR NOT EXISTS ({_LIVE_ANCHOR_SQL.format(source='copy')}))
+        ORDER BY copy.rel_dir,copy.id""",
         (entry['id'],))
     return [dict(row) for row in rows]
 
@@ -786,6 +816,14 @@ def get_entry(entry_id, *, database=None):
                          for kind in ("image", "live", "video") for a in assets if a["kind"] == kind]
     result["cover_candidates"] = _candidates(assets)
     return result
+
+
+def viewer_entry(entry_id, *, database=None):
+    with db.connect(database) as connection:
+        anchor = connection.execute(f"SELECT ({_LIVE_ANCHOR}) FROM media_entries WHERE id=? "
+                                    "AND availability='present' AND live_companion_of IS NOT NULL",
+                                    (entry_id,)).fetchone()
+    return get_entry(anchor[0] if anchor and anchor[0] else entry_id, database=database)
 
 
 def find_entry(root_id, rel_dir, *, database=None):

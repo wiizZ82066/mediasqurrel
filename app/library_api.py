@@ -77,7 +77,7 @@ async def locate(task_id: str | None = None, rel_dir: str | None = None, root_id
 
 @router.get('/api/library/entries/{entry_id}')
 async def detail(entry_id: str):
-    entry = await asyncio.to_thread(catalog.get_entry, entry_id)
+    entry = await asyncio.to_thread(catalog.viewer_entry, entry_id)
     if not entry:
         raise HTTPException(404, '媒体条目不存在')
     from .live_collections import enrich_entry
