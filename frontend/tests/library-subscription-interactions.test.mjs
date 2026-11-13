@@ -7,6 +7,8 @@ import { homeTime, homeThumbnail, nextScanLabel } from '../src/home-presentation
 import { livePresentation } from '../src/live-status.js'
 import { mediaProfile } from '../src/viewer-presentation.js'
 import { createRecordingPlayback } from '../src/recording-playback.js'
+import { api as accountApi } from '../src/api.js'
+import { store as accountStore, loginWeibo, dismissToast } from '../src/store.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -60,7 +62,7 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
   let taskListener
   const scope = vue.effectScope()
   const env = {
-    mediaProfile, createRecordingPlayback, MediaDetails: {},
+    mediaProfile, createRecordingPlayback, MediaDetails: {}, WeiboLoginButton: {},
     ...vue, api, store, scanBadge, liveLabels, liveDuration, liveSize, taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary, removeTaskSummary: () => {}, liveState: monitor => monitor?.runtime_status || monitor?.status, LiveStatus: {},
     setInterval: () => 0, clearInterval: () => {}, homeTime, homeThumbnail, nextScanLabel, livePresentation,
     toast: () => {}, upsertTaskSummary: () => {}, MaintenancePanel: {}, StartupScreen: {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},
@@ -460,14 +462,24 @@ test('folding subscription creation cancels debounce and in-flight search while 
   assert.equal(state.listPlatform.value, 'weibo')
 })
 
-test('Weibo login only follows explicit action and keeps its platform when selection changes', async t => {
+test('Weibo login is visible on both pages and stays independent of the subscription draft', async t => {
   const { state, api, mount } = setupComponent('Subs', t)
   const loginResult = deferred()
   let weiboLogins = 0, douyinLogins = 0, statusChecks = 0
   api.localAuthors = async () => []
   api.weiboAuth = async () => { statusChecks++; return { logged_in: true } }
   api.douyinAuth = async () => ({ logged_in: false })
-  api.loginWeibo = async () => { weiboLogins++; return loginResult.promise }
+  t.mock.method(accountApi, 'loginWeibo', async () => { weiboLogins++; return loginResult.promise })
+  t.after(() => {
+    for (const item of [...accountStore.toasts]) dismissToast(item.id)
+    accountStore.weiboLogin.saved = false
+  })
+  for (const name of ['Settings', 'Subs']) {
+    const file = fs.readFileSync(new URL(`../src/views/${name}.vue`, import.meta.url), 'utf8')
+    const template = parse(file).descriptor.template.content
+    const scope = name === 'Subs' ? template.split('<section id="subscription-add"')[0] : template.split('<template v-if="settings">')[0]
+    assert.match(scope, /<WeiboLoginButton\s+(?:[^>]* )?\/>/)
+  }
   api.loginDouyin = async () => { douyinLogins++; return { ok: true } }
   await mount()
   state.form.platform = 'weibo'
@@ -481,21 +493,41 @@ test('Weibo login only follows explicit action and keeps its platform when selec
   assert.equal(weiboLogins, 0)
   assert.equal(douyinLogins, 0)
   assert.equal(state.authLabel.value, '')
-  const login = state.login()
-  assert.equal(weiboLogins, 1)
   state.form.platform = 'douyin'
+  await vue.nextTick()
+  const login = loginWeibo()
+  assert.equal(weiboLogins, 1)
+  assert.equal(accountStore.weiboLogin.pending, true)
+  assert.equal(await loginWeibo(), false)
+  state.form.platform = 'weibo'
   await vue.nextTick()
   loginResult.resolve({ ok: true, logged_in: true })
   await login
   assert.equal(weiboLogins, 1)
   assert.equal(douyinLogins, 0)
-  assert.equal(state.wbAuth.value.logged_in, true)
+  assert.equal(accountStore.weiboLogin.saved, true)
+  assert.equal(accountStore.weiboLogin.pending, false)
+  state.form.platform = 'douyin'
+  await vue.nextTick()
   assert.equal(state.dyAuth.value.logged_in, false)
   assert.equal(state.authLabel.value, '抖音未登录')
   api.douyinAuth = async () => ({ logged_in: true })
   await state.loadAuth()
   assert.equal(state.authLabel.value, '抖音已登录')
   assert.equal(statusChecks, 0)
+})
+
+test('a closed Weibo login window allows retry without claiming a saved session', async t => {
+  t.after(() => {
+    for (const item of [...accountStore.toasts]) dismissToast(item.id)
+    accountStore.weiboLogin.saved = false
+  })
+  const request = t.mock.method(accountApi, 'loginWeibo', async () => ({ ok: false }))
+  assert.equal(await loginWeibo(), false)
+  assert.equal(accountStore.weiboLogin.saved, false)
+  assert.equal(accountStore.weiboLogin.pending, false)
+  request.mock.mockImplementation(async () => ({ ok: true, logged_in: true }))
+  assert.equal(await loginWeibo(), true)
 })
 
 test('settings performs only the explicit lightweight checks and prevents repeated submissions', async t => {

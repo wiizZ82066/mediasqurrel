@@ -31,7 +31,7 @@ function setupComponent(name, t, sub = { id: 1, platform: 'weibo', interval_minu
     subScans: async () => ({ items: [] }), scanOptions: async () => ({}),
   }
   const env = { ...vue, api, store: vue.reactive({ subs: [] }),
-    useRoute: () => ({query:{}}), liveState, LiveStatus: {},
+    useRoute: () => ({query:{}}), liveState, LiveStatus: {}, WeiboLoginButton: {},
     onMounted: () => {}, onBeforeUnmount: fn => cleanups.push(fn),
     toast: (...args) => messages.push(args), refreshSubs: async () => {},
     scanCoverageText, scanCoverageNotice, scanStatusText, terminalScanKey, scanBadge, subscriptionHomepage, newerBatch,

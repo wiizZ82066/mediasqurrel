@@ -15,9 +15,28 @@ export const store = reactive({
   homeState: { data: null, scrollTop: 0 },
   libraryRevision: 0,
   libraryAuthorsCollapsed: false,
+  weiboLogin: { pending: false, saved: false },
   preferences: { density: 'comfortable', default_volume: 50, viewer_motion: true },
   taskListState: { items: [], cursor: '', nextCursor: null, previous: [], status: '', q: '', scrollTop: 0, loaded: false },
 })
+
+export async function loginWeibo() {
+  const login = store.weiboLogin
+  if (login.pending) return false
+  login.pending = true
+  try {
+    const result = await api.loginWeibo()
+    if (!result.ok || !result.logged_in) throw new Error(result.detail || '微博登录未完成，可重新打开登录窗口。')
+    login.saved = true
+    toast('微博登录成功，已保存到本机', 'success')
+    return true
+  } catch (error) {
+    toast(error.message || '微博登录窗口打开失败，请重试。', 'error')
+    return false
+  } finally {
+    login.pending = false
+  }
+}
 
 let ws = null
 let reconnectTimer = null

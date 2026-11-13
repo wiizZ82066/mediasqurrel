@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { api } from '../api.js'
 import { toast, store } from '../store.js'
 import AppIcon from '../components/AppIcon.vue'
+import WeiboLoginButton from '../components/WeiboLoginButton.vue'
 const settings=ref(null), loading=ref(true), busy=ref(''), error=ref(''), checks=ref([])
 const startup=ref(null), startupLoading=ref(false), startupSaving=ref(false), startupError=ref(''), folderOpening=ref('')
 const labels={passed:'通过',unverified:'未验证',not_run:'未检测',pass:'通过',ok:'通过',success:'通过',fail:'失败',failed:'失败',error:'失败',warning:'需处理',warn:'需处理',unknown:'未确认',unavailable:'不可用',skipped:'未检测',not_tested:'未检测'}
@@ -17,6 +18,10 @@ onMounted(()=>{const content=document.querySelector('.content');if(content)conte
 </script>
 <template>
   <div class="settings-view"><h1 class="page-title">设置</h1>
+    <section class="card settings-card account-settings">
+      <h2>账号登录</h2>
+      <WeiboLoginButton />
+    </section>
     <p v-if="loading" role="status">正在读取设置…</p><div v-if="error" class="card error-text" role="alert">{{ error }} <button class="btn btn-ghost btn-sm" @click="load">重试</button></div>
     <template v-if="settings">
       <section class="card settings-card">
@@ -42,6 +47,8 @@ onMounted(()=>{const content=document.querySelector('.content');if(content)conte
   </div>
 </template>
 <style scoped>
+.account-settings { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.settings-card.account-settings h2 { margin:0; }
 .settings-card { margin-bottom:22px; }.settings-card h2 { display:flex; align-items:center; gap:10px; font-size:18px; margin-bottom:20px; }.settings-card p { font-size:13px; line-height:1.7; }.settings-card .hint { font-size:12px; color:var(--text-2); margin:12px 0 18px; }
 .path-list,.version-list { display:grid; grid-template-columns:auto minmax(0,1fr); gap:12px 20px; font-size:13px; line-height:1.6; }.path-list dt,.version-list dt { color:var(--text-2); }.path-list dd,.version-list dd { overflow-wrap:anywhere; }
 .settings-actions { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:15px; }.check-row { display:flex; justify-content:space-between; gap:14px; border-top:1px solid var(--border); padding:15px 0; font-size:13px; }.check-row>div { flex:1; min-width:0; overflow-wrap:anywhere; }.check-row p { margin-top:7px; }.check-badge { height:max-content; border-radius:8px; background:#e8edf3; color:#647a8c; padding:4px 8px; font-size:11px; white-space:nowrap; }.check-passed { background:#e2f0e4; color:#427951; }.check-failed { background:#ffe8e2; color:#b43e35; }.check-warning { background:#fff2db; color:#8d6624; }
