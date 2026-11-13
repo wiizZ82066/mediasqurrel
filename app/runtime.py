@@ -16,6 +16,9 @@ from urllib.parse import unquote, urlsplit
 
 from . import config
 
+# Installed by the source launcher only while it owns the serving process.
+restart_handler = None
+
 
 def instance_id():
     return hashlib.sha256(os.path.normcase(os.path.realpath(config.DATA_DIR)).encode()).hexdigest()[:20]

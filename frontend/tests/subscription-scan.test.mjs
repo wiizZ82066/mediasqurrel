@@ -31,7 +31,7 @@ function setupComponent(name, t, sub = { id: 1, platform: 'weibo', interval_minu
     subScans: async () => ({ items: [] }), scanOptions: async () => ({}),
   }
   const env = { ...vue, api, store: vue.reactive({ subs: [] }),
-    useRoute: () => ({query:{}}), liveState, LiveStatus: {}, WeiboLoginButton: {},
+    useRoute: () => ({query:{}}), liveState, LiveStatus: {},
     onMounted: () => {}, onBeforeUnmount: fn => cleanups.push(fn),
     toast: (...args) => messages.push(args), refreshSubs: async () => {},
     scanCoverageText, scanCoverageNotice, scanStatusText, terminalScanKey, scanBadge, subscriptionHomepage, newerBatch,
@@ -63,8 +63,8 @@ test('legacy successful records with incomplete coverage are explicitly partial 
   for (const status of ['ok', 'success', 'partial']) assert.equal(scanStatusText(status, coverage), '覆盖不足')
   assert.equal(scanStatusText('failed', coverage), '失败')
   assert.equal(scanStatusText('success', { complete: true }), '完成')
-  assert.match(scanCoverageNotice(coverage, 'weibo'), /覆盖不足.*登录微博/)
-  assert.match(scanCoverageNotice(coverage, 'douyin'), /登录抖音/)
+  assert.match(scanCoverageNotice(coverage, 'weibo'), /覆盖不足.*微博限制继续翻页/)
+  assert.match(scanCoverageNotice(coverage, 'douyin'), /抖音限制继续翻页/)
   assert.match(scanCoverageNotice({...coverage, reason:'guest_preview'}, 'douyin'), /部分公开作品.*最新作品也可能缺失/)
   assert.match(scanCoverageText(coverage, 'weibo'), /1 页 \/ 11 条/)
   assert.equal(scanCoverageNotice({ complete: true }, 'weibo'), '')
@@ -95,9 +95,9 @@ test('partial manual scans show the coverage/login warning in toast and main-car
   const sub = { id: 1, platform: 'weibo', scan: { status: 'success', coverage: { complete: false, reason: 'login_required' } } }
   api.scanSub = async () => ({ new_items: [], coverage: sub.scan.coverage })
   await state.scanNow(sub)
-  assert.match(messages[0][0], /覆盖不足.*登录微博/)
+  assert.match(messages[0][0], /覆盖不足.*微博限制继续翻页/)
   assert.notEqual(messages[0][1], 'success')
-  assert.match(state.scanNotice(sub), /覆盖不足.*登录微博/)
+  assert.match(state.scanNotice(sub), /覆盖不足.*微博限制继续翻页/)
   sub.scan.status = 'running'
   assert.equal(state.scanNotice(sub), '')
   sub.scan.status = 'failed'

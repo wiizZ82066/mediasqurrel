@@ -82,7 +82,7 @@ def _scan_sync(sub):
     result = collect_browser(sub, parse_page, launch, context, f'https://www.douyin.com/user/{sec_uid}', _POST_URL,
                              page_restriction=page_restriction, on_collected=collected)
     if sub.get('scan_options', {}).get('baseline') and result['coverage']['reason'] == 'guest_preview':
-        result['error'] = '抖音只返回了部分公开作品，请在订阅页检查抖音登录；尚未建立基线'
+        result['error'] = '抖音仅返回部分公开作品，尚未建立基线'
     return result
 
 def scan(sub):

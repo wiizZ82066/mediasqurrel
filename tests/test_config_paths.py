@@ -37,6 +37,27 @@ class RuntimePathTests(unittest.TestCase):
             self.assertNotEqual(self.probe(root).returncode, 0)
             self.assertFalse((root / 'default').exists())
 
+    def test_missing_selected_database_uses_existing_default_and_keeps_choice(self):
+        import sqlite3
+        from contextlib import closing
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = root / 'original'
+            old.mkdir()
+            with closing(sqlite3.connect(old / 'app.db')) as connection:
+                connection.execute('CREATE TABLE original(x)')
+            paths = root / 'paths.json'
+            missing = root / 'removable'
+            config = {'data_dir': str(old), 'database_directory': str(missing)}
+            paths.write_text(json.dumps(config), encoding='utf8')
+            env = {key: value for key, value in os.environ.items() if not key.startswith('MS_')}
+            env.update(MS_PATHS_FILE=str(paths), MS_HOME=str(root))
+            code = 'import json; from app import config as c; print(json.dumps([c.DB_PATH,c.DATABASE_FALLBACK]))'
+            result = subprocess.check_output([sys.executable, '-B', '-c', code], env=env)
+            self.assertEqual(json.loads(result), [str(old / 'app.db'), True])
+            self.assertFalse(missing.exists())
+            self.assertEqual(json.loads(paths.read_text(encoding='utf8')), config)
+
 
 if __name__ == '__main__':
     unittest.main()

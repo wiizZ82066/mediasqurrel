@@ -117,6 +117,7 @@ class AccountObservation:
 
     def __init__(self, context):
         self.confirmed = False
+        self.signed_out = False
         context.on('response', self._observe)
 
     def _observe(self, response):
@@ -129,6 +130,10 @@ class AccountObservation:
             uid = str((data.get('user') or {}).get('uid') or '')
             if data.get('status_code') == 0 and uid.isascii() and uid.isdigit() and int(uid) > 0:
                 self.confirmed = True
+            elif data.get('status_code') != 0 and any(
+                    phrase in str(data.get('status_msg') or '').lower()
+                    for phrase in ('未登录', '请先登录', '登录已过期', 'not logged in', 'login required')):
+                self.signed_out = True
         except Exception:
             # Malformed data or a navigation before the body is ready is not confirmation.
             pass

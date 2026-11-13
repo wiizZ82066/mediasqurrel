@@ -7,7 +7,7 @@ import secrets
 import threading
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 
 from . import catalog, config, db, library_service, maintenance, scheduling, settings, task_manager, watcher
@@ -20,14 +20,73 @@ _work = {}
 _paths_pending = False
 
 
+@router.get('/api/settings/accounts')
+def accounts():
+    from . import account_status
+    return account_status.snapshot()
+
+
+@router.post('/api/settings/database/pick')
+async def pick_database():
+    from . import database_location
+    try:
+        folder = await asyncio.to_thread(database_location.pick_folder)
+        return {'directory': folder or None}
+    except Exception:
+        raise HTTPException(503, '目录选择器未能打开。可直接输入本机文件夹的完整路径。') from None
+
+
+@router.post('/api/settings/database/preview')
+def preview_database(body: dict):
+    from . import database_location
+    try:
+        return database_location.preview(body.get('directory'))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+@router.put('/api/settings/database')
+def select_database(body: dict):
+    from . import database_location
+    try:
+        if body.get('confirmed') is not True:
+            raise ValueError('请先确认数据库目录。')
+        return database_location.select(body.get('directory'), body.get('kind'))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from None
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@router.post('/api/settings/database/restart')
+async def restart_database(background: BackgroundTasks):
+    from . import database_location, runtime
+    selection = database_location.status()
+    if not selection['restart_required']:
+        raise HTTPException(409, '当前已经在使用这个目录。')
+    try:
+        await asyncio.to_thread(database_location.inspect_database, Path(selection['next_directory']) / 'app.db')
+    except (OSError, ValueError):
+        raise HTTPException(409, '所选数据库当前不可用。请接入对应磁盘，或选择其他目录。') from None
+    if runtime.restart_handler is None:
+        raise HTTPException(409, '请正常退出当前服务，再重新运行启动器以使用所选数据库。')
+    if (config.MAINTENANCE_ACTIVE or watcher.has_active_scans() or task_manager.update_state()['active']
+            or live_service.busy() or library_service._scans or _work):
+        raise HTTPException(409, '后台仍有任务，请等任务完成后再重启。所选目录已保存。')
+    config.MAINTENANCE_ACTIVE = True
+    background.add_task(runtime.restart_handler)
+    return {'restarting': True}
+
+
 @router.get('/api/settings')
 def current_settings():
     from .douyin_detail_adapter import configuration_status
-    return {'paths': {'library_root': config.LIBRARY_ROOT, 'data_dir': config.store_data_dir(),
+    from . import database_location
+    return {'database': database_location.status(), 'paths': {'library_root': config.LIBRARY_ROOT, 'data_dir': config.store_data_dir(),
                      'default_download_dir': config.DEFAULT_DOWNLOAD_DIR or config.LIBRARY_ROOT,
                      'legacy_locations': config.legacy_locations()},
             'values': settings.load(), 'retention': {'tasks': 'forever', 'logs': 'compressed_forever'},
-            'versions': settings.versions(), 'storage': settings.storage_usage(), 'restart_required': _paths_pending,
+            'version': settings.app_version(), 'versions': settings.versions(), 'storage': settings.storage_usage(), 'restart_required': _paths_pending,
             'douyin_adapter': configuration_status()}
 
 

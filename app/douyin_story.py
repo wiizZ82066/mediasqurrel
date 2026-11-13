@@ -41,7 +41,7 @@ def _error(message, reason='invalid_response'):
 def _session_header():
     cookies = load_cookies()
     if not has_login_cookie(cookies):
-        raise _error('下载日常需要抖音登录，请先在订阅页登录后重试', 'login_required')
+        raise _error('下载日常需要抖音登录，请先在设置页登录后重试', 'login_required')
     values = {}
     for cookie in cookies:
         if not isinstance(cookie, dict) or cookie.get('name') not in _COOKIE_NAMES:
@@ -59,7 +59,7 @@ def _session_header():
             continue
         values.setdefault(cookie['name'], value)
     if 'sessionid' not in values:
-        raise _error('抖音登录信息无效，请在订阅页重新登录后重试', 'login_required')
+        raise _error('抖音登录信息无效，请在设置页重新登录后重试', 'login_required')
     return '; '.join(f'{key}={value}' for key, value in values.items())
 
 
@@ -167,7 +167,7 @@ def _request(params, cookie, timeout, *, endpoint=_ENDPOINT):
         raise _error('抖音日常响应格式无效')
     code = payload.get('status_code')
     if str(code) in ('8', '12', '2483'):
-        raise _error('抖音登录已失效或无法用于日常读取，请在订阅页重新登录', 'login_required')
+        raise _error('抖音登录已失效或无法用于日常读取，请在设置页重新登录', 'login_required')
     if str(code) == '5':
         raise _error('抖音日常接口返回“参数不合法”（状态 5），已停止下载；此错误不能判定登录失效')
     if code not in (0, '0'):

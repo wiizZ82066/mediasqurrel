@@ -15,26 +15,51 @@ export const store = reactive({
   homeState: { data: null, scrollTop: 0 },
   libraryRevision: 0,
   libraryAuthorsCollapsed: false,
-  weiboLogin: { pending: false, saved: false },
+  accountLogin: {
+    pending: '',
+    douyin: { status: 'pending', checked_at: null, saved: false, limited: false, revision: 0 },
+    weibo: { status: 'pending', checked_at: null, saved: false, limited: false, revision: 0 },
+  },
   preferences: { density: 'comfortable', default_volume: 50, viewer_motion: true },
   taskListState: { items: [], cursor: '', nextCursor: null, previous: [], status: '', q: '', scrollTop: 0, loaded: false },
 })
 
-export async function loginWeibo() {
-  const login = store.weiboLogin
-  if (login.pending) return false
-  login.pending = true
+const accountNames = { douyin: '抖音', weibo: '微博' }
+
+export async function readAccountStatus() {
+  const login = store.accountLogin
+  const revisions = Object.fromEntries(Object.keys(accountNames).map(key => [key, ++login[key].revision]))
+  let items
   try {
-    const result = await api.loginWeibo()
-    if (!result.ok || !result.logged_in) throw new Error(result.detail || '微博登录未完成，可重新打开登录窗口。')
-    login.saved = true
-    toast('微博登录成功，已保存到本机', 'success')
+    items = (await api.accountStatus()).items
+  } catch { /* Keep the last check time visible when the service cannot be reached. */ }
+  for (const [platform, revision] of Object.entries(revisions)) {
+    const state = login[platform]
+    if (login.pending === platform || state.revision !== revision) continue
+    const item = items?.[platform]
+    if (item) Object.assign(state, { status: item.status, saved: item.saved, limited: item.limited, checked_at: item.checked_at })
+    else state.status = 'unknown'
+  }
+}
+
+export async function loginAccount(platform) {
+  const login = store.accountLogin
+  if (login.pending) return false
+  const name = accountNames[platform]
+  login.pending = platform
+  ++login[platform].revision
+  try {
+    const result = await (platform === 'weibo' ? api.loginWeibo() : api.loginDouyin())
+    if (!result.ok || !result.logged_in) throw new Error(result.detail || name + '登录未完成，可重新打开登录窗口。')
+    Object.assign(login[platform], { saved: true, limited: false, status: 'signed_in', checked_at: new Date().toISOString() })
+    toast(name + '登录成功，已保存到本机', 'success')
     return true
   } catch (error) {
-    toast(error.message || '微博登录窗口打开失败，请重试。', 'error')
+    toast(error.message || name + '登录窗口打开失败，请重试。', 'error')
     return false
   } finally {
-    login.pending = false
+    ++login[platform].revision
+    login.pending = ''
   }
 }
 

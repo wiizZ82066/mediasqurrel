@@ -2,7 +2,6 @@
 import asyncio
 import contextlib
 import datetime as _dt
-import json
 import os
 import secrets
 from pathlib import Path
@@ -26,23 +25,10 @@ from .home_api import router as home_router
 from . import scanners  # noqa: F401  (import 即注册各平台扫描器)
 
 
-def _app_version() -> str:
-    """读取应用版本：打包资源内 package.json > 根目录 package.json > dev。"""
-    for base in (getattr(config, "RESOURCE_DIR", ""), config.BASE_DIR):
-        pj = os.path.join(base, "package.json")
-        if os.path.isfile(pj):
-            try:
-                with open(pj, "r", encoding="utf-8") as f:
-                    return json.load(f).get("version", "dev")
-            except (OSError, ValueError):
-                continue
-    return "dev"
-
-
 # Freeze the identity of the loaded application, not whatever source files a
 # later health request happens to find after git pull or a directory copy.
 _STARTUP_HEALTH = {"status": "ok", "application": "media-squirrel",
-                   "version": _app_version(), **runtime_identity()}
+                   "version": settings.app_version(), **runtime_identity()}
 
 _DEV_MODE = os.environ.get("MS_DEV") == "1"
 
@@ -131,8 +117,13 @@ def _invalidate_library(task):
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
     lock = InstanceLock().acquire()
+    database_lock = None
     try:
         config.ensure_runtime_dirs()
+        if config._database_override:
+            from .database_location import inspect_database
+            inspect_database(Path(config.DB_PATH))
+        database_lock = InstanceLock(Path(config.DB_PATH).parent, filename='.database-owner.lock').acquire()
         db.migrate()
         from .path_transition import apply_pending_startup
         await asyncio.to_thread(apply_pending_startup)
@@ -146,12 +137,15 @@ async def lifespan(_app: FastAPI):
         watcher.reconcile_tasks(task_manager.iter_subscription_tasks())
         watcher.start_scheduler(_dispatch_new_items)
         live_service.start()
+        from . import account_status
+        account_status.start()
         yield
     finally:
         try:
             from .sub_search import stop_searches
             # Each owner receives shutdown even if a different cleanup fails.
-            for stop in (settings_api.stop, stop_searches, subscription_batch.stop, live_service.stop, watcher.stop_scheduler, task_manager.shutdown, library_service.stop):
+            from . import account_status
+            for stop in (account_status.stop, settings_api.stop, stop_searches, subscription_batch.stop, live_service.stop, watcher.stop_scheduler, task_manager.shutdown, library_service.stop):
                 try:
                     await stop()
                 except Exception as error:
@@ -161,6 +155,8 @@ async def lifespan(_app: FastAPI):
                 task_manager.ON_TASK_FINISHED.remove(_record_task_result)
             if _invalidate_library in task_manager.ON_TASK_DONE:
                 task_manager.ON_TASK_DONE.remove(_invalidate_library)
+            if database_lock:
+                database_lock.release()
             lock.release()
 
 
@@ -471,7 +467,11 @@ async def api_login_weibo():
     """A visible login window opens only after the user's explicit click."""
     from . import weibo_auth
     try:
-        return await weibo_auth.login_async()
+        result = await weibo_auth.login_async()
+        if result.get('ok'):
+            from . import account_status
+            account_status.changed('weibo')
+        return result
     except asyncio.CancelledError:
         raise
     except Exception as error:
@@ -504,7 +504,11 @@ async def api_login_douyin():
     之后的抖音搜索/扫描/下载自动注入登录态。
     """
     from . import sub_search
-    return await sub_search.douyin_login_async()
+    result = await sub_search.douyin_login_async()
+    if result.get('ok'):
+        from . import account_status
+        account_status.changed('douyin')
+    return result
 
 
 @app.post("/api/subs/verify-douyin")

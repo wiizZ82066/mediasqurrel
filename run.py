@@ -383,7 +383,11 @@ def main():
     except (RuntimeError, OSError) as error:
         raise SystemExit(str(error))
     with coordinate_startup(args.port) as existing:
-        _serve_or_reopen(args, expected, existing)
+        restart = _serve_or_reopen(args, expected, existing)
+    if restart:
+        args = [arg for arg in sys.argv[1:] if arg not in ('--autostart', '--no-browser')]
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), *args, '--no-browser'],
+                         cwd=config.SOURCE_DIR, creationflags=subprocess.CREATE_NO_WINDOW if _BACKGROUND else 0)
 
 
 def _serve_or_reopen(args, expected, existing):
@@ -418,13 +422,25 @@ def _serve_or_reopen(args, expected, existing):
         uvicorn.run('app.main:app', host=config.HOST, port=args.port, reload=True, log_level='info', timeout_graceful_shutdown=10)
         return
     service = uvicorn.Server(uvicorn.Config('app.main:app', host=config.HOST, port=args.port, log_level='info', timeout_graceful_shutdown=10))
+    from app import runtime
+    restart_requested = threading.Event()
+
+    def request_restart():
+        restart_requested.set()
+        service.should_exit = True
+
+    if not getattr(sys, 'frozen', False) and not os.environ.get('MS_DESKTOP_TOKEN'):
+        runtime.restart_handler = request_restart
     if os.environ.get('MS_DESKTOP_TOKEN') or getattr(sys, 'frozen', False):
         _stdin_watchdog(lambda: setattr(service, 'should_exit', True))
     if args.no_tray:
-        service.run()
+        try:
+            service.run()
+        finally:
+            runtime.restart_handler = None
         if not service.started:
             raise SystemExit('本地服务启动失败，请检查上方错误。')
-        return
+        return restart_requested.is_set()
     worker = threading.Thread(target=service.run, name='media-squirrel-server')
     worker.start()
     try:
@@ -452,6 +468,8 @@ def _serve_or_reopen(args, expected, existing):
     finally:
         service.should_exit = True
         worker.join()
+        runtime.restart_handler = None
+    return restart_requested.is_set()
 
 
 if __name__ == "__main__":

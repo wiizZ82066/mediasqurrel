@@ -5,7 +5,7 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 
-from . import douyin_auth
+from . import account_status
 
 _LOCK = threading.Lock()
 _SITES = (('douyin', '抖音', 'https://www.douyin.com/'),
@@ -61,13 +61,13 @@ def check_sites():
     if not _LOCK.acquire(blocking=False):
         raise RuntimeError('检测正在进行，请稍候')
     try:
-        auth = douyin_auth.auth_status()
-        logged_in, limited = auth['logged_in'], auth.get('profile_limited')
+        state = account_status.snapshot()['items']['douyin']['status']
+        descriptions = {'signed_in': '已登录', 'signed_out': '未登录', 'expired': '登录已失效',
+                        'pending': '正在等待后台核验', 'unknown': '暂时无法向平台验证'}
         login = {'id': 'douyin_login', 'label': '抖音登录',
-                 'status': 'passed' if logged_in else 'warning',
-                 'reason': '主页登录受限' if limited else '已登录' if logged_in else '未登录',
-                 'note': '上次扫描只获得游客可见的作品，已保留本机登录信息' if limited else '根据本机保存的登录信息和最近的扫描结果判断',
-                 'suggestion': '' if logged_in else '在订阅页点击登录抖音'}
+                 'status': 'passed' if state == 'signed_in' else 'warning',
+                 'reason': descriptions[state],
+                 'suggestion': '可在本页顶部登录抖音' if state in ('signed_out', 'expired') else ''}
         with ThreadPoolExecutor(max_workers=2) as pool:
             websites = list(pool.map(lambda item: _website(*item), _SITES))
         return {'checks': [login, *websites]}

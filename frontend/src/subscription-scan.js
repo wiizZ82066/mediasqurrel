@@ -1,5 +1,5 @@
 const coverageReasons = {
-  guest_preview: '抖音只返回了部分公开作品，最新作品也可能缺失。请在订阅页检查抖音登录后重新扫描',
+  guest_preview: '抖音只返回了部分公开作品，最新作品也可能缺失',
   network_error: '后续分页网络中断或请求超时，已取得的内容保留，请稍后重试',
   network_changed: '网络连接发生变化，已取得的内容保留，请网络稳定后重新扫描',
   network_unavailable: '网络暂时不可用，已取得的内容保留，请检查连接后重新扫描',
@@ -20,7 +20,7 @@ const coverageReasons = {
 export function coverageReason(coverage, platform) {
   if (coverage?.reason === 'login_required') {
     const name = { weibo: '微博', douyin: '抖音' }[platform] || '对应平台'
-    return `平台限制后续分页，请登录${name}后重新扫描`
+    return `${name}限制继续翻页，本次仅覆盖可见作品`
   }
   return coverageReasons[coverage?.reason] || (coverage?.complete ? '扫描器未提供具体覆盖说明' : '本轮扫描未覆盖完整窗口，请查看扫描记录后重试')
 }

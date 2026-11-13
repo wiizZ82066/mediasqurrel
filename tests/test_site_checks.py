@@ -89,7 +89,7 @@ class WebsiteCheckTests(unittest.TestCase):
                 self.assertNotIn('secret', json.dumps(result))
 
     def test_check_scope_is_login_and_two_websites_and_duplicate_work_is_rejected(self):
-        with patch.object(douyin_auth, 'auth_status', return_value={'logged_in': False}), \
+        with patch.object(site_checks.account_status, 'snapshot', return_value={'items': {'douyin': {'status': 'signed_out'}}}), \
                 patch.object(site_checks, '_website', side_effect=lambda platform, *_: {'id': platform + '_website', 'status': 'passed'}):
             result = site_checks.check_sites()
             self.assertEqual([check['id'] for check in result['checks']], ['douyin_login', 'douyin_website', 'weibo_website'])

@@ -33,7 +33,7 @@ def _read_paths():
             value = json.load(stream)
         if not isinstance(value, dict):
             raise ValueError("路径配置必须是对象")
-        for key in ("data_dir", "library_root"):
+        for key in ("data_dir", "library_root", "database_directory"):
             if key in value and (not isinstance(value[key], str) or not os.path.isabs(value[key])):
                 raise ValueError(f"{key} 必须是绝对路径")
         return value
@@ -121,6 +121,27 @@ if _store:
     if Path(LIBRARY_ROOT).resolve() in data_parent.parents:
         _nested_data_dir = data_parent
 
+def database_pinned_by_environment():
+    return bool(os.environ.get('MS_DATA_DIR') or os.environ.get('MS_APP_DATA_DIR'))
+
+
+DEFAULT_DB_PATH = DB_PATH
+_database_override = _paths.get('database_directory')
+DATABASE_FALLBACK = False
+if _database_override and not database_pinned_by_environment():
+    chosen = Path(_database_override)
+    if not chosen.is_absolute() or chosen == chosen.parent:
+        raise ValueError('数据库目录需要使用独立的绝对路径')
+    selected_database = chosen.resolve() / 'app.db'
+    if selected_database.is_file():
+        DB_PATH = str(selected_database)
+    elif Path(DEFAULT_DB_PATH).is_file():
+        DATABASE_FALLBACK = True
+    else:
+        raise FileNotFoundError('所选数据库和原数据库均不可用。请接入对应磁盘后重新启动。')
+else:
+    _database_override = None
+
 
 def is_library_data_path(resolved_path):
     """Keep an embedded database directory out of the media namespace."""
@@ -128,7 +149,7 @@ def is_library_data_path(resolved_path):
 
 
 def store_data_dir():
-    return str(Path(DB_PATH).parent) if _store else DATA_DIR
+    return str(Path(DB_PATH).parent) if _store or _database_override else DATA_DIR
 
 
 LOG_DIR = os.path.join(store_data_dir(), "logs")
@@ -150,7 +171,7 @@ MAINTENANCE_ACTIVE = False
 
 
 def uses_prepared_database(path):
-    return bool(_paired and Path(path) == Path(DB_PATH))
+    return bool((_paired or _database_override) and Path(path) == Path(DB_PATH))
 
 
 def paired_store_configured():
