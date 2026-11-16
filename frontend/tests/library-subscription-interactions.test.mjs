@@ -111,6 +111,38 @@ function collectionGallery() {
   ] }
 }
 
+test('the active video follows stage resizes and releases its observer when replaced or closed', async t => {
+  const observers = []
+  const previous = globalThis.ResizeObserver
+  globalThis.ResizeObserver = class {
+    constructor(notify) { this.notify = notify; observers.push(this) }
+    observe(target) { this.target = target }
+    disconnect() { this.target = null }
+  }
+  t.after(() => {
+    if (previous === undefined) delete globalThis.ResizeObserver
+    else globalThis.ResizeObserver = previous
+  })
+  const { state, unmount } = setupComponent('Library', t)
+  for (const [index, ref] of [state.segmentVideo, state.liveVideo].entries()) {
+    const properties = new Map()
+    const video = Object.assign(mediaDouble(), {
+      parentElement: {}, style: { setProperty: (key, value) => properties.set(key, value) },
+    })
+    state.segmentVideo.value = null
+    ref.value = video
+    await vue.nextTick()
+    assert.equal(observers[index].target, video.parentElement)
+    if (index) assert.equal(observers[index - 1].target, null)
+    for (const height of [682.5, 382]) {
+      observers[index].notify([{ contentRect: { height } }])
+      assert.equal(properties.get('--video-stage-height'), `${height}px`)
+    }
+  }
+  unmount()
+  assert.equal(observers.at(-1).target, null)
+})
+
 test('a collection advances only on ended, uses the next source and preserves player preferences',async t=>{
   const {state}=setupComponent('Library',t)
   state.gallery.value=collectionGallery()

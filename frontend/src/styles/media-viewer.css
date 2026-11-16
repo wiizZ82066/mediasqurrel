@@ -34,12 +34,15 @@
 .gallery-prev,.gallery-next { width:40px; height:40px; background:rgba(255,255,255,.07); border-color:var(--viewer-line); }
 .gallery-media { min-height:0; min-width:0; flex:1; align-self:stretch; position:relative; display:flex; align-items:center; justify-content:center; container-type:size; animation:viewer-media-in 200ms var(--viewer-ease) both; }
 .gallery-media>img,.gallery-media>video { display:block; width:auto; height:auto; max-width:100%; max-height:100%; min-height:0; object-fit:contain; border-radius:10px; }
-/* Fit the element itself to its media ratio so native video controls do not
-   acquire a large letterbox around portrait or landscape content. */
 @supports (width:1cqw) {
-  .gallery-media>img,.gallery-media>video { width:min(100cqw,calc(100cqh * var(--media-ratio,1))); aspect-ratio:var(--media-ratio,auto); }
+  .gallery-media>img { width:min(100cqw,calc(100cqh * var(--media-ratio,1))); aspect-ratio:var(--media-ratio,auto); }
 }
-.gallery-media>video { outline-offset:4px; background:transparent; }
+.gallery-media>video {
+  width:min(100%,calc(var(--video-stage-height) * var(--media-ratio)));
+  aspect-ratio:var(--media-ratio,auto);
+  outline-offset:4px;
+  background:transparent;
+}
 .live-play { position:absolute; bottom:58px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:7px; padding:9px 15px; border:1px solid #ffffff30; border-radius:99px; background:rgba(30,33,40,.86); backdrop-filter:blur(12px); color:#f5f5f7; cursor:pointer; font-size:12px; white-space:nowrap; transition:background-color 150ms ease; }
 .live-play:hover { background:rgba(58,63,74,.96); }
 .media-error { position:absolute; bottom:105px; max-width:calc(100% - 24px); padding:12px 16px; border:1px solid #f4aa9a55; border-radius:12px; background:#452a2aeb; color:#ffd3c9; font-size:12px; line-height:1.6; text-align:center; }

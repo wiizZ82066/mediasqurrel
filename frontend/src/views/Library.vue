@@ -254,6 +254,16 @@ function selectMedia(index){if(index===null || index<0 || index>=(gallery.value?
 function navigateMedia(delta){selectMedia(galleryIndex.value+delta)}
 function fitMedia(event){const media=event.target,width=media.videoWidth || media.naturalWidth,height=media.videoHeight || media.naturalHeight;if(width>0 && height>0)media.style.setProperty('--media-ratio',String(width/height))}
 function videoMetadata(event){fitMedia(event);if(event.target===segmentVideo.value)mediaError.value='';if(continuationVolume && event.target===segmentVideo.value)Object.assign(event.target,continuationVolume);else applyDefaultVolume(event,store.preferences?.default_volume)}
+watch(() => segmentVideo.value || liveVideo.value, (video, _, onCleanup) => {
+  if (!video || typeof ResizeObserver === 'undefined') return
+  // A resolved stage height keeps Chromium's native controls at the video's
+  // displayed width while the volume slider expands inside its shadow tree.
+  const observer = new ResizeObserver(([entry]) => {
+    video.style.setProperty('--video-stage-height', `${entry.contentRect.height}px`)
+  })
+  observer.observe(video.parentElement)
+  onCleanup(() => observer.disconnect())
+}, { flush: 'post' })
 function releaseRecording(){recordingPlayer?.dispose();recordingPlayer=null;recordingReady=Promise.resolve(true)}
 watch(segmentVideo,video=>{
   releaseRecording()
@@ -426,11 +436,11 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;releaseRecording();stopCardLiv
                   <button v-if="gallery.gallery.length>1" class="viewer-button gallery-prev" :disabled="galleryIndex===0" aria-label="上一项" @click="navigateMedia(-1)"><AppIcon name="chevron-left" :size="22" /></button>
                   <div :key="currentItem.id || currentItem.rel" class="gallery-media" @pointerenter="hoverLive" @pointerleave="leaveLive">
                     <template v-if="currentItem.live">
-                      <video v-if="livePlaying" ref="liveVideo" :src="mediaUrl(currentLocation,currentItem.rel)" :poster="currentItem.poster?mediaUrl(currentLocation,currentItem.poster):undefined" controls muted loop playsinline preload="metadata" @loadedmetadata="fitMedia" @error="liveError"></video>
+                      <video v-if="livePlaying" ref="liveVideo" :src="mediaUrl(currentLocation,currentItem.rel)" :poster="currentItem.poster?mediaUrl(currentLocation,currentItem.poster):undefined" controls muted loop playsinline preload="metadata" @loadedmetadata="fitMedia" @resize="fitMedia" @error="liveError"></video>
                       <img v-else-if="currentItem.poster" :src="mediaUrl(currentLocation,currentItem.poster)" alt="Live 图静态画面，鼠标悬停可静音播放" @load="fitMedia" @error="mediaError='静态画面无法读取，可尝试播放 Live 图。'">
                       <button class="live-play" :aria-pressed="livePlaying" @click="toggleLive"><AppIcon name="live" :size="18" />{{ livePlaying?'停止 Live 图':'播放 Live 图' }}</button>
                     </template>
-                    <video v-else-if="currentItem.type==='video'" ref="segmentVideo" :key="currentItem.id || currentItem.rel" :src="currentItem.playback_info_url?undefined:mediaUrl(currentLocation,currentItem.rel)" :poster="currentItem.poster?mediaUrl(currentLocation,currentItem.poster):undefined" controls playsinline preload="metadata" @loadedmetadata="videoMetadata" @ended="continueCollection" @error="mediaError='视频无法读取或浏览器不支持此格式，请检查原文件。'"></video>
+                    <video v-else-if="currentItem.type==='video'" ref="segmentVideo" :key="currentItem.id || currentItem.rel" :src="currentItem.playback_info_url?undefined:mediaUrl(currentLocation,currentItem.rel)" :poster="currentItem.poster?mediaUrl(currentLocation,currentItem.poster):undefined" controls playsinline preload="metadata" @loadedmetadata="videoMetadata" @resize="fitMedia" @ended="continueCollection" @error="mediaError='视频无法读取或浏览器不支持此格式，请检查原文件。'"></video>
                     <img v-else :src="mediaUrl(currentLocation,currentItem.rel)" alt="媒体原图" @load="fitMedia" @error="mediaError='图片无法读取，请检查文件是否移动或删除。'">
                     <p v-if="mediaError" class="media-error" role="alert">{{ mediaError }}</p>
                   </div>
