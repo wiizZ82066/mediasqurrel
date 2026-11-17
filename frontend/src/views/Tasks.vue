@@ -45,7 +45,7 @@ let disposed = false
 
 const statusText = {
   queued: '排队中', running: '运行中', success: '已完成', failed: '失败',
-  cancelled: '已取消', interrupted: '运行中断',
+  skipped: '已跳过', cancelled: '已取消', interrupted: '运行中断',
 }
 const isActive = (task) => ['queued', 'running'].includes(task.status)
 const visibleTask = (task) => (!status.value || task.status === status.value)

@@ -12,6 +12,7 @@ from fastapi import WebSocket
 
 from . import config, script_registry
 from .progress import parse_progress
+from .weibo_policy import REASONS as WEIBO_SKIP_REASONS
 from .redaction import REDACTED, redact_text, redact_value, redact_task_metadata
 from .task_store import TaskStore, MAX_LINE_CHARS
 
@@ -31,7 +32,7 @@ _ws_queues = {}
 _ws_jobs = {}
 _archive_jobs = set()
 _resume_enabled = True
-TERMINAL = {'success', 'failed', 'cancelled', 'interrupted'}
+TERMINAL = {'success', 'failed', 'cancelled', 'interrupted', 'skipped'}
 
 
 def _now():
@@ -440,7 +441,11 @@ async def _run(task_id):
             task['status'] = ('cancelled' if task.get('_cancelling') else 'interrupted' if _stopping
                               else 'success' if task['exit_code'] == 0 else 'failed')
             if task['status'] == 'failed':
-                task['error'] = f"下载脚本退出码 {task['exit_code']}，请查看日志"
+                if task['script_id'] == 'weibo' and task['exit_code'] in WEIBO_SKIP_REASONS:
+                    task['status'] = 'skipped'
+                    task['progress'] = {'label': '已跳过：' + WEIBO_SKIP_REASONS[task['exit_code']], 'percent': None}
+                else:
+                    task['error'] = f"下载脚本退出码 {task['exit_code']}，请查看日志"
         except asyncio.CancelledError:
             await _stop_tree(proc)
             task['status'] = 'cancelled' if task.get('_cancelling') else 'interrupted'
@@ -461,7 +466,8 @@ async def _run(task_id):
             task['finished_at'] = _now()
             labels = {'success': '下载完成', 'failed': '下载失败，请查看日志',
                       'cancelled': '下载已取消', 'interrupted': '任务已中断，可重试'}
-            task['progress'] = {**task['progress'], 'label': labels.get(task['status'], '下载失败')}
+            if task['status'] in labels:
+                task['progress'] = {**task['progress'], 'label': labels[task['status']]}
             previous_percent = task['progress'].get('percent')
             if task['status'] == 'success':
                 task['progress']['percent'] = 100

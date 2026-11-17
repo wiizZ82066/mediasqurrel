@@ -78,7 +78,8 @@ async def _dispatch_new_items(items):
 
 
 async def _record_task_result(task):
-    changed = watcher.record_task_result(task["id"], task["status"], task.get("error") or "",
+    reason = ((task.get('progress') or {}).get('label') if task['status'] == 'skipped' else task.get('error')) or ''
+    changed = watcher.record_task_result(task["id"], task["status"], reason,
                                         complete_verified=task["status"] == "success" and watcher.task_complete(task))
     source = (task.get('metadata') or {}).get('subscription') or {}
     if changed and source.get('sub_id'):

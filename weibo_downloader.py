@@ -44,6 +44,7 @@ from app import config
 from app.archive import atomic_output, atomic_write_text, begin_entry
 from app.content_text import html_to_text, weibo_post_text
 from app.platform_errors import PlatformAccessError
+from app.weibo_policy import NO_PHOTOS, NOT_AUTHOR, PLATFORM_ACTIVITY, WeiboSkipped, skip_reason
 from app.weibo_images import EXTENSIONS, PatchSkipped, eligibility, image_info, patch_image, reference_url
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -399,7 +400,7 @@ def decode_live_video_url(video_field) -> str:
     return ""
 
 
-def extract_post(page, url: str) -> dict:
+def extract_post(page, url: str, *, for_download=False) -> dict:
     """从已打开的页面提取帖子数据。优先走官方 API（一次拿到全部图片和 Live 视频）。"""
     # ---- 1. 官方 API 提取（最可靠） ----
     # 先等 visitor 重定向完成、页面稳定，确保会话 cookie 就绪
@@ -415,6 +416,10 @@ def extract_post(page, url: str) -> dict:
 
     api_data = fetch_status_api(page, url)
     if api_data:
+        owner = urlsplit(url).path.strip('/').split('/')[0]
+        reason = skip_reason(api_data, owner if owner.isdigit() else None)
+        if reason:
+            raise WeiboSkipped(reason)
         pic_infos = api_data.get("pic_infos") or {}
         pic_ids = api_data.get("pic_ids") or []
 
@@ -449,12 +454,18 @@ def extract_post(page, url: str) -> dict:
         expected = max(len(pic_ids), int(api_data.get('pic_num') or 0))
         if len(normal_imgs) + len(live_videos) != expected:
             raise ValueError('微博图片列表不完整，未将缺失媒体当作纯文字存档')
+        if not expected and (pic_infos or api_data.get('pics')):
+            raise ValueError('微博详情包含配图，但未能确认图片顺序，请稍后重试')
         if (api_data.get('page_info') or {}).get('type') == 'video' or api_data.get('is_show_mixed'):
             raise ValueError('此微博包含尚未支持的普通视频或混合媒体，未将正文当作完整下载')
 
         # 文本/用户名/时间从 API 提取（比 innerText 更干净）
         full_text = weibo_post_text(api_data)
-        if not full_text.strip() and not expected:
+        if not expected and for_download:
+            if isinstance(api_data.get('pic_ids'), list) or isinstance(api_data.get('pics'), list):
+                raise WeiboSkipped(NO_PHOTOS)
+            raise ValueError('微博详情缺少配图信息，请稍后重试')
+        if not expected and not full_text.strip():
             raise ValueError('微博没有可保存的正文或媒体，请检查作品状态')
         page_title = page.title()
         username = sanitize_filename((api_data.get("user") or {}).get("screen_name") or "")
@@ -516,6 +527,12 @@ def extract_post(page, url: str) -> dict:
     post_id = _post_identity({'url': url})
     if not art.query_selector(f'a[href$="/{post_id}"], a[href*="/{post_id}?"]'):
         raise ValueError('页面中的微博与目标链接无法对应，已停止保存')
+    if art.evaluate("""article => !!article.querySelector(
+            '.wbpro-feed-reText, .WB_feed_expand, [class*="_retweet_"]')""") is True:
+        raise WeiboSkipped(NOT_AUTHOR)
+    if art.evaluate("""article => Array.from(article.querySelectorAll('header a, [class*="_from_"] a'))
+            .some(link => link.textContent.trim() === '会员特权专用')""") is True:
+        raise WeiboSkipped(PLATFORM_ACTIVITY)
 
     # innerText omits inline emoji images. Parse their alt text from the HTML,
     # while keeping the original visible layout for the existing metadata rules.
@@ -778,8 +795,12 @@ def main():
         page = ctx.new_page()
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=args.timeout)
-            data = extract_post(page, url)
+            data = extract_post(page, url, for_download=True)
             data["url"] = url
+        except WeiboSkipped as skipped:
+            print(f"[*] 已跳过：{skipped}")
+            browser.close()
+            sys.exit(skipped.code)
         except Exception as e:
             print(f"[!] 提取失败: {e}")
             browser.close()

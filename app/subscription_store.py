@@ -10,6 +10,7 @@ import uuid
 
 from . import db, subscription_filters
 from .redaction import redact_text
+from .weibo_policy import REASONS as WEIBO_SKIP_REASONS
 
 
 SCHEMA = """
@@ -148,6 +149,14 @@ Only a verified complete manifest can establish a local download as complete.
                     "AND status NOT IN ('dispatching','queued','running')",
                     (timestamp, *identity),
                 )
+            elif platform == 'weibo' and item.get('weibo_skip') in WEIBO_SKIP_REASONS:
+                updated = conn.execute(
+                    "UPDATE subscription_items SET status='skipped',last_error=?,updated_at=? "
+                    "WHERE platform=? AND blogger_id=? AND item_id=? "
+                    "AND status IN ('discovered','pending_filter','failed','interrupted')",
+                    (WEIBO_SKIP_REASONS[item['weibo_skip']], timestamp, *identity))
+                if updated.rowcount:
+                    counts['skipped'] = counts.get('skipped', 0) + 1
             conn.execute(
                 "INSERT OR IGNORE INTO seen_items(platform,blogger_id,item_id,created_at) VALUES (?,?,?,?)",
                 (*identity, timestamp),
@@ -297,7 +306,7 @@ def mark_dispatch_failed(platform, blogger_id, item_id, error, claim_token):
 
 
 def record_task_result(task_id, status, error="", complete_verified=False):
-    if status not in {"queued", "running", "success", "failed", "interrupted", "cancelled"}:
+    if status not in {"queued", "running", "success", "failed", "interrupted", "cancelled", "skipped"}:
         return False
     state = status
     if status == "success":
@@ -473,7 +482,8 @@ def reconcile_tasks(tasks, complete_checker=None):
                 mark_enqueued(row["platform"], row["blogger_id"], row["item_id"],
                               task["id"], row["claim_token"])
             complete = bool(complete_checker and task["status"] == "success" and complete_checker(task))
-            record_task_result(task["id"], task["status"], task.get("error") or "", complete)
+            reason = (task.get('progress') or {}).get('label') if task['status'] == 'skipped' else task.get('error')
+            record_task_result(task["id"], task["status"], reason or "", complete)
         else:
             with db.connect() as conn:
                 conn.execute(

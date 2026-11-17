@@ -8,7 +8,7 @@ const props = defineProps({ sub: { type: Object, required: true } })
 const emit = defineEmits(['updated'])
 const tags = ref((props.sub.download_filter?.tags || []).join('\n'))
 const saving = ref(false), loading = ref(false), error = ref(''), records = ref([]), offset = ref(0)
-const states = { baseline: '首次基线', legacy_seen: '旧已见记录', discovered: '待入队', dispatching: '正在入队', queued: '已入队', running: '下载中', downloaded: '下载成功', failed: '下载失败，待重试', interrupted: '下载中断，待重试', cancelled: '已取消', filtered: '未命中标签，已跳过', pending_filter: '待完整正文' }
+const states = { baseline: '首次基线', legacy_seen: '旧已见记录', discovered: '待入队', dispatching: '正在入队', queued: '已入队', running: '下载中', downloaded: '下载成功', failed: '下载失败，待重试', interrupted: '下载中断，待重试', cancelled: '已取消', skipped: '不符合微博下载条件，已跳过', filtered: '未命中标签，已跳过', pending_filter: '待完整正文' }
 function time(value) { return value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short', hour12: false }).format(new Date(value)) : '' }
 async function load() {
   loading.value = true; error.value = ''
@@ -48,7 +48,7 @@ onMounted(load)
         <strong>{{ item.title || item.item_id }}</strong>
         <p>{{ states[item.status] || item.status }} · {{ time(item.updated_at) }}</p>
         <p v-if="item.filter_decision.reason">{{ item.filter_decision.reason }}<span v-if="item.filter_decision.tags?.length"> · 当时规则：{{ item.filter_decision.tags.map(tag => '#' + tag).join('、') }}</span><span v-if="item.filter_decision.matched?.length"> · 命中：{{ item.filter_decision.matched.map(tag => '#' + tag).join('、') }}</span></p>
-        <p v-if="item.last_error" class="filter-error">{{ item.last_error }}</p>
+        <p v-if="item.last_error" :class="{'filter-error':item.status!=='skipped'}">{{ item.last_error }}</p>
       </article>
       <div class="filter-pages"><button class="text-button" :disabled="loading || offset===0" @click="page(-1)">上一页</button><span>第 {{ offset/20+1 }} 页</span><button class="text-button" :disabled="loading || records.length<20" @click="page(1)">下一页</button></div>
     </details>

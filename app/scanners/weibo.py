@@ -5,6 +5,7 @@ from .. import watcher
 from ..redaction import redact_text
 from ..content_text import weibo_post_text, html_to_text
 from ..subscription_filters import extract_tags, normalize_rule
+from ..weibo_policy import skip_reason
 from ..weibo_client import (BrowserSession, MOBILE_UA, WeiboAccessError, checked_payload,
                             checked_uid, clean_text)
 from .common import Collector, ScanCancelled, published_at, run_sync_scan
@@ -43,7 +44,8 @@ def parse_page(payload, uid):
         full = long_text.get('longTextContent') if isinstance(long_text, dict) else None
         text = html_to_text(full) if isinstance(full, str) and full else weibo_post_text(post)
         hashtags = [value.get('topic_title') for value in (post.get('topic_struct') or []) if isinstance(value, dict)]
-        items.append({'item_id': bid, 'script_id': 'weibo',
+        reason = skip_reason(post, uid)
+        items.append({'item_id': bid, 'script_id': 'weibo', **({'weibo_skip': reason} if reason else {}),
                       'params': {'url': f'https://weibo.com/{uid}/{bid}'},
                       'title': re.sub(r'\s+', ' ', text).strip()[:60] or '（无正文）',
                       'content_text': text, 'hashtags': hashtags,
@@ -71,7 +73,7 @@ def complete_filter_text(client, result, sub, collector):
         from ..subscription_store import pending_filter_items
         known = {item['item_id'] for item in result['items']}
         result['items'].extend(item for item in pending_filter_items(sub) if item['item_id'] not in known)
-    candidates = [item for item in result['items'] if not item.get('content_complete')
+    candidates = [item for item in result['items'] if not item.get('weibo_skip') and not item.get('content_complete')
                   and not wanted.intersection(extract_tags(item.get('content_text'), item.get('hashtags') or []))]
     if sub.get('id') and candidates:
         from ..subscription_store import needs_filter_text

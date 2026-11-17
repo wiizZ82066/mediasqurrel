@@ -39,7 +39,7 @@ const browseDirs = ref([])
 const browseTarget = ref('')
 const browseBusy = ref(false)
 let browseSequence = 0
-const statusLabels = { queued:'排队中', running:'下载中', success:'下载完成', failed:'下载失败', cancelled:'已取消', interrupted:'运行中断' }
+const statusLabels = { queued:'排队中', running:'下载中', success:'下载完成', failed:'下载失败', skipped:'已跳过', cancelled:'已取消', interrupted:'运行中断' }
 function defaults(script) { return Object.fromEntries((script?.params || []).map(p => [p.name, p.default ?? (p.kind === 'switch' ? false : '')])) }
 function select(id) {
   if (selectedId.value !== id) cancelPreview()

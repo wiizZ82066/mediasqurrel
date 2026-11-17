@@ -450,7 +450,8 @@ async def _perform_scan(sub: dict, trigger: str = 'manual') -> dict:
                 items = response
                 result['coverage'] = {'complete': True, 'reason': 'legacy_scanner'}
             await _scan_progress(sub["id"], "running", "正在检查完整存档与下载记录…")
-            local_ids = await asyncio.to_thread(_local_item_ids, items, platform, blogger_id=sub['blogger_id'])
+            downloadable = [item for item in items if not item.get('weibo_skip')]
+            local_ids = await asyncio.to_thread(_local_item_ids, downloadable, platform, blogger_id=sub['blogger_id'])
             for index, it in enumerate(items):
                 await _scan_progress(
                     sub["id"], "running", "正在比对最新内容", index * 100 / len(items),
@@ -497,6 +498,8 @@ async def _perform_scan(sub: dict, trigger: str = 'manual') -> dict:
                 label = "扫描完成，暂无新内容"
             if result.get('filtered'):
                 label += f"；{result['filtered']} 条未命中标签"
+            if result.get('skipped'):
+                label += f"；{result['skipped']} 条不符合微博下载条件"
             if result.get('pending_filter'):
                 label += f"；{result['pending_filter']} 条待取得完整正文"
             if result.get('coverage', {}).get('complete') is False:
