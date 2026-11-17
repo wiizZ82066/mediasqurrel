@@ -44,9 +44,12 @@ def _read_paths():
 def _store_matches(marker, expected):
     try:
         with marker.open(encoding="utf-8") as stream:
-            record = json.load(stream)
+            raw = stream.read(4097)
+            if len(raw) > 4096:
+                return False
+            record = json.loads(raw)
             return isinstance(record, dict) and record.get("id") == expected
-    except FileNotFoundError:
+    except (FileNotFoundError, ValueError, UnicodeError):
         return False
     except OSError as error:
         if getattr(error, "winerror", None) in (15, 21, 1167):  # Unmounted, not ready, disconnected.
@@ -60,8 +63,7 @@ def _pair_requested(paths):
         os.environ.get(name) for name in overrides)
 
 
-def _preferred_store(paths):
-    """Select an already prepared library/database pair without creating either."""
+def _pair_spec(paths):
     if not _pair_requested(paths):
         return None
     spec = paths["preferred_store"]
@@ -87,6 +89,16 @@ def _preferred_store(paths):
 
     database, library = child("database"), child("library")
     marker = root / ".media-squirrel-ready.json"
+    return database, library, marker, identity
+
+
+def _preferred_store(paths):
+    """Select an already prepared library/database pair without creating either."""
+    spec = _pair_spec(paths)
+    if not spec:
+        return None
+    database, library, marker, identity = spec
+    root = marker.parent
     if not _store_matches(marker, identity):
         return None
     real_root = root.resolve(strict=True)
@@ -112,10 +124,40 @@ LIBRARY_ROOT = os.path.abspath(os.environ.get("MS_LIBRARY_DIR") or
                               (_paths.get("library_root") if not _legacy_home else None) or
                               os.path.join(BASE_DIR, "library"))
 DB_PATH = os.path.join(DATA_DIR, "app.db")
+_primary_pair = _pair_spec(_paths)
 _store = _preferred_store(_paths)
 _paired = _pair_requested(_paths)
 _nested_data_dir = None
-if _store:
+STANDBY_BASE = (Path(DATA_DIR) / 'subscription-standby' / _paths['preferred_store']['id']
+                if _paired and not _paths.get('database_directory') and not _FROZEN else None)
+STANDBY_ACTIVE = False
+
+
+def standby_slot():
+    """Read only a locally prepared slot belonging to this configured pair."""
+    if STANDBY_BASE is None:
+        return None
+    try:
+        slot_id = (STANDBY_BASE / 'current').read_text(encoding='ascii').strip()
+        if UUID(slot_id).hex != slot_id:
+            return None
+        slot = STANDBY_BASE / slot_id
+        if (slot.resolve() != slot or not (slot / 'app.db').is_file()
+                or (slot / 'app.db').resolve().parent != slot or not (slot / 'library').is_dir()
+                or (slot / 'library').resolve().parent != slot):
+            return None
+        return slot
+    except (OSError, ValueError):
+        return None
+
+
+_slot = standby_slot()
+if _slot and (not _store or ((_slot / 'used').is_file() and not (_slot / 'handback').is_file())):
+    # Finish interrupted local work before returning to a reconnected disk.
+    _store = None
+    DB_PATH, LIBRARY_ROOT = str(_slot / 'app.db'), str(_slot / 'library')
+    STANDBY_ACTIVE = True
+elif _store:
     DB_PATH, LIBRARY_ROOT = _store[:2]
     data_parent = Path(DB_PATH).resolve().parent
     if Path(LIBRARY_ROOT).resolve() in data_parent.parents:
@@ -149,7 +191,7 @@ def is_library_data_path(resolved_path):
 
 
 def store_data_dir():
-    return str(Path(DB_PATH).parent) if _store or _database_override else DATA_DIR
+    return str(Path(DB_PATH).parent) if _store or _database_override or STANDBY_ACTIVE else DATA_DIR
 
 
 LOG_DIR = os.path.join(store_data_dir(), "logs")
@@ -171,18 +213,31 @@ MAINTENANCE_ACTIVE = False
 
 
 def uses_prepared_database(path):
-    return bool((_paired or _database_override) and Path(path) == Path(DB_PATH))
+    return bool(((_paired or _database_override) and Path(path) == Path(DB_PATH))
+                or (STANDBY_BASE and _primary_pair and Path(path) == _primary_pair[0]))
+
+
+def require_database(path):
+    if STANDBY_BASE and _primary_pair and Path(path) == _primary_pair[0]:
+        if not _store_matches(*_primary_pair[2:]) or not _primary_pair[1].is_dir():
+            raise PreparedStoreUnavailable("当前媒体库不可用或磁盘不同；请接回原媒体盘")
+    else:
+        require_prepared_store()
 
 
 def paired_store_configured():
     return bool(_paths.get("preferred_store"))
 
 
+class PreparedStoreUnavailable(FileNotFoundError):
+    """The running instance must wait for its own library, never another disk."""
+
+
 def require_prepared_store():
     if _store and not _store_matches(*_store[2:]):
-        raise OSError("当前媒体库已断开或磁盘不同；请退出后重新启动以选择可用媒体库")
+        raise PreparedStoreUnavailable("当前媒体库不可用或磁盘不同；请接回原媒体盘")
     if _paired and not Path(LIBRARY_ROOT).is_dir():
-        raise FileNotFoundError("当前配对的媒体目录不可用")
+        raise PreparedStoreUnavailable("当前配对的媒体目录不可用；请接回原媒体盘")
 
 
 def ensure_runtime_dirs():

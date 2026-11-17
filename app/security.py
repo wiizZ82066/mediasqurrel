@@ -1,5 +1,6 @@
 """Loopback browser boundary and real-path checks for local media."""
 import os
+import re
 from pathlib import Path, PureWindowsPath
 from urllib.parse import urlsplit
 
@@ -60,6 +61,17 @@ class LocalOnlyMiddleware:
             can_cancel = path.startswith(('/api/maintenance/plans/', '/api/library/scans/')) and path.endswith('/cancel')
             if not can_cancel:
                 await JSONResponse({'detail': '数据维护或目录切换待重启期间暂停修改，请完成维护或退出重启'}, 409)(scope, receive, send)
+                return
+        if (scope['type'] == 'http' and config.STANDBY_ACTIVE
+                and scope.get('method') in {'POST', 'PUT', 'PATCH', 'DELETE'}):
+            path = scope.get('path', '')
+            allowed = scope['method'] == 'POST' and (
+                path in {'/api/tasks','/api/subs/refresh-all','/api/subs/login-weibo','/api/subs/login-douyin',
+                         '/api/subs/verify-douyin','/api/settings/check-sites','/api/settings/check-browser',
+                         '/api/settings/open-folder','/api/desktop/update-lock'}
+                or re.fullmatch(r'/api/(?:subs/\d+/scan|tasks/[a-f0-9]+/(?:retry|cancel|reveal)|library/entries/[^/]+/(?:open|reveal))', path))
+            if not allowed:
+                await JSONResponse({'detail': '当前使用本机暂存，可正常扫描和下载。请接回原媒体盘后再修改此项。'}, 409)(scope, receive, send)
                 return
         if (scope["type"] == "http" and scope.get("method") in {"POST", "PUT", "PATCH"}
                 and headers.get("content-length", "0") not in {"", "0"}

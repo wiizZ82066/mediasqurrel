@@ -18,11 +18,13 @@ def utc_now():
 
 
 @contextmanager
-def connect(path=None):
+def connect(path=None, *, existing=False):
     target = os.fspath(path or config.DB_PATH)
-    if config.uses_prepared_database(target):
-        config.require_prepared_store()
-        connection = sqlite3.connect(Path(target).as_uri() + "?mode=rw", uri=True, timeout=10)
+    prepared = config.uses_prepared_database(target)
+    if prepared:
+        config.require_database(target)
+    if prepared or existing:
+        connection = sqlite3.connect(Path(target).absolute().as_uri() + "?mode=rw", uri=True, timeout=10)
     else:
         Path(target).parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(target, timeout=10)

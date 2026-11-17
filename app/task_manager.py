@@ -255,6 +255,8 @@ def _output_params(params):
             raise ValueError('输出目录不能包含上级目录跳转')
         values['out'] = os.path.abspath(output if os.path.isabs(output) else os.path.join(config.LIBRARY_ROOT, output))
     resolved = os.path.realpath(values['out'])
+    if config.STANDBY_ACTIVE and os.path.normcase(resolved) != os.path.normcase(os.path.realpath(config.LIBRARY_ROOT)):
+        raise ValueError('媒体盘离线，请使用默认暂存目录；接回后会自动迁回')
     if config.is_library_data_path(resolved):
         raise ValueError('应用数据目录不能作为下载目录')
     if os.path.normcase(resolved) == os.path.normcase(os.path.realpath(config.RESOURCE_DIR)):

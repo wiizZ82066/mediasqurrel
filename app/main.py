@@ -19,7 +19,7 @@ from .redaction import redact_text
 from .runtime import InstanceLock, runtime_identity
 from . import settings
 from . import settings_api, maintenance, db
-from . import windows_api, subscription_batch, live_service
+from . import windows_api, subscription_batch, live_service, subscription_standby
 from .live_api import router as live_router
 from .home_api import router as home_router
 from . import scanners  # noqa: F401  (import 即注册各平台扫描器)
@@ -83,6 +83,7 @@ async def _record_task_result(task):
                                         complete_verified=task["status"] == "success" and watcher.task_complete(task))
     source = (task.get('metadata') or {}).get('subscription') or {}
     if changed and source.get('sub_id'):
+        subscription_standby.task_changed()
         scan = watcher.refresh_scan_downloads(source['sub_id'])
         if scan:
             await task_manager.broadcast({'type':'sub_scan', 'sub_id':source['sub_id'], 'scan':scan})
@@ -126,6 +127,8 @@ async def lifespan(_app: FastAPI):
             inspect_database(Path(config.DB_PATH))
         database_lock = InstanceLock(Path(config.DB_PATH).parent, filename='.database-owner.lock').acquire()
         db.migrate()
+        if config.STANDBY_ACTIVE:
+            subscription_standby.begin_local()
         from .path_transition import apply_pending_startup
         await asyncio.to_thread(apply_pending_startup)
         settings.apply(settings.load())
@@ -136,8 +139,10 @@ async def lifespan(_app: FastAPI):
         task_manager.ON_TASK_DONE.append(_invalidate_library)
         await task_manager.initialize()
         watcher.reconcile_tasks(task_manager.iter_subscription_tasks())
+        await subscription_standby.start()
         watcher.start_scheduler(_dispatch_new_items)
-        live_service.start()
+        if not config.STANDBY_ACTIVE:
+            live_service.start()
         from . import account_status
         account_status.start()
         yield
@@ -146,7 +151,7 @@ async def lifespan(_app: FastAPI):
             from .sub_search import stop_searches
             # Each owner receives shutdown even if a different cleanup fails.
             from . import account_status
-            for stop in (account_status.stop, settings_api.stop, stop_searches, subscription_batch.stop, live_service.stop, watcher.stop_scheduler, task_manager.shutdown, library_service.stop):
+            for stop in (subscription_standby.stop, account_status.stop, settings_api.stop, stop_searches, subscription_batch.stop, live_service.stop, watcher.stop_scheduler, task_manager.shutdown, library_service.stop):
                 try:
                     await stop()
                 except Exception as error:
@@ -156,9 +161,11 @@ async def lifespan(_app: FastAPI):
                 task_manager.ON_TASK_FINISHED.remove(_record_task_result)
             if _invalidate_library in task_manager.ON_TASK_DONE:
                 task_manager.ON_TASK_DONE.remove(_invalidate_library)
-            if database_lock:
-                database_lock.release()
-            lock.release()
+            try:
+                if database_lock:
+                    database_lock.release()
+            finally:
+                lock.release()
 
 
 # 将 lifespan 附加到已创建的 app（保持中间件顺序）
@@ -314,8 +321,11 @@ def api_restore_task(task_id: str):
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
-    task_manager.WS_CLIENTS.add(ws)
     try:
+        storage = subscription_standby.status()
+        if storage['message'] and storage['mode'] != 'primary':
+            await ws.send_json({'type': 'notification', 'level': 'info', 'title': '订阅存储', 'text': storage['message']})
+        task_manager.WS_CLIENTS.add(ws)
         while True:
             # 客户端心跳/空消息
             await ws.receive_text()
@@ -323,6 +333,11 @@ async def ws_endpoint(ws: WebSocket):
         pass
     finally:
         task_manager.WS_CLIENTS.discard(ws)
+
+
+@app.get('/api/subscription-storage')
+def subscription_storage():
+    return subscription_standby.status()
 
 
 # ---------------------------------------------------------------- 媒体库

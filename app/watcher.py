@@ -7,6 +7,7 @@ import asyncio
 from collections import OrderedDict
 import datetime as _dt
 import os
+import sqlite3
 from pathlib import Path
 import threading
 from typing import Callable, Optional
@@ -26,6 +27,17 @@ _LOCAL_LEGACY_CACHE = OrderedDict()
 _LOCAL_LEGACY_LOCK = threading.Lock()
 _LOCAL_AUTHOR_LIMIT = 64
 _LOCAL_ENTRY_LIMIT = 512
+storage_recovery_needed = False
+
+
+def _note_storage_error(error):
+    global storage_recovery_needed
+    code = getattr(error, 'sqlite_errorcode', 0) or 0
+    if config._store and config.STANDBY_BASE and (isinstance(error, config.PreparedStoreUnavailable)
+            or (code & 255) in (sqlite3.SQLITE_IOERR, sqlite3.SQLITE_CANTOPEN)):
+        # Even an outage shorter than the disk monitor's poll can abandon a
+        # committed scan/plan. Reopen the same store once its owners are idle.
+        storage_recovery_needed = True
 
 
 # ---------------------------------------------------------------- 数据层
@@ -382,6 +394,7 @@ async def _scan_guarded(sub, trigger, *, join_running=False):
                 future.set_result(result)
             return result
     except BaseException as error:
+        _note_storage_error(error)
         cancel.set()
         if not future.done():
             future.set_result({'sub_id': sub_id, 'new_items': [], 'error': redact_text(str(error)) or '扫描已取消'})
@@ -560,6 +573,7 @@ async def _scheduled_scan(sub, group, on_new_items):
         finished = True
         raise
     except Exception as error:
+        _note_storage_error(error)
         result['error'] = redact_text(str(error))
         state = SCAN_STATES.get(sub['id'], {})
         if state.get('status') == 'failed' and state.get('scan_id') != prior_scan_id:
@@ -606,6 +620,7 @@ async def scheduler_tick(on_new_items=None, *, now=None):
             if not task.cancelled():
                 error = task.exception()
                 if error:
+                    _note_storage_error(error)
                     print('[watcher] ' + redact_text(str(error)))
         job.add_done_callback(finished)
         available -= 1
@@ -614,9 +629,15 @@ async def scheduler_tick(on_new_items=None, *, now=None):
 
 
 async def _scheduler_loop(on_new_items=None):
+    offline = False
     while True:
         try:
             await scheduler_tick(on_new_items)
+            offline = False
+        except config.PreparedStoreUnavailable:
+            if not offline:
+                print('[watcher] 当前媒体盘不可用，正在等待订阅存储切换。')
+            offline = True
         except Exception as error:
             print('[watcher] 调度检查失败: ' + redact_text(str(error)))
         await asyncio.sleep(10)

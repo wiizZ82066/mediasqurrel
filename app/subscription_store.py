@@ -378,8 +378,8 @@ def finish_scan(scan_id, status, snapshot, *, items_count=0, new_count=0, baseli
 def latest_snapshots():
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT sub_id,snapshot_json FROM subscription_scans WHERE rowid IN "
-            "(SELECT MAX(rowid) FROM subscription_scans GROUP BY sub_id)"
+            "SELECT s.sub_id,s.snapshot_json FROM subscriptions b JOIN subscription_scans s ON s.rowid="
+            "(SELECT rowid FROM subscription_scans WHERE sub_id=b.id ORDER BY started_at DESC,rowid DESC LIMIT 1)"
         ).fetchall()
     result = {}
     for row in rows:
@@ -450,8 +450,10 @@ def recover_scans():
                 "UPDATE subscription_scans SET status='interrupted',finished_at=?,error=?,snapshot_json=? "
                 "WHERE id=?", (now(), snapshot["last_error"], _json(snapshot), row["id"]),
             )
-            conn.execute("UPDATE subscriptions SET last_status='error',last_error=? WHERE id=?",
-                         (snapshot["last_error"], row["sub_id"]))
+            # A newer scan imported from standby must retain its result.
+            conn.execute("UPDATE subscriptions SET last_status='error',last_error=? WHERE id=? AND "
+                         "?=(SELECT id FROM subscription_scans WHERE sub_id=? ORDER BY started_at DESC,rowid DESC LIMIT 1)",
+                         (snapshot["last_error"], row["sub_id"], row["id"], row["sub_id"]))
 
 
 def reconcile_tasks(tasks, complete_checker=None):
