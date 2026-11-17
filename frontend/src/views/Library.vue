@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api.js'
 import { store, toast, onTaskEvent } from '../store.js'
@@ -15,6 +15,9 @@ import { createRecordingPlayback } from '../recording-playback.js'
 import { buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../library-layout.js'
 import { applyDefaultVolume } from '../playback.js'
 const route=useRoute(), router=useRouter(), saved=store.libraryState || {}
+const RecycleEntryDialog = defineAsyncComponent(() => import('../components/RecycleEntryDialog.vue'))
+const trashEntry = ref(null)
+const suspendingVideo = ref(false)
 const roots=ref([]), rootId=ref(saved.rootId || ''), entries=ref(saved.entries || []), total=ref(saved.total || 0), nextCursor=ref(saved.nextCursor ?? null)
 const entriesFilterKey=ref(saved.entriesFilterKey || null)
 const viewMode=ref(saved.viewMode || 'timeline'), author=ref(saved.author || ''), query=ref(saved.query || ''), platform=ref(saved.platform || ''), mediaType=ref(saved.mediaType || ''), status=ref(saved.status || ''), sort=ref(saved.sort || 'desc')
@@ -124,6 +127,24 @@ async function loadAuxiliary() {
 }
 function selectAuthor(name){author.value=name;authorsOpen.value=false;nextTick(updateViewport)}
 function refreshEntries(){loadEntries();loadAuthors();loadAuxiliary()}
+function prepareRecycle() {
+  stopCardLive()
+  if (!gallery.value) return
+  stopLive()
+  releaseRecording()
+  const video = segmentVideo.value
+  if (video) { suspendingVideo.value = true; video.pause(); video.removeAttribute('src'); video.load() }
+}
+function finishRecycle(result) {
+  const id = trashEntry.value.id
+  trashEntry.value = null
+  suspendingVideo.value = false
+  entries.value = entries.value.filter(entry => entry.id !== id)
+  remember()
+  if (gallery.value) closeGallery()
+  refreshEntries()
+  toast('已将 ' + result.file_count + ' 个文件移入回收站', 'success')
+}
 function updateViewport(){
   authorsInline.value=window.innerWidth<1100
   if(!gridEl.value || !contentEl)return
@@ -331,6 +352,7 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;releaseRecording();stopCardLiv
 </script>
 <template>
   <div class="library-view">
+    <RecycleEntryDialog v-if="trashEntry" :entry="trashEntry" @close="trashEntry=null" @prepare="prepareRecycle" @failed="suspendingVideo=false" @recycled="finishRecycle"/>
     <header class="library-header">
       <div class="library-heading"><h1 class="page-title">媒体库</h1><span v-if="entriesFilterKey" class="library-total" :aria-label="'筛选结果 '+total+' 条'">{{ total }} 条</span></div>
       <div class="library-actions">
@@ -383,6 +405,7 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;releaseRecording();stopCardLiv
 <article v-for="entry in row.items" :key="entry.id" class="entry-card" :style="{height:virtualLayout.cardHeight+'px'}" @focusin="focusedEntry=entry.id" @focusout="blurCard">
   <button class="entry-open" @click="openEntry(entry.id)"><div class="entry-cover" @pointerenter="hoverCardLive(entry,$event)" @pointerleave="stopCardLive(entry.id)"><MediaThumbnail v-if="entry.cover && entry.availability!=='missing'" :src="thumbUrl(entry,entry.cover)" :position="coverStyle(entry)"/><AppIcon v-else :name="entry.availability==='missing'?'folder':'library'" :size="54"/><video v-if="cardLiveId===entry.id && entry.cover_live_rel && entry.availability!=='missing'" :ref="element=>setCardVideo(element,entry.id)" class="card-live-video" :src="mediaUrl(entry,entry.cover_live_rel)" :style="coverStyle(entry)" muted loop playsinline preload="none" aria-hidden="true" @error="cardLiveError"></video><span v-if="entry.archive_status==='partial' || entry.availability==='missing'" class="archive-badge">{{ entry.availability==='missing'?'文件缺失':'未完成' }}</span></div><div class="entry-caption"><div class="entry-author"><PlatformLogo v-if="entry.platform" :platform="entry.platform" :size="19"/><strong>{{ entry.author }}</strong></div><p class="entry-title"><ContentText :text="entry.text_preview || entry.date_dir || '文字内容'" :platform="entry.platform"/></p><p class="entry-date">{{ dayOf(entry.sort_at) }} · {{ datesLabel[entry.date_source] || '日期' }}</p><p v-if="entry.collection" class="entry-count">录播合集 · {{ entry.collection.part_count }} 段 · 分段连播</p><p v-else class="entry-count">{{ entry.counts?.photos || 0 }} 图片 · {{ entry.counts?.videos || 0 }} 视频 · {{ entry.counts?.lives || 0 }} Live</p></div></button>
   <button class="entry-reveal" :disabled="revealBusy" :aria-label="'在文件资源管理器中打开 '+entry.author+' 的内容目录'" title="在文件资源管理器中打开内容目录" @click.stop="revealEntry(entry)"><AppIcon name="folder" :size="20"/></button>
+  <button v-if="entry.availability==='present'" class="entry-reveal entry-recycle" :aria-label="'删除 '+entry.author+' 的这条内容'" title="删除内容…" @click.stop="trashEntry=entry"><AppIcon name="trash" :size="18"/></button>
 </article>
             </div>
           </div>
@@ -404,6 +427,7 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;releaseRecording();stopCardLiv
               </div>
               <span class="viewer-counter" aria-live="polite" aria-atomic="true">{{ gallery.gallery?.length ? galleryIndex+1 : 0 }}<span> / {{ gallery.gallery?.length || 0 }}</span></span>
               <div class="viewer-actions">
+                <button v-if="gallery.availability==='present'" class="viewer-button" title="删除这条内容…" aria-label="删除这条内容" @click="trashEntry=gallery"><AppIcon name="trash" :size="20"/></button>
                 <button class="viewer-button" title="打开内容目录" aria-label="打开内容目录" :disabled="revealBusy" @click="revealEntry(currentLocation || gallery)"><AppIcon name="folder" :size="20" /></button>
                 <button v-if="currentItem" class="viewer-button" title="在文件资源管理器中定位当前文件" aria-label="在文件资源管理器中定位当前文件" :disabled="revealBusy" @click="revealEntry(currentLocation,currentItem.rel)"><AppIcon name="search" :size="20" /></button>
                 <div v-if="currentItem?.rel" ref="openMenuEl" class="viewer-open" @keydown.stop="onOpenMenuKey" @focusout="onOpenMenuFocusOut">
@@ -440,7 +464,9 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;releaseRecording();stopCardLiv
                       <img v-else-if="currentItem.poster" :src="mediaUrl(currentLocation,currentItem.poster)" alt="Live 图静态画面，鼠标悬停可静音播放" @load="fitMedia" @error="mediaError='静态画面无法读取，可尝试播放 Live 图。'">
                       <button class="live-play" :aria-pressed="livePlaying" @click="toggleLive"><AppIcon name="live" :size="18" />{{ livePlaying?'停止 Live 图':'播放 Live 图' }}</button>
                     </template>
-                    <video v-else-if="currentItem.type==='video'" ref="segmentVideo" :key="currentItem.id || currentItem.rel" :src="currentItem.playback_info_url?undefined:mediaUrl(currentLocation,currentItem.rel)" :poster="currentItem.poster?mediaUrl(currentLocation,currentItem.poster):undefined" controls playsinline preload="metadata" @loadedmetadata="videoMetadata" @resize="fitMedia" @ended="continueCollection" @error="mediaError='视频无法读取或浏览器不支持此格式，请检查原文件。'"></video>
+                    <template v-else-if="currentItem.type==='video'">
+                      <video v-if="!suspendingVideo" ref="segmentVideo" :key="currentItem.id || currentItem.rel" :src="currentItem.playback_info_url?undefined:mediaUrl(currentLocation,currentItem.rel)" :poster="currentItem.poster?mediaUrl(currentLocation,currentItem.poster):undefined" controls playsinline preload="metadata" @loadedmetadata="videoMetadata" @resize="fitMedia" @ended="continueCollection" @error="mediaError='视频无法读取或浏览器不支持此格式，请检查原文件。'"></video>
+                    </template>
                     <img v-else :src="mediaUrl(currentLocation,currentItem.rel)" alt="媒体原图" @load="fitMedia" @error="mediaError='图片无法读取，请检查文件是否移动或删除。'">
                     <p v-if="mediaError" class="media-error" role="alert">{{ mediaError }}</p>
                   </div>
@@ -490,6 +516,8 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;releaseRecording();stopCardLiv
 .entry-open:focus-visible { outline:2px solid var(--blue); outline-offset:-3px; border-radius:var(--radius-card); }
 .entry-reveal { position:absolute; right:9px; bottom:9px; width:32px; height:32px; padding:0; border:1px solid #d9e4e8; border-radius:9px; background:#f2f6f8; display:grid; place-items:center; cursor:pointer; }
 .entry-reveal:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+.entry-recycle { right:47px; background:#fff; color:#92574f; }
+.entry-card:has(.entry-recycle) .entry-count { padding-right:72px; }
 .entry-reveal:hover { background:#e5eef4; }.entry-reveal:disabled { opacity:.4; cursor:default; }
 .entry-count { padding-right:32px; }
 </style>

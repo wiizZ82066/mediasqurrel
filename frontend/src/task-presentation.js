@@ -25,6 +25,7 @@ export function taskContentTime(task) {
 export function mergeTaskSummary(previous, incoming) {
   // Queue events omit catalog details. Keep them across status/progress updates.
   const result = {...incoming, author:incoming.author || previous?.author || taskAuthor(incoming) || taskAuthor(previous || {}) || null}
+  if (previous?.media_recycled !== undefined && incoming.media_recycled === undefined) result.media_recycled = previous.media_recycled
   for (const key of ['author_avatar_url', 'display_title', 'published_at', 'broadcast_started_at', 'recording_started_at']) {
     result[key] = incoming[key] || previous?.[key] || null
   }

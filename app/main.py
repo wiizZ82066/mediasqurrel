@@ -239,10 +239,11 @@ def api_list_tasks():
 
 
 @app.get("/api/tasks/page")
-def api_task_page(limit: int = 50, cursor: str | None = None, status: str | None = None, q: str | None = None, include_hidden: bool = False):
+def api_task_page(limit: int = 50, cursor: str | None = None, status: str | None = None, q: str | None = None,
+                  include_hidden: bool = False, scope: str | None = None):
     try:
         from .task_authors import enrich
-        page = task_manager.list_page(limit=limit, cursor=cursor, status=status, q=q, include_hidden=include_hidden)
+        page = task_manager.list_page(limit=limit, cursor=cursor, status=status, q=q, include_hidden=include_hidden, scope=scope)
         enrich(page['items'])
         return page
     except ValueError as error:

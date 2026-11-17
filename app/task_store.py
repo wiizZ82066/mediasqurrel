@@ -124,10 +124,14 @@ class TaskStore:
                                (task_id,)).fetchone()
             return self._decode(row)
 
-    def list_page(self, *, limit=50, cursor=None, status=None, q=None, include_hidden=False):
+    def list_page(self, *, limit=50, cursor=None, status=None, q=None, include_hidden=False, scope=None):
         limit = max(1, min(100, int(limit)))
-        clauses, args = ["1=1" if include_hidden else "deleted=0"], []
-        if not include_hidden and not q:
+        if scope not in (None, 'current', 'segments', 'deleted'):
+            raise ValueError('未知的任务记录范围')
+        filters = {'deleted': 'deleted=1', 'current': 'deleted=0', 'segments': 'deleted=0',
+                   None: '1=1' if include_hidden else 'deleted=0'}
+        clauses, args = [filters[scope]], []
+        if (scope == 'current' or (scope is None and not include_hidden)) and not q:
             clauses.append("json_extract(metadata_json,'$.live.merged_into') IS NULL")
         if status:
             clauses.append("status=?")

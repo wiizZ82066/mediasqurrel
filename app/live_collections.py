@@ -54,7 +54,7 @@ def refresh():
             originals = c.execute('''SELECT * FROM live_recordings
                 WHERE merged_into=? AND is_aggregate=0 ORDER BY started_at,id''', (old['id'],)).fetchall()
             available = [r for r in originals if r['entry_id'] and c.execute(
-                'SELECT 1 FROM media_entries WHERE id=?', (r['entry_id'],)).fetchone()]
+                "SELECT 1 FROM media_entries WHERE id=? AND availability IN ('present','missing')", (r['entry_id'],)).fetchone()]
             if not available:
                 continue  # Never hide the only surviving indexed copy.
             anchor = available[0]
@@ -75,7 +75,7 @@ def refresh():
                 LEFT JOIN media_entries e ON e.id=r.entry_id
                 WHERE sub_id=? AND session_id=? AND is_aggregate=0
                 AND status IN ('completed','stopped','interrupted') ORDER BY r.started_at,r.id''', tuple(group))]
-            playable = [r for r in records if r['entry_id'] and r['availability']]
+            playable = [r for r in records if r['entry_id'] and r['availability'] in ('present','missing')]
             if len(playable) < 2:
                 continue
             first, last = records[0], records[-1]

@@ -27,6 +27,8 @@ def start():
         connection.execute("UPDATE media_scans SET status='interrupted',finished_at=?,error=? WHERE status='running'",
                            (db.utc_now(), '程序退出时索引尚未完成，请重新扫描；旧索引已保留'))
     _default_root_id = catalog.register_root(config.LIBRARY_ROOT, label='默认媒体库')['id']
+    from .library_trash import recover
+    recover()
     media_jobs.start()
     # Persisted listings are ready without traversing the media disk. New
     # downloads/recordings index their own directory; external changes use the

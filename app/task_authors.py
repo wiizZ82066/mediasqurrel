@@ -29,7 +29,7 @@ def enrich(tasks):
                 json_extract(value,'$.item_id') item_id,
                 json_extract(value,'$.live_id') live_id, json_extract(value,'$.entry_id') entry_id
               FROM json_each(?))
-            SELECT r.id, e.author linked_author, e.text_preview, e.meta_json, e.platform entry_platform,
+            SELECT r.id, e.author linked_author, e.text_preview, e.meta_json, e.platform entry_platform, e.availability,
                 e.sort_at, e.date_source, l.author live_author, l.title live_title,
                 l.broadcast_started_at, l.started_at recording_started_at,
                 s.nickname, s.blogger_id, s.id sub_id, s.avatar_source,
@@ -49,6 +49,7 @@ def enrich(tasks):
             sub, live = metadata.get('subscription') or {}, metadata.get('live') or {}
             content = metadata.get('content') or {}
             row = details[task['id']]
+            availability = row['availability']
             published = ((row['sort_at'] if row['date_source'] == 'published' else None) or
                          sub.get('published_at') or content.get('published_at')) if not live else None
             entry_meta = json.loads(row['meta_json']) if row['meta_json'] else {}
@@ -75,9 +76,10 @@ def enrich(tasks):
                         base = Path(root['path']).resolve()
                         if path != base and path.is_relative_to(base):
                             relative = path.relative_to(base).as_posix()
-                            entry = connection.execute('SELECT author,text_preview,meta_json,platform,sort_at,date_source FROM media_entries WHERE root_id=? AND rel_dir=?',
+                            entry = connection.execute('SELECT author,text_preview,meta_json,platform,sort_at,date_source,availability FROM media_entries WHERE root_id=? AND rel_dir=?',
                                                        (root['id'], relative)).fetchone()
                             if entry:
+                                availability = availability or entry['availability']
                                 name = name or _name(entry['author'])
                                 title = title or _name(entry['text_preview'])
                                 platform = entry['platform'] or platform
@@ -85,6 +87,7 @@ def enrich(tasks):
                                 if not live and entry['date_source'] == 'published':
                                     published = published or entry['sort_at']
                                 break
+            task['media_recycled'] = availability == 'recycled'
             if not avatar_id and author_profiles.valid_identity(platform, identity):
                 if subscriptions is None:
                     subscriptions = {(r['platform'], r['blogger_id']): dict(r) for r in connection.execute(

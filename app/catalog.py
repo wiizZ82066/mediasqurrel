@@ -475,7 +475,8 @@ def scan_root(root_id, *, cancel=None, progress=None, database=None, batch_size=
             status, error = "failed", f"{type(exc).__name__}: 媒体索引未完整完成；未清除旧记录"
         with db.connect(database) as connection:
             if status == "success":
-                connection.execute("UPDATE media_entries SET availability='missing' WHERE root_id=? AND scan_generation<>?",
+                connection.execute("""UPDATE media_entries SET availability=CASE WHEN availability='recycling'
+                    THEN 'recycled' ELSE 'missing' END WHERE root_id=? AND scan_generation<>? AND availability<>'recycled'""",
                                    (root_id, generation))
                 connection.execute("UPDATE media_roots SET last_scan_at=? WHERE id=?", (db.utc_now(), root_id))
             connection.execute("UPDATE media_scans SET status=?,processed=?,changed=?,total=?,error=?,finished_at=? WHERE id=?",
@@ -630,7 +631,7 @@ def _companion_id(marker, identity):
 
 
 def _card_source(conditions):
-    where = ' AND '.join(['superseded_by IS NULL',
+    where = ' AND '.join(['superseded_by IS NULL', "availability IN ('present','missing')",
         f"(availability<>'present' OR live_companion_of IS NULL OR NOT EXISTS ({_LIVE_ANCHOR}))", *conditions])
     # Let SQLite use its date index for the outer cursor and its platform/ID
     # index for the matching copies, without materializing the catalog per page.
@@ -790,7 +791,8 @@ def list_authors(*, root_id=None, page=1, page_size=60, q="", database=None):
 
 def get_entry(entry_id, *, database=None):
     with db.connect(database) as connection:
-        row = connection.execute("SELECT * FROM media_entries WHERE id=?", (entry_id,)).fetchone()
+        row = connection.execute("SELECT * FROM media_entries WHERE id=? AND availability IN ('present','missing')",
+                                 (entry_id,)).fetchone()
         if row is None:
             return None
         assets = [dict(asset) for asset in connection.execute("SELECT * FROM media_assets WHERE entry_id=? ORDER BY rel_path", (entry_id,))]

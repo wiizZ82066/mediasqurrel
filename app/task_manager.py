@@ -544,12 +544,12 @@ async def retry(task_id):
                         attempt=original.get('attempt', 1) + 1)
 
 
-def list_page(*, limit=50, cursor=None, status=None, q=None, include_hidden=False):
+def list_page(*, limit=50, cursor=None, status=None, q=None, include_hidden=False, scope=None):
     if _store:
-        page = _store.list_page(limit=limit, cursor=cursor, status=status, q=q, include_hidden=include_hidden)
+        page = _store.list_page(limit=limit, cursor=cursor, status=status, q=q, include_hidden=include_hidden, scope=scope)
         page['items'] = [public_task(task) for task in page['items']]
         return page
-    tasks = list_tasks()
+    tasks = [] if scope == 'deleted' else list_tasks()
     if status:
         tasks = [task for task in tasks if task['status'] == status]
     return {'items': tasks[:min(100, limit)], 'next_cursor': None}

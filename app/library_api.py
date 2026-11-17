@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import catalog, config, db, library_service as service, media_jobs, task_manager, local_files, task_files
-from . import recording_playback
+from . import recording_playback, library_trash
 from .security import media_path
 from .media_response import MediaFileResponse
 
@@ -86,6 +86,30 @@ async def detail(entry_id: str):
     entry = await asyncio.to_thread(enrich, entry)
     service.enrich_page([entry])
     return entry
+
+
+@router.get('/api/library/entries/{entry_id}/recycle-preview')
+def recycle_preview(entry_id: str):
+    try:
+        return library_trash.preview(entry_id)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    except OSError:
+        raise HTTPException(409, '无法读取完整清单，请检查媒体磁盘和目录') from None
+
+
+@router.post('/api/library/entries/{entry_id}/recycle')
+async def recycle_entry(entry_id: str, body: dict):
+    if set(body) != {'revision'} or not isinstance(body['revision'], str) or len(body['revision']) != 64:
+        raise HTTPException(400, '请先查看文件清单并确认')
+    try:
+        result = await asyncio.to_thread(library_trash.remove, entry_id, body['revision'])
+    except (OSError, ValueError) as error:
+        # A multi-directory collection can be partially recycled.
+        await task_manager.broadcast({'type': 'library_updated'})
+        raise HTTPException(409, str(error) if isinstance(error, ValueError) else '媒体目录不可用，请刷新清单') from None
+    await task_manager.broadcast({'type': 'library_updated'})
+    return result
 
 
 def _recording_target(entry_id, relative, expected=None):

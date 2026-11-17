@@ -79,8 +79,8 @@ export const api = {
     }),
   tasks: () => req('/api/tasks'),
   task: (id, signal) => req(`/api/tasks/${encodeURIComponent(id)}`, { signal }),
-  taskPage: ({ limit = 50, cursor = '', status = '', q = '', includeHidden = false, signal } = {}) =>
-    req('/api/tasks/page?' + new URLSearchParams({ limit, cursor, status, q, include_hidden: includeHidden ? 1 : 0 }), { signal }),
+  taskPage: ({ limit = 50, cursor = '', status = '', q = '', includeHidden = false, scope, signal } = {}) =>
+    req('/api/tasks/page?' + new URLSearchParams({ limit, cursor, status, q, include_hidden: includeHidden ? 1 : 0, ...(scope && { scope }) }), { signal }),
   taskLogs: (id, { after = 0, limit = 200, tail = false, signal } = {}) =>
     req(`/api/tasks/${encodeURIComponent(id)}/logs?` + new URLSearchParams({ after, limit, tail: tail ? 1 : 0 }), { signal }),
   cancelTask: (id) => req(`/api/tasks/${id}/cancel`, { method: 'POST' }),
@@ -93,6 +93,10 @@ export const api = {
   libraryRoots: () => req('/api/library/roots'),
   libraryEntries: ({ signal, ...params } = {}) => req('/api/library/entries?' + new URLSearchParams(params), { signal }),
   libraryEntry: (id, signal) => req('/api/library/entries/' + encodeURIComponent(id), { signal }),
+  recyclePreview: (id, signal) => req('/api/library/entries/' + encodeURIComponent(id) + '/recycle-preview', { signal, cache: 'no-store' }),
+  recycleEntry: (id, revision) => req('/api/library/entries/' + encodeURIComponent(id) + '/recycle', {
+    method: 'POST', body: JSON.stringify({ revision }),
+  }),
   libraryReveal: (id, rel = null) => req(`/api/library/entries/${encodeURIComponent(id)}/reveal`, { method: 'POST', body: JSON.stringify({ rel }) }),
   libraryOpen: (id, rel, mode = 'default') => req(`/api/library/entries/${encodeURIComponent(id)}/open`, { method: 'POST', body: JSON.stringify({ rel, mode }) }),
   libraryLocate: locateLibrary,
