@@ -4,10 +4,11 @@ Room endpoint and quality mappings informed by SplashedWhite/douyin-recorder
 (MIT). Attribution: frontend/public/licenses/douyin-recorder-mit.txt.
 """
 import json
+from collections import deque
 import re
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import requests
 
@@ -36,6 +37,10 @@ class LiveError(ValueError):
     def __init__(self, message, *, limited=False):
         super().__init__(message)
         self.limited = limited
+
+
+class _BrowserRequired(Exception):
+    """An unsigned HTTP lookup was accepted but supplied no usable JSON."""
 
 
 def room_url(value):
@@ -123,7 +128,7 @@ def _read_response(response):
     return bytes(result)
 
 
-def lookup(url, quality='best'):
+def _lookup_http(url, quality='best'):
     identity = room_url(url).rsplit('/', 1)[-1]
     try:
         with requests.Session() as session:
@@ -145,12 +150,85 @@ def lookup(url, quality='best'):
             with session.get(REFERER + 'webcast/room/web/enter/', params=params, timeout=(5, 15),
                              stream=True, allow_redirects=False) as response:
                 raw = _read_response(response)
-            return parse_room(json.loads(raw), quality)
+            try:
+                payload = json.loads(raw)
+            except (ValueError, UnicodeError):
+                raise _BrowserRequired() from None
+            return parse_room(payload, quality)
     except LiveError:
         raise
     except (requests.RequestException, ValueError, TypeError, AttributeError, KeyError):
         # Raw HTTP/JSON exceptions may contain signed URLs or cookies.
         raise LiveError('无法读取直播状态，请检查网络、房间链接和本地登录态') from None
+
+
+def _lookup_browser(url, quality):
+    """Let the normal room page make its own request using the saved login.
+
+    Only the exact requested web_rid can supply state. Recommended rooms,
+    UI text and absent responses never establish either live or offline.
+    """
+    from . import browser
+    identity = room_url(url).rsplit('/', 1)[-1]
+    try:
+        with browser.sync_playwright() as p:
+            try:
+                owned = p.chromium.launch(channel='chrome', headless=True, timeout=10000)
+            except Exception:
+                owned = p.chromium.launch(headless=True, timeout=10000)
+            try:
+                context = browser.stealth_context(owned)
+                douyin_auth.attach_cookies(context)
+                page = context.new_page()
+                page.route('**/*', lambda route: route.abort() if route.request.resource_type in
+                           ('media', 'image', 'font') else route.continue_())
+                responses = deque(maxlen=8)
+
+                def capture(response):
+                    parsed = urlsplit(response.url)
+                    if (parsed.scheme == 'https' and parsed.hostname == 'live.douyin.com'
+                            and parsed.path.rstrip('/') == '/webcast/room/web/enter'
+                            and parse_qs(parsed.query).get('web_rid') == [identity]):
+                        responses.append(response)
+
+                page.on('response', capture)
+                deadline = time.monotonic() + 30
+                try:
+                    page.goto(url, wait_until='domcontentloaded', timeout=20000)
+                except Exception as error:
+                    if type(error).__name__ != 'TimeoutError':
+                        raise
+                while time.monotonic() < deadline:
+                    while responses:
+                        response = responses.popleft()
+                        if response.status in (403, 429, 444):
+                            raise LiveError('平台限制了直播检查，已降低频率；请稍后重试', limited=True)
+                        if response.status != 200:
+                            continue
+                        raw = response.body()
+                        if len(raw) > 2 * 1024 * 1024:
+                            raise LiveError('直播响应过大，已停止解析')
+                        try:
+                            payload = json.loads(raw)
+                        except (ValueError, UnicodeError):
+                            continue
+                        return parse_room(payload, quality)
+                    page.wait_for_timeout(300)
+                raise LiveError('直播接口返回空内容，网页也未取得有效直播状态；请打开直播间检查是否需要登录或验证')
+            finally:
+                owned.close()
+    except LiveError:
+        raise
+    except Exception:
+        raise LiveError('直播网页检查失败；请检查浏览器环境、网络或直播间验证提示') from None
+
+
+def lookup(url, quality='best'):
+    url = room_url(url)
+    try:
+        return _lookup_http(url, quality)
+    except _BrowserRequired:
+        return _lookup_browser(url, quality)
 
 
 def parse_profile(payload, identity):
