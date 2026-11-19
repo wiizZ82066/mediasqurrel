@@ -318,7 +318,10 @@ def finish_group(run_id, result, *, interrupted=False, now=None):
     status = 'interrupted' if interrupted else 'failed' if error else 'partial' if coverage.get('complete') is False else 'success'
     if status == 'partial':
         reasons = {'page_limit': '达到页数上限', 'item_limit': '达到条目上限',
-                   'time_limit': '达到扫描时限', 'pagination_stalled': '平台未继续返回分页内容'}
+                   'time_limit': '达到扫描时限', 'pagination_stalled': '平台未继续返回分页内容',
+                   'platform_limited': '平台限制继续翻页', 'rate_limited': '平台请求被限流',
+                   'login_required': '平台要求登录才能继续翻页', 'platform_error': '平台列表响应异常',
+                   'network_error': '后续分页网络中断'}
         reason = str(coverage.get('reason') or 'unknown')[:100]
         error = '回溯覆盖不足：' + reasons.get(reason, redact_text(reason))
     with db.connect() as conn:
@@ -368,10 +371,19 @@ def scan_options(sub_id):
     with db.connect() as conn:
         row = conn.execute('SELECT limits_json FROM subscription_scan_options WHERE sub_id=?', (sub_id,)).fetchone()
         coverage = conn.execute('SELECT * FROM subscription_coverage WHERE sub_id=?', (sub_id,)).fetchone()
-        baseline = conn.execute('SELECT 1 FROM subscription_state t JOIN subscriptions s '
+        baseline = conn.execute('SELECT t.baseline_completed_at FROM subscription_state t JOIN subscriptions s '
                                 'ON s.platform=t.platform AND s.blogger_id=t.blogger_id WHERE s.id=?', (sub_id,)).fetchone()
     options = {**DEFAULT_LIMITS, **(json.loads(row['limits_json']) if row else {})}
     last = coverage['covered_until'] if coverage else None
+    if not last and baseline and baseline['baseline_completed_at']:
+        # Older subscriptions predate coverage tracking. Their original baseline
+        # is a safe starting point; a later partial scan is not.
+        try:
+            original = utc(baseline['baseline_completed_at'])
+            if original <= utc():
+                last = original
+        except (ValueError, OverflowError):
+            pass
     options['cutoff_at'] = stamp(utc(last) - dt.timedelta(hours=options['overlap_hours'])) if last else None
     options['baseline'] = baseline is None
     return options

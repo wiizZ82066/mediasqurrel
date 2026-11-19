@@ -59,6 +59,7 @@ class Collector:
         self.pages, self.complete, self.reason = 0, False, ''
         self.restriction = None
         self.oldest, self.valid, self.error = None, False, None
+        self.detail = ''
         self.avatar_source = None
 
     def remaining(self):
@@ -70,17 +71,28 @@ class Collector:
         if self.error:
             raise RuntimeError(self.error)
 
+    def fail_page(self, reason, message):
+        if self.reason or self.error:
+            return
+        detail = redact_text(str(message))
+        if self.valid:
+            self.complete, self.reason, self.detail = False, reason, detail
+        else:
+            self.error = detail
+
     def accept(self, payload, *, status=200):
-        if self.pages >= self.options['max_pages'] or self.reason or self.cancel.is_set():
+        if self.pages >= self.options['max_pages'] or self.reason or self.error or self.cancel.is_set():
             return
         if status != 200:
-            self.error = f'平台列表请求失败（HTTP {status}）；可能限流或需要登录'
+            reason = {401: 'login_required', 403: 'platform_limited', 429: 'rate_limited',
+                      444: 'platform_limited'}.get(status, 'platform_error')
+            self.fail_page(reason, f'平台列表请求失败（HTTP {status}）；可能限流或需要登录')
             return
         try:
             items, has_more = self.parser(payload)
             restriction = self.page_restriction(payload) if self.page_restriction else None
         except (ValueError, TypeError, KeyError) as error:
-            self.error = redact_text(str(error))
+            self.fail_page(getattr(error, 'reason', 'platform_error'), error)
             return
         signature = (tuple(item['item_id'] for item in items), has_more)
         self.restriction = restriction
@@ -123,6 +135,7 @@ class Collector:
             'complete': self.complete, 'reason': reason, 'pages': self.pages,
             'items': len(self.items), 'oldest_at': self.oldest, 'cutoff_at': self.options.get('cutoff_at'),
             'elapsed_seconds': round(time.monotonic() - self.started, 3),
+            **({'detail': self.detail} if self.detail else {}),
             'scope': 'baseline_current_page' if self.options.get('baseline') else 'overlap_window'}}
 
 
@@ -170,15 +183,17 @@ def collect_browser(sub, parser, launch, setup_context, url, url_pattern, *, pag
                     return result
 
                 def on_response(response):
-                    if not pattern.search(response.url) or collector.reason or collector.cancel.is_set():
+                    if not pattern.search(response.url) or collector.reason or collector.error or collector.cancel.is_set():
                         return
                     try:
                         # A rate-limit/login response may be HTML. Keep the HTTP
                         # error instead of replacing it with a JSON parse error.
                         collector.accept(response.json() if response.status == 200 else None,
                                          status=response.status)
+                    except ValueError:
+                        collector.fail_page('platform_error', '平台未返回有效的列表数据')
                     except Exception:
-                        collector.error = '列表响应读取失败；请检查网络、登录状态或平台验证后重试'
+                        collector.fail_page('network_error', '列表响应读取失败；请检查网络、登录状态或平台验证后重试')
                 page.on('response', on_response)
                 navigation_problem = None
                 try:
