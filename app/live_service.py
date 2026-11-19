@@ -1,6 +1,6 @@
 """Independent, opt-in live monitoring with bounded checks and recorders."""
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import shutil
 import sqlite3
 import threading
@@ -37,19 +37,17 @@ def busy():
     return bool(_active or _checks or _publishing or _recovering or live_merge.busy())
 
 
-def _later(seconds):
-    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec='milliseconds')
-
-
-def _failure(sub_id, message, *, limited=False, recording=False):
+def _failure(sub_id, message, *, limited=False, recording=False, attempted_at=None):
     monitor = live_store.monitor(sub_id)
     if not monitor:
         return
     failures = monitor['failures'] + 1
     base = 30 if recording else monitor['interval_seconds']
     delay = 1800 if limited else min(900, base * 2 ** min(failures, 5))
+    now = db.utc_now()
+    timing = live_scheduling.retry_timing(monitor, delay, now=now, attempted_at=attempted_at, limited=limited)
     live_store.update_monitor(sub_id, status='error' if monitor['enabled'] else 'disabled', error=message,
-                              failures=failures, checked_at=db.utc_now(), next_check_at=_later(delay))
+                              failures=failures, checked_at=now, **timing)
 
 
 async def _notify(record, status, reason):
@@ -168,6 +166,7 @@ async def check(sub_id):
     sub = watcher.get_sub(sub_id)
     if not monitor or not monitor['enabled'] or not sub or sub['platform'] != 'douyin':
         return
+    attempted_at = db.utc_now()
     try:
         if sub_id in _active:
             info = await asyncio.to_thread(live_douyin.lookup, _active[sub_id]['room_url'])
@@ -177,20 +176,21 @@ async def check(sub_id):
             info = await asyncio.to_thread(live_douyin.lookup, monitor['room_url'], quality=monitor['quality'])
         # Re-read after network wait: disable/delete/shutdown may have happened.
         latest = live_store.monitor(sub_id)
-        if _stopping or config.MAINTENANCE_ACTIVE or not latest or not latest['enabled'] or latest['room_url'] != monitor['room_url']:
+        if (_stopping or config.MAINTENANCE_ACTIVE or not latest or not latest['enabled'] or
+                any(latest[key] != monitor[key] for key in ('source', 'room_url', 'quality'))):
             return
-        live_store.update_monitor(sub_id, checked_at=db.utc_now(),
-                                  **live_scheduling.cursors(monitor, active=sub_id in _active))
+        now = db.utc_now()
         if sub_id in _active:
-            live_store.update_monitor(sub_id, status='recording')
-            if _active[sub_id].get('seconds', 0) >= 30:
-                live_store.update_monitor(sub_id, error='', failures=0)
+            recovered = dict(error='', failures=0) if _active[sub_id].get('seconds', 0) >= 30 else {}
+            live_store.update_monitor(sub_id, status='recording', checked_at=now, **recovered,
+                                      **live_scheduling.cursors(latest, now=now, active=True))
             if not info['live'] or info['session_id'] != _active[sub_id]['session_id']:
                 _active[sub_id]['reason'] = 'offline'
                 _active[sub_id]['stop'].set()
             return
         if not info['live']:
-            live_store.update_monitor(sub_id, status='offline', error='', failures=0)
+            live_store.update_monitor(sub_id, status='offline', error='', failures=0, checked_at=now,
+                                      **live_scheduling.cursors(latest, now=now))
             return
         if info.get('owner_id') != sub['blogger_id']:
             raise live_douyin.LiveError('直播间博主身份与此订阅不匹配或无法核实，请检查链接')
@@ -200,23 +200,29 @@ async def check(sub_id):
         # _active and the database's unique active constraint prevent parallel
         # recordings; manual stop disables the monitor until explicitly enabled.
         if len(_active) >= MAX_RECORDINGS:
-            live_store.update_monitor(sub_id, status='capacity', error='已有 2 路录制，稍后重新检查', next_check_at=_later(60))
+            live_store.update_monitor(sub_id, status='capacity', error='已有 2 路录制，稍后重新检查', checked_at=now,
+                                      **live_scheduling.retry_timing(latest, 60, now=now, attempted_at=attempted_at))
             return
         if shutil.disk_usage(config.LIBRARY_ROOT).free < live_recorder.MIN_FREE:
             live_store.update_monitor(sub_id, enabled=0)
             raise live_douyin.LiveError(REASONS['disk_full'])
         live_recorder.ffmpeg_exe()
         url = live_douyin.room_url(info.get('room_url') or monitor['room_url'])
-        record = live_store.create_record(sub, url, info)
         owner = {'stop': threading.Event(), 'reason': '', 'session_id': info['session_id'], 'room_url':url}
+        record = live_store.create_record(sub, url, info, monitor=latest)
+        worker = _record(record, info, owner)
+        try:
+            owner['task'] = asyncio.create_task(worker)
+        except Exception:
+            worker.close()
+            live_store.update_record(record['id'], status='interrupted', finished_at=db.utc_now(),
+                                     error=REASONS['worker_error'], reason='worker_error')
+            raise
         _active[sub_id] = owner
-        live_store.update_monitor(sub_id, status='recording', error='',
-                                  **live_scheduling.cursors(live_store.monitor(sub_id), active=True))
-        owner['task'] = asyncio.create_task(_record(record, info, owner))
     except live_douyin.LiveError as error:
-        _failure(sub_id, str(error), limited=error.limited)
+        _failure(sub_id, str(error), limited=error.limited, attempted_at=attempted_at)
     except Exception:
-        _failure(sub_id, '直播检查或启动录制失败，请检查录播组件；稍后重试')
+        _failure(sub_id, '直播检查或启动录制失败，请检查录播组件；稍后重试', attempted_at=attempted_at)
 
 
 def request_check(sub_id):

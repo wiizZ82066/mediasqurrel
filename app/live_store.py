@@ -2,7 +2,7 @@
 import uuid
 import json
 
-from . import db
+from . import db, live_scheduling
 
 SCHEMA = """
 CREATE TABLE live_monitors (
@@ -61,7 +61,6 @@ def monitors():
 
 
 def configure(sub_id, room_url, enabled, interval_seconds, *, source='room', interval_enabled=True, plan=None, quality='best'):
-    from .live_scheduling import cursors
     with db.connect() as connection:
         connection.execute('''INSERT INTO live_monitors(sub_id,room_url,enabled,interval_seconds,status)
             VALUES (?,?,?,?,?) ON CONFLICT(sub_id) DO UPDATE SET room_url=excluded.room_url,
@@ -69,7 +68,7 @@ def configure(sub_id, room_url, enabled, interval_seconds, *, source='room', int
             next_check_at='',failures=0,error='',completed_session=CASE
                 WHEN room_url=excluded.room_url THEN completed_session ELSE '' END''',
             (sub_id, room_url, int(enabled), interval_seconds, 'waiting' if enabled else 'disabled'))
-        timing = cursors(dict(interval_seconds=interval_seconds, interval_enabled=interval_enabled, plan=plan), initial=True)
+        timing = live_scheduling.cursors(dict(interval_seconds=interval_seconds, interval_enabled=interval_enabled, plan=plan), initial=True)
         connection.execute('''UPDATE live_monitors SET source=?,quality=?,interval_enabled=?,plan_json=?,
             next_interval_at=?,next_plan_at=?,next_check_at=? WHERE sub_id=?''',
             (source,quality,int(interval_enabled),json.dumps(plan or {}),timing['next_interval_at'],timing['next_plan_at'],timing['next_check_at'],sub_id))
@@ -105,8 +104,9 @@ def latest_for_monitors():
         return {row['sub_id']: dict(row) for row in rows}
 
 
-def create_record(sub, room, info):
+def create_record(sub, room, info, *, monitor=None):
     identity = uuid.uuid4().hex
+    started_at = db.utc_now()
     with db.connect() as connection:
         previous = connection.execute('''SELECT id FROM live_recordings WHERE sub_id=? AND session_id=? AND is_aggregate=0
             ORDER BY started_at DESC,id DESC LIMIT 1''', (sub['id'], info['session_id'])).fetchone()
@@ -114,9 +114,16 @@ def create_record(sub, room, info):
             (id,sub_id,room_url,session_id,previous_id,author,title,status,started_at,quality,broadcast_started_at)
             VALUES (?,?,?,?,?,?,?,'recording',?,?,?)''',
             (identity, sub['id'], room, info['session_id'], previous['id'] if previous else None,
-             sub['nickname'] or info.get('nickname') or '抖音直播', info['title'][:500], db.utc_now(), info.get('quality',''),
+             sub['nickname'] or info.get('nickname') or '抖音直播', info['title'][:500], started_at, info.get('quality',''),
              info.get('broadcast_started_at','')))
-    return get_record(identity)
+        if monitor is not None:
+            timing = live_scheduling.cursors(monitor, now=started_at, active=True)
+            changed = connection.execute("""UPDATE live_monitors SET status='recording',error='',checked_at=?,
+                next_interval_at=?,next_plan_at=?,next_check_at=? WHERE sub_id=? AND enabled=1""",
+                (started_at, timing['next_interval_at'], timing['next_plan_at'], timing['next_check_at'], sub['id']))
+            if not changed.rowcount:
+                raise ValueError('自动录播已关闭')
+        return dict(connection.execute('SELECT * FROM live_recordings WHERE id=?', (identity,)).fetchone())
 
 
 def update_record(identity, **changes):

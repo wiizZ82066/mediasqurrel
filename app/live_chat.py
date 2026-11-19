@@ -146,11 +146,13 @@ class Journal:
 
     def video_progress(self, seconds):
         with self.clock_lock:
-            self.video_clock = (time.monotonic(), max(0, seconds))
+            if seconds > (self.video_clock[1] if self.video_clock else 0):
+                self.video_clock = (time.monotonic(), seconds)
 
     def _write(self):
         seen = OrderedDict()
         last_sync = 0
+        last_video_ms = None
         try:
             with (self.folder / 'chat.jsonl.part').open('x', encoding='utf-8', newline='\n') as stream, \
                     (self.folder / 'chat.events.jsonl.part').open('x', encoding='utf-8', newline='\n') as events:
@@ -177,6 +179,12 @@ class Journal:
                                         seen.popitem(last=False)
                                 self.stats['messages'] += 1
                             row.pop('platform_created_raw', None)
+                            if video_ms is not None:
+                                # A fresh FFmpeg sample may trail our bounded
+                                # estimate. Preserve write order within this segment.
+                                if last_video_ms is not None:
+                                    video_ms = max(last_video_ms, video_ms)
+                                last_video_ms = video_ms
                             row.update(schema_version=2, received_at=received,
                                        recording_elapsed_ms=elapsed, video_time_ms=video_ms)
                             destination = stream if row['type'] == 'chat' else events

@@ -39,3 +39,16 @@ def cursors(monitor, *, now=None, initial=False, active=False):
     if active:
         candidates.append((now+timedelta(seconds=60)).isoformat(timespec='milliseconds'))
     return dict(next_interval_at=interval, next_plan_at=plan_due, next_check_at=min(candidates, default=''))
+
+
+def retry_timing(monitor, delay, *, now, attempted_at=None, limited=False):
+    now = scheduling.utc(now)
+    retry = now + timedelta(seconds=delay)
+    plan_due = monitor.get('next_plan_at') or ''
+    if attempted_at is not None:
+        # Consume only the slots already due when this check started. A slot
+        # that came due during the lookup still gets one coalesced check.
+        plan_due = cursors(monitor, now=attempted_at)['next_plan_at']
+    if plan_due and not limited:
+        retry = min(retry, max(now, scheduling.utc(plan_due)))
+    return dict(next_plan_at=plan_due, next_check_at=retry.isoformat(timespec='milliseconds'))
