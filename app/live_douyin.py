@@ -180,8 +180,7 @@ def _lookup_browser(url, quality):
                 context = browser.stealth_context(owned)
                 douyin_auth.attach_cookies(context)
                 page = context.new_page()
-                page.route('**/*', lambda route: route.abort() if route.request.resource_type in
-                           ('media', 'image', 'font') else route.continue_())
+                page.route('**/*', browser.skip_preview_assets)
                 responses = deque(maxlen=8)
 
                 def capture(response):
@@ -289,8 +288,7 @@ def lookup_blogger(identity, quality='best'):
                 context = browser.stealth_context(owned)
                 douyin_auth.attach_cookies(context)
                 page = context.new_page()
-                page.route('**/*', lambda route: route.abort() if route.request.resource_type in
-                           ('media', 'image', 'font') else route.continue_())
+                page.route('**/*', browser.skip_preview_assets)
                 responses = []
                 def response(value):
                     parsed = urlsplit(value.url)

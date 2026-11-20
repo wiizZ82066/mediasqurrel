@@ -2,6 +2,7 @@
 import re
 
 from .. import watcher
+from ..browser import skip_preview_assets
 from ..redaction import redact_text
 from ..content_text import weibo_post_text, html_to_text
 from ..subscription_filters import extract_tags, normalize_rule
@@ -108,6 +109,7 @@ def _scan_sync(sub):
     try:
         with BrowserSession(cancel=collector.cancel, timeout=collector.options['timeout_seconds'],
                             check=collector.check) as client:
+            client.page.route('**/*', skip_preview_assets)
             client.open(uid)
             profile = client.profile(uid)
             container = profile.get('container_id')

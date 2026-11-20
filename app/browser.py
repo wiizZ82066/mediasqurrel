@@ -42,6 +42,14 @@ def launch_chrome(p, headless: bool = True):
         return p.chromium.launch(headless=headless)
 
 
+def skip_preview_assets(route):
+    """Background metadata checks do not display posters, fonts or media."""
+    if route.request.resource_type in ('image', 'font', 'media'):
+        route.abort()
+    else:
+        route.continue_()
+
+
 def generate_headers() -> dict:
     """browserforge 生成真实 Chrome 桌面 header 集（UA/accept-language 等一致）。
 

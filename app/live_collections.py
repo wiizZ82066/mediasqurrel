@@ -112,7 +112,8 @@ def refresh():
                     c.execute('UPDATE live_recordings SET merged_into=? WHERE id=?', (identity,record['id']))
                     changed.add(record['id'])
                 if record['entry_id'] != anchor['entry_id']:
-                    c.execute('UPDATE media_entries SET superseded_by=? WHERE id=?', (anchor['entry_id'],record['entry_id']))
+                    c.execute('UPDATE media_entries SET superseded_by=? WHERE id=? AND superseded_by IS NOT ?',
+                              (anchor['entry_id'], record['entry_id'], anchor['entry_id']))
                 # Old aggregate links follow their original anchor into its new
                 # collection; no physical files or existing logs are rewritten.
                 for prior in c.execute('SELECT id,entry_id FROM live_recordings WHERE is_aggregate=1 AND is_collection=0 AND merged_into=?', (record['id'],)).fetchall():

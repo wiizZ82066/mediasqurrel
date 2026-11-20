@@ -26,6 +26,7 @@ _update_locked_until = 0.0
 _store: Optional[TaskStore] = None
 _jobs: dict[str, asyncio.Task] = {}
 _flush_job = None
+_flush_wake = None
 _stopping = False
 _storage_error = None
 _ws_queues = {}
@@ -174,6 +175,8 @@ def append_log(task_id, line, stream='stdout'):
     task = TASKS[task_id]
     if _store:
         entry = _store.append(task_id, _now(), stream, line)
+        if _flush_wake is not None:
+            _flush_wake.set()
     else:  # isolated legacy unit tests; production lifespan must initialize storage
         text = redact_text(line.rstrip('\r\n'))
         entry = {'seq': task.get('_log_seq', 0) + 1, 'time': _now(), 'stream': stream,
@@ -187,7 +190,7 @@ def append_log(task_id, line, stream='stdout'):
 
 async def initialize(store=None, *, resume_queued=True):
     """Call after schema migration and before the subscription scheduler starts."""
-    global _store, _stopping, _storage_error, _semaphore, _flush_job, _resume_enabled
+    global _store, _stopping, _storage_error, _semaphore, _flush_job, _flush_wake, _resume_enabled
     if _jobs or (_flush_job and not _flush_job.done()):
         raise RuntimeError('任务运行器已经启动')
     _store = store or TaskStore()
@@ -220,15 +223,18 @@ async def initialize(store=None, *, resume_queued=True):
             _remember(task)
         after_id = batch[-1]['id']
     _fill_queue()
-    _flush_job = asyncio.create_task(_flush_loop())
+    _flush_wake = asyncio.Event()
+    _flush_job = asyncio.create_task(_flush_loop(_flush_wake))
     if resume_queued:
         _pump()
     return recovered
 
 
-async def _flush_loop():
+async def _flush_loop(wake):
     while True:
+        await wake.wait()
         await asyncio.sleep(0.25)
+        wake.clear()
         try:
             _store.flush()
             for task in list(TASKS.values()):
@@ -429,6 +435,8 @@ async def _run(task_id):
                     if progress is not None:
                         task['progress'] = redact_value(progress)
                         task['_progress_dirty'] = True
+                        if _flush_wake is not None:
+                            _flush_wake.set()
                         await broadcast({'type': 'task_progress', 'task_id': task_id, 'progress': task['progress']})
                         continue
                     _detect_output_dir(task, line)
@@ -614,8 +622,9 @@ def restore_record(task_id):
 
 
 async def shutdown():
-    global _stopping, _flush_job
+    global _stopping, _flush_job, _flush_wake
     _stopping = True
+    _flush_wake = None
     if _flush_job:
         _flush_job.cancel()
         await asyncio.gather(_flush_job, return_exceptions=True)

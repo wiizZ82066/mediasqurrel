@@ -4,6 +4,9 @@ import json
 
 from . import db, live_scheduling
 
+# The scheduler may reuse its deadline snapshot until a committed edit changes it.
+schedule_revision = 0
+
 SCHEMA = """
 CREATE TABLE live_monitors (
     sub_id INTEGER PRIMARY KEY REFERENCES subscriptions(id) ON DELETE CASCADE,
@@ -61,6 +64,7 @@ def monitors():
 
 
 def configure(sub_id, room_url, enabled, interval_seconds, *, source='room', interval_enabled=True, plan=None, quality='best'):
+    global schedule_revision
     with db.connect() as connection:
         connection.execute('''INSERT INTO live_monitors(sub_id,room_url,enabled,interval_seconds,status)
             VALUES (?,?,?,?,?) ON CONFLICT(sub_id) DO UPDATE SET room_url=excluded.room_url,
@@ -72,16 +76,20 @@ def configure(sub_id, room_url, enabled, interval_seconds, *, source='room', int
         connection.execute('''UPDATE live_monitors SET source=?,quality=?,interval_enabled=?,plan_json=?,
             next_interval_at=?,next_plan_at=?,next_check_at=? WHERE sub_id=?''',
             (source,quality,int(interval_enabled),json.dumps(plan or {}),timing['next_interval_at'],timing['next_plan_at'],timing['next_check_at'],sub_id))
+    schedule_revision += 1
     return monitor(sub_id)
 
 
 def update_monitor(sub_id, **changes):
+    global schedule_revision
     allowed = {'status', 'checked_at', 'next_check_at', 'next_interval_at', 'next_plan_at', 'error', 'failures', 'enabled', 'completed_session'}
     if not changes or not changes.keys() <= allowed:
         raise ValueError('Invalid monitor update')
     with db.connect() as connection:
         connection.execute('UPDATE live_monitors SET ' + ','.join(f'{key}=?' for key in changes) + ' WHERE sub_id=?',
                            (*changes.values(), sub_id))
+    if 'next_check_at' in changes or 'enabled' in changes:
+        schedule_revision += 1
 
 
 def recordings(sub_id, *, limit=20, offset=0):

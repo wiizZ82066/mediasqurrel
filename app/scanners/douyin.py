@@ -1,7 +1,7 @@
 """Douyin post collection, with pinned-aware overlap and explicit limits."""
 import re
 from .. import douyin_auth, watcher
-from ..browser import stealth_context
+from ..browser import skip_preview_assets, stealth_context
 from .common import collect_browser, published_at, run_sync_scan
 from ..douyin_content import source_url
 
@@ -44,6 +44,7 @@ def _scan_sync(sub):
     def context(browser):
         nonlocal revision, observation
         ctx = stealth_context(browser)
+        ctx.route('**/*', skip_preview_assets)
         revision = douyin_auth.restore_session(ctx)
         observation = douyin_auth.AccountObservation(ctx)
         return ctx

@@ -58,7 +58,7 @@ def _verify(platform, stop):
             if payload.get('ok') == 1 and (payload.get('data') or {}).get('login') is False:
                 return 'expired'
             return 'unknown'
-    from .browser import launch_chrome, sync_playwright
+    from .browser import launch_chrome, skip_preview_assets, sync_playwright
     with sync_playwright() as playwright:
         browser = launch_chrome(playwright, headless=True)
         try:
@@ -66,7 +66,7 @@ def _verify(platform, stop):
             if not douyin_auth.restore_session(context):
                 return 'unknown'
             page = context.new_page()
-            page.route('**/*', lambda route: route.abort() if route.request.resource_type in ('media', 'image', 'font') else route.continue_())
+            page.route('**/*', skip_preview_assets)
             try:
                 page.goto('https://www.douyin.com/', wait_until='domcontentloaded', timeout=10000)
             except Exception:

@@ -290,8 +290,19 @@ async def _loop():
         _recovering = False
     next_sync = 0
     read_failed = False
+    monitors = []
+    loaded_revision = None
+
+    def checked(task, key):
+        nonlocal loaded_revision
+        _checks.pop(key, None)
+        loaded_revision = None
+        if not task.cancelled() and task.exception() is not None:
+            print('[live] 直播检查未完成，稍后重新读取计划')
+
     while not _stopping:
         if time.monotonic() >= next_sync and not config.MAINTENANCE_ACTIVE:
+            loaded_revision = None
             try:
                 await live_collections.reconcile()
                 await live_tasks.reconcile()
@@ -299,15 +310,20 @@ async def _loop():
                 print('[live] 录播任务摘要同步暂未完成，将在后台重试')
             next_sync = time.monotonic() + 30
         if not config.MAINTENANCE_ACTIVE:
-            try:
-                monitors = await asyncio.to_thread(live_store.monitors)
-            except (OSError, sqlite3.Error):
-                if not read_failed:
-                    print('[live] 暂时无法读取录播计划，5 秒后重试')
-                read_failed = True
-                await asyncio.sleep(5)
-                continue
-            read_failed = False
+            revision = live_store.schedule_revision
+            if loaded_revision != revision:
+                try:
+                    monitors = await asyncio.to_thread(live_store.monitors)
+                except (OSError, sqlite3.Error):
+                    if not read_failed:
+                        print('[live] 暂时无法读取录播计划，5 秒后重试')
+                    read_failed = True
+                    await asyncio.sleep(5)
+                    continue
+                if revision != live_store.schedule_revision:
+                    continue  # A manual check or edit arrived during the read.
+                loaded_revision = revision
+                read_failed = False
             now = db.utc_now()
             for monitor in monitors:
                 identity = monitor['sub_id']
@@ -316,7 +332,7 @@ async def _loop():
                 if monitor['enabled'] and identity not in _checks and monitor['next_check_at'] and monitor['next_check_at'] <= now:
                     task = asyncio.create_task(check(identity))
                     _checks[identity] = task
-                    task.add_done_callback(lambda _task, key=identity: _checks.pop(key, None))
+                    task.add_done_callback(lambda done, key=identity: checked(done, key))
         await asyncio.sleep(1)
 
 
