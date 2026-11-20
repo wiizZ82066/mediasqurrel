@@ -1,6 +1,6 @@
 """Douyin post collection, with pinned-aware overlap and explicit limits."""
 import re
-from .. import douyin_auth, watcher
+from .. import account_status, douyin_auth, watcher
 from ..browser import skip_preview_assets, stealth_context
 from .common import collect_browser, published_at, run_sync_scan
 from ..douyin_content import source_url
@@ -51,7 +51,8 @@ def _scan_sync(sub):
 
     def collected(page, result, collector):
         if result['coverage']['reason'] == 'guest_preview':
-            douyin_auth.record_scan_session(revision, guest=True)
+            if douyin_auth.record_scan_session(revision, guest=True):
+                account_status.wake('douyin')
             return
         if not revision or not result['coverage']['complete']:
             return
@@ -71,7 +72,8 @@ def _scan_sync(sub):
                 cookies = page.context.cookies()
             except Exception:
                 return
-            douyin_auth.record_scan_session(revision, verified_cookies=cookies)
+            if douyin_auth.record_scan_session(revision, verified_cookies=cookies):
+                account_status.wake('douyin')
 
     def launch(p):
         try:

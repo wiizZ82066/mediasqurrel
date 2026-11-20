@@ -34,12 +34,15 @@ def sync_playwright():
     return _sp()
 
 
-def launch_chrome(p, headless: bool = True):
+def launch_chrome(p, headless: bool = True, *, timeout=None):
     """启动系统 Chrome；未安装 Chrome 时退回 playwright 自带 chromium。"""
+    options = {'headless': headless}
+    if timeout is not None:
+        options['timeout'] = timeout
     try:
-        return p.chromium.launch(channel="chrome", headless=headless)
+        return p.chromium.launch(channel="chrome", **options)
     except Exception:
-        return p.chromium.launch(headless=headless)
+        return p.chromium.launch(**options)
 
 
 def skip_preview_assets(route):

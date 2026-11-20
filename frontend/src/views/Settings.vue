@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from '../api.js'
-import { toast, store, loginAccount, readAccountStatus } from '../store.js'
+import { toast, store, loginAccount, readAccountStatus, onTaskEvent } from '../store.js'
 import AppIcon from '../components/AppIcon.vue'
 import PlatformLogo from '../components/PlatformLogo.vue'
 
@@ -13,6 +13,7 @@ const editing = ref(false), directory = ref(''), preview = ref(null), directoryE
 const pathField = ref(null), changeButton = ref(null), restarting = ref(false)
 const busy = ref(''), checks = ref([]), folderOpening = ref('')
 let timer, restartTimer, disposed = false
+let accountRead = 0, unsubscribeAccounts
 const startupChecked = computed(() => !!(startup.value?.enabled && startup.value?.matches_current))
 const database = computed(() => settings.value?.database)
 const statusLabels = { passed:'通过', failed:'失败', warning:'需处理', unverified:'未验证', skipped:'未检测' }
@@ -144,19 +145,33 @@ async function diagnose() {
   try { checks.value = (await api.checkSites()).checks || [] } catch (e) { toast(e.message, 'error') }
   finally { busy.value = '' }
 }
+async function refreshAccounts() {
+  const read = ++accountRead
+  clearTimeout(timer)
+  if (disposed || document.hidden) return
+  await readAccountStatus()
+  if (disposed || document.hidden || read !== accountRead) return
+  const pending = accounts.some(({ platform }) => store.accountLogin[platform].status === 'pending')
+  timer = setTimeout(refreshAccounts, pending ? 1000 : 30000)
+}
 onMounted(() => {
   const content = document.querySelector('.content')
   if (content) content.scrollTop = 0
   load()
   loadStartup()
   window.addEventListener('focus', loadStartup)
-  readAccountStatus()
-  timer = setInterval(readAccountStatus, 10000)
+  unsubscribeAccounts = onTaskEvent(event => {
+    if (event.type === 'account_status' || event.type === 'reconnect') refreshAccounts()
+  })
+  document.addEventListener('visibilitychange', refreshAccounts)
+  refreshAccounts()
 })
 onBeforeUnmount(() => {
   disposed = true
   window.removeEventListener('focus', loadStartup)
-  clearInterval(timer)
+  unsubscribeAccounts?.()
+  document.removeEventListener('visibilitychange', refreshAccounts)
+  clearTimeout(timer)
   clearTimeout(restartTimer)
 })
 </script>

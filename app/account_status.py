@@ -1,9 +1,9 @@
 """Periodically verify saved sessions with their own platform, independently of downloads."""
 import asyncio
 from datetime import datetime, timezone
-from pathlib import Path
 import threading
 import time
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from . import douyin_auth, weibo_auth
@@ -12,45 +12,117 @@ INTERVAL = 30 * 60
 RETRY = 5 * 60
 PLATFORMS = ('douyin', 'weibo')
 _results = {}
-_wake = None
-_worker = None
+_wakes = {}
+_workers = {}
 _stop = None
 
 
+class LocalSession(NamedTuple):
+    version: str | None
+    saved: bool
+    limited: bool = False
+    verified_at: float | None = None
+
+
+class Check(NamedTuple):
+    version: str
+    status: str
+    timestamp: float
+
+
 def _local(platform):
-    if platform == 'weibo':
-        path = weibo_auth._path()
-        saved = bool(weibo_auth.auth_status().get('saved'))
-        limited = False
-    else:
-        path = Path(douyin_auth.COOKIE_PATH)
-        data = douyin_auth.auth_status()
-        saved, limited = data['saved_login'], data['profile_limited']
+    if platform == 'douyin':
+        version, data, verified = douyin_auth.session_snapshot()
+        return LocalSession(version, data['saved_login'], data['profile_limited'], verified)
     try:
-        stat = path.stat()
-        version = (stat.st_mtime_ns, stat.st_size)
+        stat = weibo_auth._path().stat()
     except OSError:
-        version = None
-    return version, saved, limited
+        return LocalSession(None, False)
+    return LocalSession(f'{stat.st_mtime_ns}:{stat.st_size}', weibo_auth.auth_status()['saved'])
+
+
+def _current(session, previous, now):
+    if not session.saved or not session.version:
+        return None
+    if previous and previous.version != session.version:
+        previous = None
+    proof = session.verified_at
+    if (not session.limited and isinstance(proof, (int, float)) and now - INTERVAL < proof <= now
+            and (previous is None or proof > previous.timestamp)):
+        return Check(session.version, 'signed_in', proof)
+    return previous
+
+
+def _remaining(check, now):
+    if not check or now < check.timestamp:
+        return 0
+    ttl = RETRY if check.status == 'unknown' else INTERVAL
+    return max(0, ttl - (now - check.timestamp))
+
+
+def wake(platform):
+    # The settings route and subscription browser callbacks also run in threads.
+    worker, event = _workers.get(platform), _wakes.get(platform)
+    if worker is not None and not worker.done() and event is not None:
+        worker.get_loop().call_soon_threadsafe(event.set)
 
 
 def snapshot():
     items = {}
     for platform in PLATFORMS:
-        version, saved, limited = _local(platform)
-        prev = _results.get(platform, {})
-        current = prev if prev.get('version') == version and saved else {}
+        session = _local(platform)
+        now = time.time()
+        previous = _results.get(platform)
+        current = _current(session, previous, now)
+        if current != previous or (session.saved and not _remaining(current, now)):
+            wake(platform)
         items[platform] = {
-            'status': current.get('status', 'pending') if saved else 'signed_out',
-            'saved': saved, 'checked_at': current.get('checked_at'), 'limited': limited,
+            'status': current.status if current else ('pending' if session.saved else 'signed_out'),
+            'saved': session.saved, 'limited': session.limited,
+            'checked_at': datetime.fromtimestamp(current.timestamp, timezone.utc).isoformat(timespec='seconds') if current else None,
         }
     return {'items': items}
 
 
+def _weibo_api_status():
+    """Use the browser library's cookie jar without starting Chrome."""
+    from .browser import sync_playwright
+    from .weibo_client import MOBILE_UA
+    url = 'https://m.weibo.cn/api/config'
+    with sync_playwright() as playwright:
+        context = playwright.request.new_context(
+            user_agent=MOBILE_UA, storage_state={'cookies': weibo_auth.load_cookies(), 'origins': []})
+        try:
+            response = context.get(
+                url, timeout=3500, max_redirects=0,
+                headers={'Referer': 'https://m.weibo.cn/', 'X-Requested-With': 'XMLHttpRequest'})
+            if response.status == 200 and response.url == url:
+                return 'signed_in' if weibo_auth._confirmed_login(response.json()) else None
+            if response.status in (301, 302, 303, 307, 308):
+                return None
+            return 'unknown'
+        finally:
+            context.dispose()
+
+
 def _verify(platform, stop):
+    if stop.is_set():
+        return 'unknown'
     if platform == 'weibo':
+        from .browser import skip_preview_assets
         from .weibo_client import BrowserSession
-        with BrowserSession(timeout=22, cancel=stop) as session:
+        try:
+            result = _weibo_api_status()
+        except Exception:
+            result = None  # The normal browser may use the system proxy or receive JSON after navigation.
+        if result is not None:
+            return result
+        # Some sessions need the normal homepage sign-in redirect to establish
+        # the mobile cookie. Only its explicit guest response means expired.
+        if stop.is_set():
+            return 'unknown'
+        with BrowserSession(timeout=8, cancel=stop) as session:
+            session.page.route('**/*', skip_preview_assets)
             session.open()
             payload = session.request('/api/config', '账号状态')
             if weibo_auth._confirmed_login(payload):
@@ -60,7 +132,7 @@ def _verify(platform, stop):
             return 'unknown'
     from .browser import launch_chrome, skip_preview_assets, sync_playwright
     with sync_playwright() as playwright:
-        browser = launch_chrome(playwright, headless=True)
+        browser = launch_chrome(playwright, headless=True, timeout=3500)
         try:
             context = browser.new_context(locale='zh-CN')
             if not douyin_auth.restore_session(context):
@@ -68,7 +140,7 @@ def _verify(platform, stop):
             page = context.new_page()
             page.route('**/*', skip_preview_assets)
             try:
-                page.goto('https://www.douyin.com/', wait_until='domcontentloaded', timeout=10000)
+                page.goto('https://www.douyin.com/', wait_until='domcontentloaded', timeout=5000)
             except Exception:
                 if stop.is_set():
                     return 'unknown'
@@ -79,7 +151,7 @@ def _verify(platform, stop):
             data = page.evaluate("""async () => {
                 if (location.origin !== 'https://www.douyin.com') return null;
                 const response = await fetch('/aweme/v1/web/user/profile/self/?device_platform=webapp&aid=6383',
-                    {credentials:'same-origin', redirect:'error', signal:AbortSignal.timeout(6500)});
+                    {credentials:'same-origin', redirect:'error', signal:AbortSignal.timeout(4500)});
                 if (!response.ok) return null;
                 const {status_code, status_msg, user} = await response.json();
                 return {status_code, status_msg, user:{uid:user?.uid}};
@@ -91,62 +163,71 @@ def _verify(platform, stop):
 
 def changed(platform):
     # Interactive login already verified the account against the platform.
-    version, saved, _ = _local(platform)
-    if saved:
-        _results[platform] = {'status': 'signed_in', 'version': version, 'next': time.monotonic() + INTERVAL,
-                              'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+    session = _local(platform)
+    if session.saved and session.version:
+        _results[platform] = Check(session.version, 'signed_in', time.time())
     else:
         _results.pop(platform, None)
-    if _wake:
-        _wake.set()
+    wake(platform)
 
 
-async def _run(wake, stop):
+async def _run(platform, event, stop):
+    from .task_manager import broadcast
+    published = None
     while not stop.is_set():
-        wake.clear()
-        delay = INTERVAL
-        for platform in PLATFORMS:
-            if stop.is_set():
-                return
-            version, saved, _ = _local(platform)
-            if not saved:
-                _results.pop(platform, None)
-                continue
-            previous = _results.get(platform, {})
-            if previous.get('version') == version and previous.get('next', 0) > time.monotonic():
-                delay = min(delay, previous['next'] - time.monotonic())
-                continue
+        event.clear()
+        session = _local(platform)
+        previous = _results.get(platform)
+        now = time.time()
+        current = _current(session, previous, now)
+        if session.saved and session.version and not _remaining(current, now):
             try:
                 result = await asyncio.to_thread(_verify, platform, stop)
             except Exception:
                 result = 'unknown'
             if stop.is_set():
                 return
-            if _local(platform)[:2] != (version, True) or _results.get(platform, {}) != previous:
-                wake.set()
+            latest = _local(platform)
+            now = time.time()
+            if (not latest.saved or latest.version != session.version or _results.get(platform) is not previous
+                    or _current(latest, previous, now) != current):
+                # A new login or a newer scan confirmation arrived during the request.
                 continue
-            seconds = RETRY if result == 'unknown' else INTERVAL
-            _results[platform] = {'status': result, 'version': version, 'next': time.monotonic()+seconds,
-                                  'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
-            delay = min(delay, seconds)
+            session = latest
+            current = Check(session.version, result, now)
+        if current:
+            _results[platform] = current
+        else:
+            _results.pop(platform, None)
+        state = (session.saved, session.limited, current)
+        if state != published:
+            await broadcast({'type': 'account_status', 'platform': platform})
+            published = state
+        delay = _remaining(current, time.time()) if current else INTERVAL
         try:
-            await asyncio.wait_for(wake.wait(), timeout=max(1, delay))
+            await asyncio.wait_for(event.wait(), timeout=max(1, delay))
         except asyncio.TimeoutError:
             pass
 
 
 def start():
-    global _wake, _worker, _stop
-    if _worker is None or _worker.done():
-        _wake, _stop = asyncio.Event(), threading.Event()
-        _worker = asyncio.create_task(_run(_wake, _stop))
+    global _stop
+    if _stop is None:
+        _stop = threading.Event()
+    for platform in PLATFORMS:
+        if platform not in _workers or _workers[platform].done():
+            _wakes[platform] = asyncio.Event()
+            _workers[platform] = asyncio.create_task(_run(platform, _wakes[platform], _stop))
 
 
 async def stop():
-    global _worker, _wake, _stop
-    if _worker:
+    global _stop
+    if _stop is not None:
         _stop.set()
-        _wake.set()
-        await asyncio.gather(_worker, return_exceptions=True)
-    _worker = _wake = _stop = None
+        for event in _wakes.values():
+            event.set()
+        await asyncio.gather(*_workers.values(), return_exceptions=True)
+    _workers.clear()
+    _wakes.clear()
+    _stop = None
     _results.clear()

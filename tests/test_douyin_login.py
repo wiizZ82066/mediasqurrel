@@ -95,6 +95,7 @@ class DouyinLoginTests(unittest.TestCase):
         reopened.add_cookies.assert_called_once_with(fresh)
         self.assertTrue(auth.auth_status()['logged_in'])
         self.assertFalse(auth.checkpoint_due(current))
+        self.assertGreater(auth.session_snapshot()[2], 0)
         before = self.cookies.stat().st_mtime_ns, self.status.stat().st_mtime_ns
         auth.record_scan_session(current, verified_cookies=fresh)
         self.assertEqual(before, (self.cookies.stat().st_mtime_ns, self.status.stat().st_mtime_ns))
@@ -104,6 +105,15 @@ class DouyinLoginTests(unittest.TestCase):
         auth.record_scan_session(current, verified_cookies=session('late-worker'))
         self.assertEqual(auth.load_cookies(), session('another-login'))
         self.assertNotIn('another-login', json.dumps(auth.auth_status()))
+
+    def test_new_cookie_file_cannot_inherit_old_platform_confirmation(self):
+        auth.save_cookies(session('verified-fixture'), verified=True)
+        self.assertGreater(auth.session_snapshot()[2], 0)
+        self.cookies.write_text(json.dumps(session('different-file-generation')), encoding='utf-8')
+        version, status, verified_at = auth.session_snapshot()
+        self.assertEqual(version, auth._revision())
+        self.assertTrue(status['saved_login'])
+        self.assertIsNone(verified_at)
 
     def test_timeout_keeps_saved_session_and_status(self):
         result = search._douyin_login(1)

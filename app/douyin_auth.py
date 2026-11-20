@@ -103,13 +103,22 @@ def _status_metadata():
     return saved if isinstance(saved, dict) else {}
 
 
-def auth_status() -> dict:
+def session_snapshot():
+    """Read login data and its matching platform confirmation under the same lock."""
     with _LOCK:
         saved, cookies = _status_metadata(), load_cookies()
         present = has_login_cookie(cookies)
-        limited = present and saved.get('revision') == _revision() and saved.get('profile_limited') is True
-        return {"logged_in": present and not limited, "saved_login": present, "profile_limited": limited,
-                "cookie_count": len(cookies), "updated_at": saved.get("updated_at", ""), "note": ""}
+        version = _revision()
+        matches = present and version is not None and saved.get('revision') == version
+        limited = matches and saved.get('profile_limited') is True
+        verified_at = saved.get('verified_at') if matches and not limited else None
+        status = {"logged_in": present and not limited, "saved_login": present, "profile_limited": limited,
+                  "cookie_count": len(cookies), "updated_at": saved.get("updated_at", ""), "note": ""}
+        return version, status, verified_at
+
+
+def auth_status() -> dict:
+    return session_snapshot()[1]
 
 
 def account_response_status(data):
@@ -158,31 +167,33 @@ def checkpoint_due(revision):
             time.time() - last >= _CHECKPOINT_SECONDS)
 
 
-def record_scan_session(revision, *, guest=False, verified_cookies=None):
-    """A late worker must never replace a new QR login or save a guest session."""
+def record_scan_session(revision, *, guest=False, verified_cookies=None) -> bool:
+    """Return True if this scan updated the current session or its evidence."""
     from app.archive import atomic_write_text
     with _LOCK:
         if not revision or revision != _revision():
-            return
+            return False
         saved = _status_metadata()
         if guest:
             if not saved.get('profile_limited') or saved.get('revision') != revision:
                 _write_status({**saved, 'revision': revision, 'profile_limited': True})
-            return
+                return True
+            return False
         if not verified_cookies:
-            return
+            return False
         fresh = _first_party(verified_cookies)
         if not has_login_cookie(fresh):
-            return
+            return False
         def session_keys(cookies):
             return {(c.get('name'), c.get('domain'), c.get('path')): (c.get('value'), c.get('expires'))
                     for c in cookies if c.get('name') in _SESSION_KEYS}
         old = _first_party(load_cookies())
         if not checkpoint_due(revision) and session_keys(old) == session_keys(fresh):
-            return
+            return False
         if fresh != old:
             atomic_write_text(COOKIE_PATH, json.dumps(fresh, ensure_ascii=False))
         _write_status({**saved, 'revision': _revision(), 'profile_limited': False, 'verified_at': time.time()})
+        return True
 
 
 def is_logged_in() -> bool:
