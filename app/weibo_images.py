@@ -10,8 +10,7 @@ import warnings
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-import cv2
-import numpy as np
+from .image_processing import cv2, np
 from PIL import Image, ImageOps
 
 from .archive import atomic_output

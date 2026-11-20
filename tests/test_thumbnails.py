@@ -18,7 +18,7 @@ class ThumbnailTests(unittest.TestCase):
         header.__enter__.return_value = header
         with patch.object(thumbs.os, 'stat', return_value=MagicMock(st_size=100)) as stat, \
                 patch.object(thumbs.Image, 'open', return_value=header) as opened, \
-                patch.object(thumbs.np, 'fromfile') as allocate:
+                patch.object(np, 'fromfile') as allocate:
             for dimensions in ((10000, 10000), (40000, 1)):
                 header.size = dimensions
                 self.assertIsNone(thumbs._imread_unicode('large-image.jpg'))
@@ -32,7 +32,7 @@ class ThumbnailTests(unittest.TestCase):
     def test_video_fallback_checks_size_and_space_before_copy(self):
         capture = MagicMock()
         capture.isOpened.return_value = False
-        with patch.object(thumbs.cv2, 'VideoCapture', return_value=capture), \
+        with patch.object(cv2, 'VideoCapture', return_value=capture), \
                 patch.object(thumbs.os, 'stat', return_value=MagicMock(st_size=thumbs.MAX_VIDEO_FALLBACK_BYTES + 1)) as stat, \
                 patch.object(thumbs.shutil, 'copyfile') as copy, patch.object(thumbs.tempfile, 'mkstemp') as temporary, \
                 patch.object(thumbs.tempfile, 'gettempdir', return_value='fixture'), \

@@ -312,7 +312,7 @@ def _download_once(url: str, dest: str, progress=None) -> int:
 
 def _validate_video(path):
     """Reject error pages and unplayable responses before publishing a video."""
-    import cv2
+    from app.image_processing import cv2
     with open(path, 'rb') as stream:
         header = stream.read(12)
     if len(header) < 12 or header[4:8] != b'ftyp':

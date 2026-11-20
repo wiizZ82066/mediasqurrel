@@ -36,7 +36,7 @@ try:
 except Exception:
     pass
 
-import cv2
+from app.image_processing import cv2
 import requests
 from playwright.sync_api import sync_playwright
 from app.progress import DownloadProgress

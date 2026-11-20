@@ -68,7 +68,7 @@ def _load_face_detector():
     global _FACE_DETECTOR
     if _FACE_DETECTOR is None:
         try:
-            import cv2
+            from .image_processing import cv2
             candidates = [
                 getattr(config, "FACE_MODEL_PATH", ""),
                 os.path.join(config.DATA_DIR, "models", "face_detection_yunet.onnx"),
@@ -135,8 +135,7 @@ def _pick_best_cover(base_path: str, candidates: list[tuple[str, str]]) -> tuple
     ):
         return hit["best"], hit.get("face"), hit.get("kind")
 
-    import cv2
-    import numpy as np
+    from .image_processing import cv2, np
 
     detector = _get_face_detector()
     best, best_score, best_face, best_kind = candidates[0][0], -1.0, None, candidates[0][1]
@@ -196,8 +195,7 @@ def _cover_material(base_path: str, rel: str, kind: str) -> Optional[str]:
 def _face_center_of(full_path: str) -> Optional[dict]:
     """单张图的人脸中心（缓存未命中时的单图场景）。"""
     try:
-        import cv2
-        import numpy as np
+        from .image_processing import cv2, np
         detector = _get_face_detector()
         if detector is None:
             return None

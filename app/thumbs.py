@@ -14,8 +14,6 @@ import time
 import re
 import warnings
 
-import cv2
-import numpy as np
 from PIL import Image
 
 from . import config
@@ -101,6 +99,7 @@ def _imread_unicode(path: str):
             with Image.open(path) as header:
                 if not _allowed_dimensions(*header.size):
                     return None
+        from .image_processing import cv2, np
         data = np.fromfile(path, dtype=np.uint8, count=length + 1)
         if data.size != length:
             return None
@@ -116,6 +115,7 @@ def _allowed_dimensions(width, height):
 def _read_frame(cap):
     if not cap.isOpened():
         return None
+    from .image_processing import cv2
     width, height = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     if not _allowed_dimensions(width, height):
         return None
@@ -126,6 +126,7 @@ def _read_frame(cap):
 
 
 def _video_first_frame(path: str):
+    from .image_processing import cv2
     cap = cv2.VideoCapture(path)
     try:
         frame = _read_frame(cap)
@@ -211,6 +212,7 @@ def _generate(abs_path, thumb_path, width):
     if frame is None:
         return None
 
+    from .image_processing import cv2
     h_px, w_px = frame.shape[:2]
     if w_px > width:
         scale = width / w_px

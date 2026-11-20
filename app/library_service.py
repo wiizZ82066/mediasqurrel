@@ -132,7 +132,7 @@ def _analyze(entry_id, signature):
     entry = catalog.get_entry(entry_id)
     if not entry or entry['signature'] != signature or entry.get('availability') != 'present':
         return
-    import cv2
+    from .image_processing import cv2
     root = root_path(entry['root_id'])
     best, best_score, best_face, best_kind = None, -1, None, None
     candidates = entry.get('cover_candidates', [])
