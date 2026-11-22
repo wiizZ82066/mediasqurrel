@@ -21,6 +21,7 @@ MAX_READ = 64 * 1024 * 1024
 MAX_FRAGMENTS = 100_000
 MAX_INDEX = 8 * 1024 * 1024
 MAX_CACHE = 64 * 1024 * 1024
+INDEX_TIMEOUT = 60  # Cold removable drives may need thousands of metadata seeks.
 _slot = threading.BoundedSemaphore(1)
 _guard = threading.Lock()
 _memory = OrderedDict()
@@ -149,7 +150,7 @@ def _fragment(data, tracks):
 def inspect_recording(path):
     """Bounded, metadata-only scan. Return None for a normal or unsupported MP4."""
     stat = path.stat()
-    deadline = time.monotonic() + 8
+    deadline = time.monotonic() + INDEX_TIMEOUT
     read_bytes, count, tracks, init_length, pending = 0, 0, None, None, None
     fragments = []
     try:
@@ -168,8 +169,10 @@ def inspect_recording(path):
                 if size < header_size or position + size > stat.st_size:
                     raise UnsupportedRecording('Truncated recording')
                 count += 1
-                if count > MAX_FRAGMENTS * 3 or time.monotonic() > deadline:
-                    raise UnsupportedRecording('Recording index budget exceeded')
+                if count > MAX_FRAGMENTS * 3:
+                    raise UnsupportedRecording('Too many MP4 boxes')
+                if time.monotonic() > deadline:
+                    raise PlaybackBusy('Recording index read timed out')
                 if kind in (b'moov', b'moof'):
                     if size > MAX_BOX or read_bytes + size > MAX_READ:
                         raise UnsupportedRecording('Recording metadata exceeds budget')
@@ -216,8 +219,10 @@ def inspect_recording(path):
         value = {'version': VERSION, 'revision': revision(path, stat), 'size': stat.st_size,
                  'init_length': init_length, 'segments': segments,
                  'duration': sum(segment[2] for segment in segments), 'metadata_bytes': read_bytes}
-        if revision(path) != value['revision'] or not _valid(value, value['revision'], stat.st_size):
-            raise UnsupportedRecording('Recording changed during indexing')
+        if revision(path) != value['revision']:
+            raise PlaybackBusy('Recording changed during indexing')
+        if not _valid(value, value['revision'], stat.st_size):
+            raise UnsupportedRecording('Unsupported recording byte ranges')
         return value
     except (UnsupportedRecording, struct.error, KeyError, IndexError, StopIteration):
         return None
@@ -284,6 +289,9 @@ def get_index(path):
             pass
         if value is None:
             value = inspect_recording(path)
+            # Only associate a format verdict with the exact file inspected.
+            if (value['revision'] if value is not None else revision(path)) != fingerprint:
+                raise PlaybackBusy('Recording changed before the index was ready')
             if value is not None:
                 payload = json.dumps(value, separators=(',', ':'))
                 if len(payload) <= MAX_INDEX:

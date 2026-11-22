@@ -35,6 +35,7 @@ let locateController=null, locateSequence=0
 const viewerEl=ref(null), closeButton=ref(null), liveVideo=ref(null), filtersOpen=ref(false), cardLiveId=ref(null), cardLiveVideo=ref(null)
 const openMenuVisible=ref(false), openMenuEl=ref(null), openMenuButton=ref(null), openBusy=ref(false)
 const segmentVideo=ref(null)
+const recordingIndexState=ref('')
 let collectionPlaybackSequence=0, continuationVolume=null
 let recordingPlayer=null, recordingReady=Promise.resolve(true)
 let listedRevision=saved.revision || 0
@@ -285,14 +286,20 @@ watch(() => segmentVideo.value || liveVideo.value, (video, _, onCleanup) => {
   observer.observe(video.parentElement)
   onCleanup(() => observer.disconnect())
 }, { flush: 'post' })
-function releaseRecording(){recordingPlayer?.dispose();recordingPlayer=null;recordingReady=Promise.resolve(true)}
-watch(segmentVideo,video=>{
+function releaseRecording(){recordingPlayer?.dispose();recordingPlayer=null;recordingReady=Promise.resolve(true);recordingIndexState.value=''}
+function prepareRecording(video){
   releaseRecording()
   if(video && currentItem.value?.playback_info_url){
-    recordingPlayer=createRecordingPlayback(video,{infoUrl:currentItem.value.playback_info_url,nativeUrl:mediaUrl(currentLocation.value,currentItem.value.rel)})
+    mediaError.value=''
+    recordingPlayer=createRecordingPlayback(video,{
+      infoUrl:currentItem.value.playback_info_url,
+      nativeUrl:mediaUrl(currentLocation.value,currentItem.value.rel),
+      onIndexState:state=>{recordingIndexState.value=state}
+    })
     recordingReady=recordingPlayer.ready
   }
-},{flush:'post'})
+}
+watch(segmentVideo,prepareRecording,{flush:'post'})
 async function continueCollection(event){
   const entry=gallery.value, video=event.target, next=galleryIndex.value+1
   if(!entry?.collection || video!==segmentVideo.value || next>=entry.gallery.length)return
@@ -303,7 +310,7 @@ async function continueCollection(event){
   const following=segmentVideo.value
   if(sequence!==collectionPlaybackSequence || gallery.value!==entry || galleryIndex.value!==next || !following)return
   Object.assign(following,continuationVolume)
-  await recordingReady
+  if(!await recordingReady)return
   if(sequence!==collectionPlaybackSequence || gallery.value!==entry || galleryIndex.value!==next || segmentVideo.value!==following)return
   try{await following.play()}catch(error){if(sequence===collectionPlaybackSequence && error.name!=='AbortError')mediaError.value='已切换下一段，请点击播放继续。'}
 }
@@ -468,7 +475,9 @@ onBeforeUnmount(()=>{++collectionPlaybackSequence;releaseRecording();stopCardLiv
                       <video v-if="!suspendingVideo" ref="segmentVideo" :key="currentItem.id || currentItem.rel" :src="currentItem.playback_info_url?undefined:mediaUrl(currentLocation,currentItem.rel)" :poster="currentItem.poster?mediaUrl(currentLocation,currentItem.poster):undefined" controls playsinline preload="metadata" @loadedmetadata="videoMetadata" @resize="fitMedia" @ended="continueCollection" @error="mediaError='视频无法读取或浏览器不支持此格式，请检查原文件。'"></video>
                     </template>
                     <img v-else :src="mediaUrl(currentLocation,currentItem.rel)" alt="媒体原图" @load="fitMedia" @error="mediaError='图片无法读取，请检查文件是否移动或删除。'">
-                    <p v-if="mediaError" class="media-error" role="alert">{{ mediaError }}</p>
+                    <p v-if="recordingIndexState==='preparing'" class="media-error recording-index-notice" role="status">正在读取录播索引…</p>
+                    <p v-else-if="recordingIndexState==='retry'" class="media-error" role="alert">暂时无法读取录播索引。<button class="recording-index-retry" @click="prepareRecording(segmentVideo)">重试</button></p>
+                    <p v-else-if="mediaError" class="media-error" role="alert">{{ mediaError }}</p>
                   </div>
                   <button v-if="gallery.gallery.length>1" class="viewer-button gallery-next" :disabled="galleryIndex>=(gallery.gallery.length-1)" aria-label="下一项" @click="navigateMedia(1)"><AppIcon name="chevron-right" :size="22" /></button>
                 </div>

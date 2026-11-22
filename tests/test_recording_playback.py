@@ -99,6 +99,26 @@ class PlaybackTests(unittest.TestCase):
         self.assertNotEqual(first['revision'], second['revision'])
         self.assertEqual(second['duration'], 16)
 
+    def test_slow_valid_file_gets_ranges_and_a_timeout_does_not_cache_native(self):
+        with patch.object(playback.time, 'monotonic', side_effect=[0, playback.INDEX_TIMEOUT + 1]):
+            with self.assertRaises(playback.PlaybackBusy):
+                playback.get_index(self.path)
+        self.assertFalse(playback._memory)
+        # Same source and process: a cold read beyond the original 8 s limit succeeds.
+        clock = iter([0])
+        with patch.object(playback.time, 'monotonic', side_effect=lambda: next(clock, 12)):
+            self.assertEqual(playback.get_index(self.path)['duration'], 12)
+
+    def test_file_changed_while_inspecting_cannot_cache_an_unsupported_verdict(self):
+        def replace_recording(path):
+            path.write_bytes(recording() + fragment(12000))
+            return None
+        with patch.object(playback, 'inspect_recording', side_effect=replace_recording):
+            with self.assertRaises(playback.PlaybackBusy):
+                playback.get_index(self.path)
+        self.assertFalse(playback._memory)
+        self.assertEqual(playback.get_index(self.path)['duration'], 16)
+
     def test_corrupt_cache_is_rebuilt_and_full_disk_does_not_block_playback(self):
         index = playback.get_index(self.path)
         target = self.cache / 'playback' / (index['revision'] + '.json')

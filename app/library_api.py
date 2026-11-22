@@ -139,7 +139,7 @@ async def _playback_index(path):
     try:
         return await asyncio.to_thread(recording_playback.get_index, path)
     except recording_playback.PlaybackBusy:
-        raise HTTPException(503, '正在准备另一个录播的播放索引，请稍后重试', headers={'Retry-After': '1'}) from None
+        raise HTTPException(503, '录播索引尚未就绪，请稍后重试', headers={'Retry-After': '1'}) from None
     except OSError:
         raise HTTPException(404, '录播文件暂时无法读取') from None
 

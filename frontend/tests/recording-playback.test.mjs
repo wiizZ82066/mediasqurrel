@@ -9,7 +9,7 @@ const deferred = () => { let resolve; const promise = new Promise(yes => { resol
 
 class Video extends EventTarget {
   src = ''; currentTime = 0; duration = 100; paused = true; volume = .09; muted = false; playbackRate = 1.5
-  loads = 0; pauses = 0; plays = 0
+  loads = 0; pauses = 0; plays = 0; readyState = 0
   canPlayType() { return '' }
   load() { this.loads++ }
   pause() { this.paused = true; this.pauses++ }
@@ -17,7 +17,7 @@ class Video extends EventTarget {
   removeAttribute(name) { if (name === 'src') this.src = '' }
 }
 
-function engineDouble({ automatic = true, supported = true } = {}) {
+function engineDouble({ automatic = true, supported = true, buffered = true } = {}) {
   return class Engine {
     static Events = { ERROR:'error', MEDIA_ATTACHED:'attached' }
     static isSupported() { return supported }
@@ -27,7 +27,8 @@ function engineDouble({ automatic = true, supported = true } = {}) {
     emit(name, data={}) { this.listeners[name]?.(name,data) }
     loadSource(source) { this.source=source }
     attachMedia(video) { this.video=video; if (automatic) queueMicrotask(() => this.attach()) }
-    attach() { this.video.src='blob:fixture'; this.emit('attached') }
+    attach() { this.video.src='blob:fixture'; this.emit('attached'); if (buffered) this.canPlay() }
+    canPlay() { this.video.readyState=3; this.video.dispatchEvent(new Event('canplay')) }
     destroy() { this.destroyed++ }
   }
 }
@@ -70,6 +71,22 @@ test('closing while MSE attaches resolves pending continuation and destroys the 
   assert.equal(video.src,'')
 })
 
+test('collection continuation waits through a media reload until the new segment can actually play', async t => {
+  t.mock.timers.enable({apis:['setTimeout']})
+  const video=new Video(), Hls=engineDouble({buffered:false})
+  const player=createRecordingPlayback(video,sources,{fetch:async () => response({kind:'hls',url:playlist}),loadEngine:async () => Hls})
+  const continuation=player.ready.then(canPlay => { if (canPlay) return video.play() })
+  await new Promise(resolve => setImmediate(resolve))
+  video.readyState=1; video.dispatchEvent(new Event('loadedmetadata'))
+  video.readyState=0; video.dispatchEvent(new Event('emptied'))
+  t.mock.timers.tick(11000)
+  assert.equal(video.plays,0); assert.equal(video.src,'blob:fixture')
+  Hls.instances[0].canPlay()
+  await continuation
+  assert.equal(video.plays,1); assert.equal(video.src,'blob:fixture')
+  player.dispose()
+})
+
 test('fatal playback error falls back once while retaining position, volume and playback rate', async () => {
   const video=new Video(), Hls=engineDouble()
   const player=createRecordingPlayback(video,sources,{fetch:async () => response({kind:'hls',url:playlist}),loadEngine:async () => Hls})
@@ -101,10 +118,34 @@ test('native HLS remains available on browsers without MediaSource', async () =>
   await player.ready; assert.equal(video.src,playlist); player.dispose()
 })
 
-test('busy index retries are bounded and do not repeatedly restart native playback', async () => {
-  const video=new Video(); let requests=0
-  const player=createRecordingPlayback(video,sources,{fetch:async () => { requests++; return {ok:false,status:503} }})
-  await player.ready
-  assert.equal(requests,3); assert.equal(video.src,sources.nativeUrl); assert.equal(video.loads,1)
+test('a cold recording after contention waits for its own index without fetching the raw file', async t => {
+  t.mock.timers.enable({apis:['setTimeout']})
+  const video=new Video(), Hls=engineDouble(), pending=deferred(), states=[]
+  let requests=0
+  const player=createRecordingPlayback(video,{...sources,onIndexState:value=>states.push(value)},{
+    fetch:async () => ++requests===1 ? {ok:false,status:503} : pending.promise,loadEngine:async () => Hls})
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(1000)
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(15000)
+  assert.deepEqual(states,['preparing']); assert.equal(video.loads,0)
+  pending.resolve(response({kind:'hls',url:playlist}))
+  assert.equal(await player.ready,true); assert.equal(requests,2)
+  assert.equal(video.src,'blob:fixture'); assert.deepEqual(states,['preparing',''])
+  player.dispose()
+})
+
+test('persistent index contention ends with a retry action and no native MP4 request', async t => {
+  t.mock.timers.enable({apis:['setTimeout']})
+  const video=new Video(), states=[]
+  let requests=0
+  const player=createRecordingPlayback(video,{...sources,onIndexState:value=>states.push(value)},{
+    fetch:async () => { requests++; return {ok:false,status:503} }})
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(1000)
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(75000)
+  assert.equal(await player.ready,false); assert.equal(states.at(-1),'retry')
+  assert.equal(requests,2); assert.equal(video.src,''); assert.equal(video.loads,0)
   player.dispose()
 })
