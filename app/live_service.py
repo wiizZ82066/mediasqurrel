@@ -33,6 +33,28 @@ def active_count():
     return len(_active)
 
 
+def recording_state(owner, record, now):
+    if owner['stop'].is_set() or owner.get('finalizing') or (record and record['status'] == 'finalizing'):
+        return 'finalizing'
+    if not record or max(owner.get('seconds', 0), record.get('duration_seconds', 0)) <= 0:
+        return 'connecting'
+    return 'stalled' if now - owner.get('progress_at', now) > 25 else 'recording'
+
+
+def active_recordings():
+    now = time.monotonic()
+    items = []
+    for sub_id, owner in tuple(_active.items()):
+        record = owner.get('record')
+        if record:
+            items.append({'id': record['id'], 'sub_id': sub_id, 'author': record['author'],
+                          'title': record['title'], 'started_at': record['started_at'],
+                          'status': recording_state(owner, record, now),
+                          'duration_seconds': owner.get('seconds', 0),
+                          'progress_age': max(0, now - owner.get('progress_at', now))})
+    return items
+
+
 def busy():
     return bool(_active or _checks or _publishing or _recovering or live_merge.busy())
 
@@ -136,6 +158,7 @@ async def _record(record, info, owner):
     except Exception:
         live_store.update_record(record['id'], error=REASONS['worker_error'])
     finally:
+        owner['finalizing'] = True
         try:
             record = live_store.get_record(record['id'])
             published = await _publish(record, status, reason) if record['output_rel'] else False
@@ -157,6 +180,7 @@ async def _record(record, info, owner):
             await _notify(record, status if published else 'interrupted', reason)
         finally:
             _active.pop(sub_id, None)
+            await task_manager.broadcast({'type': 'activity_changed'})
 
 
 async def check(sub_id):
@@ -210,6 +234,7 @@ async def check(sub_id):
         url = live_douyin.room_url(info.get('room_url') or monitor['room_url'])
         owner = {'stop': threading.Event(), 'reason': '', 'session_id': info['session_id'], 'room_url':url}
         record = live_store.create_record(sub, url, info, monitor=latest)
+        owner['record'] = record
         worker = _record(record, info, owner)
         try:
             owner['task'] = asyncio.create_task(worker)
@@ -219,6 +244,7 @@ async def check(sub_id):
                                      error=REASONS['worker_error'], reason='worker_error')
             raise
         _active[sub_id] = owner
+        await task_manager.broadcast({'type': 'activity_changed'})
     except live_douyin.LiveError as error:
         _failure(sub_id, str(error), limited=error.limited, attempted_at=attempted_at)
     except Exception:

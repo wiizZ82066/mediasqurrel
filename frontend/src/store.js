@@ -4,6 +4,7 @@ import { api } from './api.js'
 import { newerBatch } from './subscription-homepage.js'
 
 export const store = reactive({
+  activity: null,
   tasks: [],
   subs: [],
   subScans: {},

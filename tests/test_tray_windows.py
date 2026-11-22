@@ -111,6 +111,7 @@ class TrayBackendTests(unittest.TestCase):
         class FakeIcon:
             def __init__(self, *args, **kwargs):
                 self.args, self.kwargs = args, kwargs
+                self._message_handlers = {}
 
             def _create_menu_item(self, descriptor, callbacks):
                 callbacks.append(descriptor)
@@ -154,6 +155,16 @@ class TrayBackendTests(unittest.TestCase):
         events.clear()
         self.assertEqual(icon._on_notify(0, 514), 'shown')
         self.assertEqual(events, [('notify', 0, 514)])
+
+    def test_activity_updates_open_menu_label_without_rebuilding_menu(self):
+        events = []
+        icon = self.backend(events)('fixture')
+        icon._menu_handle = (37, [])
+        icon._status_item = (2, SimpleNamespace(text='录播：1'))
+        with patch.object(tray, '_set_menu_status') as change:
+            icon._message_handlers[tray._WM_ACTIVITY](0, 0)
+            change.assert_called_once_with(37, 2, '录播：1')
+        self.assertEqual(events, [])
 
     def test_menu_is_destroyed_before_bitmaps_on_normal_or_failed_exit(self):
         for failure in (False, True):

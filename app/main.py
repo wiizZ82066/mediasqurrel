@@ -22,6 +22,7 @@ from . import mail_api, mail_delivery
 from . import settings_api, maintenance, db
 from . import windows_api, subscription_batch, live_service, subscription_standby
 from .live_api import router as live_router
+from .live_playback import router as live_playback_router
 from .home_api import router as home_router
 from . import scanners  # noqa: F401  (import 即注册各平台扫描器)
 
@@ -180,6 +181,7 @@ app.include_router(settings_api.router)
 app.include_router(mail_api.router)
 app.include_router(windows_api.router)
 app.include_router(live_router)
+app.include_router(live_playback_router)
 app.include_router(home_router)
 
 
@@ -189,6 +191,12 @@ app.include_router(home_router)
 def api_health():
     """Local launcher identity and readiness check."""
     return dict(_STARTUP_HEALTH)
+
+
+@app.get('/api/activity')
+async def api_activity():
+    from . import activity
+    return {**activity.counts(), 'recordings': live_service.active_recordings()}
 
 
 # ---------------------------------------------------------------- 脚本清单
@@ -338,7 +346,7 @@ async def ws_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        task_manager.WS_CLIENTS.discard(ws)
+        await task_manager.detach_socket(ws)
 
 
 @app.get('/api/subscription-storage')

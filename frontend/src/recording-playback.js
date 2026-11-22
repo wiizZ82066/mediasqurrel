@@ -1,6 +1,71 @@
 // Load only the selected recording's byte ranges. The player controls remain native.
 const loadEngine = () => import('hls.js/light').then(module => module.default)
 
+// The recorder owns the writer. This player only requests completed fragments from its local playlist.
+export function createGrowingPlayback(video, id, { fromStart, onState }, deps = {}) {
+  if (!/^[a-f0-9]{32}$/.test(id)) throw new Error('录播标识无效')
+  const url = '/api/live/recordings/' + id + '/watch/playlist.m3u8'
+  const controller = new AbortController()
+  const { signal } = controller
+  let engine, retryTimer, firstPlay = true
+  function seek(toStart) {
+    if (!video.seekable.length) return
+    const start = video.seekable.start(0)
+    const end = video.seekable.end(video.seekable.length - 1)
+    video.currentTime = toStart ? start : Math.max(start, end - 1)
+  }
+  function canPlay() {
+    if (!firstPlay) return
+    firstPlay = false
+    onState('')
+    if (!engine || !fromStart) seek(fromStart)
+    video.play().catch(() => {})
+  }
+  function fail(message) {
+    if (signal.aborted) return
+    engine?.destroy()
+    engine = null
+    onState(message)
+  }
+  async function attach() {
+    try {
+      const response = await (deps.fetch || fetch)(url, {signal, cache:'no-store'})
+      await response.body?.cancel()
+      if (signal.aborted) return
+      if (response.status === 503) {
+        onState('waiting')
+        retryTimer = setTimeout(attach, 2000)
+        return
+      }
+      if (!response.ok) return fail(response.status === 422 ? 'unsupported' : 'error')
+      const Hls = await (deps.loadEngine || loadEngine)()
+      if (signal.aborted) return
+      if (Hls.isSupported()) {
+        engine = new Hls({ startPosition: fromStart ? 0 : -1, liveSyncDuration: 3,
+          backBufferLength: 15, maxBufferLength: 15, maxMaxBufferLength: 30, maxBufferSize: 24 * 1024 * 1024 })
+        engine.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) fail('error') })
+        engine.loadSource(url)
+        engine.attachMedia(video)
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = url
+        video.load()
+      } else fail('unsupported')
+    } catch { fail('error') }
+  }
+  video.addEventListener('canplay', canPlay)
+  attach()
+  return { seek, dispose() {
+    controller.abort()
+    clearTimeout(retryTimer)
+    video.removeEventListener('canplay', canPlay)
+    video.pause()
+    engine?.destroy()
+    engine = null
+    video.removeAttribute('src')
+    video.load()
+  } }
+}
+
 export function createRecordingPlayback(video, { infoUrl, nativeUrl, onIndexState }, deps = {}) {
   const request = deps.fetch || globalThis.fetch
   const controller = new AbortController()

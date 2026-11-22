@@ -10,7 +10,7 @@ import MediaThumbnail from '../components/MediaThumbnail.vue'
 import ContentText from '../components/ContentText.vue'
 import Avatar from '../components/Avatar.vue'
 import MediaDetails from '../components/MediaDetails.vue'
-import { mediaProfile } from '../viewer-presentation.js'
+import { mediaProfile, mediaUrl, itemLocation, segmentTime } from '../viewer-presentation.js'
 import { createRecordingPlayback } from '../recording-playback.js'
 import { buildLibraryRows, libraryBatchSize, visibleLibraryRows, mergeLibraryEntries, shouldLoadNextLibraryBatch } from '../library-layout.js'
 import { applyDefaultVolume } from '../playback.js'
@@ -71,14 +71,11 @@ const filterSummary=computed(()=>{
 function clearFilters(){query.value='';platform.value='';mediaType.value='';status.value='';dateFrom.value='';dateTo.value='';sort.value='desc'}
 function dayOf(value) { if(!value) return '日期未知'; const date=new Date(value); return Number.isNaN(date.getTime())?String(value):new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(date) }
 function displayTime(value) { if(!value) return ''; const date=new Date(value);return Number.isNaN(date.getTime())?value:new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(date) }
-function segmentTime(value){return value?new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(value)):'未知'}
 function gapText(seconds){if(seconds===null || seconds===undefined)return '未知';const value=Math.round(seconds);return value>=3600?`${Math.floor(value/3600)} 小时 ${Math.floor(value%3600/60)} 分钟`:value>=60?`${Math.floor(value/60)} 分 ${value%60} 秒`:`${value} 秒`}
-function itemLocation(entry,item){return item?.source_entry_id?{id:item.source_entry_id,root_id:item.root_id,rel_dir:item.rel_dir}:entry}
 function segmentNumber(item){const index=gallery.value?.collection?.parts?.findIndex(part=>part.id===item.segment?.id) ?? -1;return index<0?item.index+1:index+1}
 const entryGroups=computed(()=>{ const groups=new Map();for(const entry of entries.value){const day=dayOf(entry.sort_at);const key=groupBy.value==='year'?day.slice(0,4):groupBy.value==='month'?day.slice(0,7):day;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(entry)}return [...groups].map(([date,items])=>({date,items})) })
 const virtualLayout=computed(()=>buildLibraryRows(entryGroups.value,gridWidth.value,compact.value))
 const visibleRows=computed(()=>visibleLibraryRows(virtualLayout.value,viewportTop.value,viewportHeight.value,focusedEntry.value))
-function mediaUrl(entry,rel) { return `/media/roots/${encodeURIComponent(entry.root_id)}/${[entry.rel_dir,rel].filter(Boolean).join('/').split('/').map(encodeURIComponent).join('/')}` }
 function thumbUrl(entry,rel,width=480) { return '/api/thumb?'+new URLSearchParams({root_id:entry.root_id,p:[entry.rel_dir,rel].filter(Boolean).join('/'),w:width}) }
 function coverStyle(entry) { return entry.cover_face?{objectPosition:`${entry.cover_face.x*100}% ${entry.cover_face.y*100}%`}:{} }
 function remember() {

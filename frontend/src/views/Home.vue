@@ -8,7 +8,8 @@ import PlatformLogo from '../components/PlatformLogo.vue'
 import MediaThumbnail from '../components/MediaThumbnail.vue'
 import ContentText from '../components/ContentText.vue'
 import ActivityProgress from '../components/ActivityProgress.vue'
-import { livePresentation, liveDuration } from '../live-status.js'
+import { livePresentation } from '../live-status.js'
+import RecordingClock from '../components/RecordingClock.vue'
 import { homeThumbnail, homeTime, nextScanLabel } from '../home-presentation.js'
 
 const data = ref(store.homeState.data), error = ref(''), loading = ref(!data.value), revealing = ref('')
@@ -16,6 +17,7 @@ const downloads = computed(() => data.value?.downloads)
 const live = computed(() => data.value?.live)
 const scans = computed(() => data.value?.scans)
 const currentLive = computed(() => live.value?.current ? livePresentation(live.value.current) : null)
+const clockRecord = computed(() => store.activity?.recordings?.find(record => record.id === live.value?.current?.record?.id))
 const firstTask = computed(() => downloads.value?.items[0])
 let controller, poll, debounce, unsubscribe, disposed = false, scrollElement
 async function refresh() {
@@ -73,7 +75,7 @@ onBeforeUnmount(() => {
       <article class="status-card card download-status">
         <div class="widget-heading"><span class="widget-icon"><AppIcon name="download" :size="26"/></span><h2>下载任务</h2></div>
         <div class="widget-number"><strong>{{ downloads ? downloads.running : '—' }}</strong><span>正在下载</span></div>
-        <p class="widget-description">{{ downloads ? (downloads.queued ? `${downloads.queued} 个任务排队中` : downloads.running ? '正在保存喜欢的内容' : '队列空闲，随时可以添加内容') : '正在读取任务状态…' }}</p>
+        <p class="widget-description">{{ downloads ? (downloads.queued ? `${downloads.queued} 个任务排队中` : downloads.running ? '正在保存喜欢的内容' : '暂无下载任务') : '正在读取任务状态…' }}</p>
         <div class="widget-detail" v-if="firstTask">
           <div class="mini-author"><Avatar :src="firstTask.avatar_url" :name="firstTask.author" :size="26"/><PlatformLogo v-if="['weibo', 'douyin'].includes(firstTask.script_id)" :platform="firstTask.script_id" :size="16"/><span>{{ firstTask.author || firstTask.script_name }}</span></div>
           <p class="widget-title"><ContentText :platform="firstTask.script_id" :text="firstTask.display_title || '正在获取内容信息'"/></p>
@@ -89,7 +91,7 @@ onBeforeUnmount(() => {
         <div v-if="live?.current" class="widget-detail">
           <p class="widget-title">{{ live.current.nickname || '订阅博主' }}<span class="widget-state">{{ currentLive.label }}</span></p>
           <template v-if="currentLive.active && live.current.record">
-            <p class="live-elapsed">{{ liveDuration(live.current.record.duration_seconds) }}<small>已保存时长</small></p>
+            <p class="live-elapsed"><RecordingClock :record="clockRecord" :sampled-at="store.activity?.sampledAt" :fallback="live.current.record.duration_seconds"/><small>录制时长</small></p>
             <p class="widget-description">{{ live.current.record.chat?.messages || 0 }} 条文字弹幕 · 弹幕详情见订阅记录</p>
           </template>
           <p v-else class="widget-description">{{ live.current.next_check_at ? `下次检查 ${homeTime(live.current.next_check_at, { date: true })}` : '检查结果和异常原因可在订阅中查看。' }}</p>

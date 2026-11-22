@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api.js'
 import { store, onTaskEvent, upsertTaskSummary, removeTaskSummary, toast } from '../store.js'
@@ -8,6 +8,8 @@ import PlatformLogo from '../components/PlatformLogo.vue'
 import AppIcon from '../components/AppIcon.vue'
 import Avatar from '../components/Avatar.vue'
 import ContentText from '../components/ContentText.vue'
+import RecordingClock from '../components/RecordingClock.vue'
+import RecordingPlayer from '../components/RecordingPlayer.vue'
 import { liveLabels, liveDuration, liveSize } from '../live-status.js'
 import { taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary } from '../task-presentation.js'
 
@@ -18,6 +20,19 @@ const tasks = ref([...saved.items])
 const query = ref(saved.q)
 const status = ref(saved.status)
 const scope = ref(saved.scope || 'current')
+const watching = ref(null)
+const activeRecordings = computed(() => {
+  if (scope.value === 'deleted' || (status.value && status.value !== 'running')) return []
+  const term = query.value.trim().toLocaleLowerCase()
+  return (store.activity?.recordings || []).filter(record =>
+    [record.author, record.title, record.id, '抖音录播'].some(value => String(value || '').toLocaleLowerCase().includes(term)))
+})
+function watchLive(record, fromStart) {
+  watching.value = { recordId:record.id, author:record.author, title:record.title, fromStart }
+}
+function watchReplay(task) {
+  watching.value = { entryId:task.metadata.live.entry_id, author:taskAuthor(task), title:taskTitle(task) }
+}
 const cursor = ref(saved.cursor)
 const nextCursor = ref(saved.nextCursor)
 const total = ref(saved.total ?? null)
@@ -417,7 +432,16 @@ onBeforeUnmount(() => {
     <p v-if="changed" class="update-note" role="status">任务有更新。刷新列表以查看新增任务。</p>
     <p v-if="loading" class="list-message" role="status">正在加载任务…</p>
     <div v-if="error" class="error-box" role="alert">{{ error }} <button class="btn btn-ghost btn-sm" @click="loadPage()">重试</button></div>
-    <div v-if="!loading && !error && !tasks.length" class="card empty">
+    <section v-if="activeRecordings.length" class="live-now" aria-label="正在录制">
+      <article v-for="record in activeRecordings" :key="record.id" class="card active-recording">
+        <div class="recording-summary"><span class="recording-symbol"><AppIcon name="video" :size="25"/></span>
+          <div><h2>{{ record.author }} <span>{{ liveLabels[record.status] }}</span></h2><p>{{ record.title }}</p></div></div>
+        <div class="recording-controls"><RecordingClock :record="record" :sampled-at="store.activity?.sampledAt"/>
+          <button class="btn btn-primary btn-sm" @click="watchLive(record, false)">追看录播</button>
+          <button class="btn btn-ghost btn-sm" @click="watchLive(record, true)">从头回看</button></div>
+      </article>
+    </section>
+    <div v-if="!loading && !error && !tasks.length && !activeRecordings.length" class="card empty">
       <svg class="empty-mark" viewBox="0 0 48 48" fill="none" aria-hidden="true"><rect x="11" y="8" width="26" height="34" rx="5" fill="#e8f1ff" stroke="#5287ca" stroke-width="2"/><path d="M18 19h12M18 26h12M18 33h7" stroke="#5287ca" stroke-width="2" stroke-linecap="round"/><rect x="19" y="5" width="10" height="6" rx="2" fill="#84b1e8"/></svg>
       <p>{{ query || status ? '没有符合条件的任务' : scope === 'deleted' ? '没有已删除的记录' : '还没有下载或录播记录' }}</p>
       <router-link v-if="scope !== 'deleted'" to="/download" class="btn btn-primary">开始下载</router-link>
@@ -457,6 +481,7 @@ onBeforeUnmount(() => {
           <button v-if="!task.media_recycled && !task.hidden" class="btn btn-ghost btn-sm" :disabled="revealing[task.id] || noTaskOutputYet(task)" :title="noTaskOutputYet(task) ? '尚未生成内容目录' : '在文件资源管理器中打开任务内容目录'" @click="revealTask(task)"><AppIcon name="folder" :size="18"/>{{revealing[task.id] ? '正在打开…' : '打开文件夹'}}</button>
           <button v-if="isActive(task)" class="btn btn-danger-ghost btn-sm" :disabled="busy[task.id]" @click="act(task, 'cancel')">取消任务</button>
           <template v-else-if="!task.hidden">
+            <button v-if="task.metadata?.live?.entry_id && !task.media_recycled" class="btn btn-primary btn-sm" @click="watchReplay(task)">播放回放</button>
             <button v-if="!task.metadata?.live && ['failed', 'cancelled', 'interrupted'].includes(task.status)" class="btn btn-primary btn-sm" :disabled="busy[task.id]" @click="act(task, 'retry')">创建重试任务</button>
             <RouterLink v-if="task.metadata?.live?.sub_id" class="btn btn-ghost btn-sm" :to="{path:'/subs',query:{live:task.metadata.live.sub_id}}">直播录制详情</RouterLink>
             <button v-if="!task.media_recycled && (task.metadata?.live ? task.metadata.live.entry_id : task.output_rel)" class="btn btn-ghost btn-sm" :disabled="locatingTaskId === task.id" @click="gotoLibrary(task)">{{ locatingTaskId === task.id ? '正在同步索引…' : '在媒体库查看' }}</button>
@@ -488,10 +513,12 @@ onBeforeUnmount(() => {
       </article>
     </div>
     <nav v-if="tasks.length || previous.length" class="pagination" aria-label="任务分页"><button class="btn btn-ghost" :disabled="loading || !previous.length" @click="previousPage">上一页</button><span>第 {{ previous.length + 1 }} 页 · 本页 {{ tasks.length }} 条<span v-if="total != null"> · 共 {{ total }} 条</span><small v-if="!loading && !nextCursor">已到最后一页</small></span><button class="btn btn-ghost" :disabled="loading || !nextCursor" @click="nextPage">下一页</button></nav>
+    <RecordingPlayer v-if="watching" :target="watching" @close="watching=null"/>
   </div>
 </template>
 
 <style scoped>
+.live-now { display:grid; gap:10px; margin-bottom:16px; }.active-recording,.recording-summary,.recording-controls { display:flex; align-items:center; gap:12px; }.active-recording { flex-wrap:wrap; justify-content:space-between; padding:16px 20px; }.recording-summary { min-width:0; flex:1 1 210px; }.recording-summary h2 { font-size:15px; }.recording-summary h2 span { margin-left:5px; color:#986126; font-size:12px; font-weight:500; }.recording-summary p { margin-top:3px; font-size:13px; color:var(--text-2); overflow-wrap:anywhere; }.recording-symbol { display:grid; place-items:center; flex:none; width:40px; height:40px; border-radius:10px; background:var(--soft-orange); }.recording-controls { flex-wrap:wrap; gap:8px; }.recording-controls .recording-clock { margin-right:4px; font-size:14px; }
 .task-filters { display: flex; gap: 16px; align-items: flex-end; margin-bottom: 18px; }
 .task-filters label { display: grid; gap: 7px; font-size: 12.5px; color: var(--text-2); }
 .search-field { flex: 1; min-width: 160px; }

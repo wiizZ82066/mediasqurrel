@@ -220,12 +220,8 @@ def _watch_backend(worker, icon, stopped, refresh=None):
 
 
 def _tray_activity():
-    from app import task_manager, watcher, live_service
-    # Copy the in-memory dictionaries before iterating on the tray thread.
-    tasks = list(task_manager.TASKS.values())
-    return {'running': sum(task.get('status') == 'running' for task in tasks),
-            'queued': sum(task.get('status') == 'queued' for task in tasks),
-            'scanning': len(watcher._SCANNING), 'recording': live_service.active_count()}
+    from app.activity import counts
+    return counts()
 
 
 def _tray_status(server):
@@ -234,9 +230,8 @@ def _tray_status(server):
     if not server.started:
         return '正在启动本地服务…'
     state = _tray_activity()
-    if not any(state.values()):
-        return '服务运行中 · 当前空闲'
-    return f"下载 {state['running']} · 排队 {state['queued']} · 扫描 {state['scanning']} · 录播 {state.get('recording', 0)}"
+    kinds = (('recording', '录播'), ('running', '下载'), ('scanning', '扫描'), ('queued', '排队'))
+    return ' · '.join(f'{label}：{state[key]}' for key, label in kinds if state.get(key)) or '空闲'
 
 
 def _request_tray_exit(server, icon):
@@ -323,9 +318,9 @@ def _run_tray(url: str, server, worker):
             title = 'Media Squirrel — ' + status_text()
             if tray.title != title:
                 tray.title = title
-                # Windows refreshes on its own UI thread before opening the
-                # popup. Rebuilding an open menu from this monitor can race.
-                if os.name != 'nt':
+                if os.name == 'nt':
+                    tray.post_status()
+                else:
                     tray.update_menu()
         refresh()
         monitor = threading.Thread(target=_watch_backend, args=(worker, tray, stopped, refresh),

@@ -284,6 +284,19 @@ class TaskRuntimeTests(StoreFixture, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any('截断' in row['text'] for row in logs))
         self.assertLess(max(len(row['text']) for row in logs), 16500)
 
+    async def test_disconnected_tab_releases_its_idle_sender(self):
+        socket = AsyncMock()
+        tm.WS_CLIENTS.add(socket)
+        await tm.broadcast({'type': 'activity_changed'})
+        for _ in range(8):
+            await asyncio.sleep(0)
+        sender = tm._ws_jobs[socket]
+        await tm.detach_socket(socket)
+        self.assertTrue(sender.done())
+        self.assertNotIn(socket, tm.WS_CLIENTS)
+        self.assertNotIn(socket, tm._ws_jobs)
+        self.assertNotIn(socket, tm._ws_queues)
+
     async def test_slow_socket_does_not_block_broadcast(self):
         class SlowSocket:
             async def send_json(self, _message):

@@ -54,14 +54,7 @@ def monitor_status(monitor, record=None):
     state = monitor['status']
     owner = live_service._active.get(monitor['sub_id'])
     if owner is not None:
-        if owner['stop'].is_set() or (record and record['status'] == 'finalizing'):
-            state = 'finalizing'
-        elif not record or record['duration_seconds'] <= 0:
-            state = 'connecting'
-        elif time.monotonic() - owner.get('progress_at', time.monotonic()) > 25:
-            state = 'stalled'
-        else:
-            state = 'recording'
+        state = live_service.recording_state(owner, record, time.monotonic())
     elif monitor['sub_id'] in live_service._checks:
         state = 'checking'
     elif not monitor['enabled']:

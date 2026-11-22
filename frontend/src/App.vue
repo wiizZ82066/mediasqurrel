@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { store, connectWS, refreshTasks, dismissToast } from './store.js'
 import AppIcon from './components/AppIcon.vue'
 import StartupScreen from './components/StartupScreen.vue'
+import BackgroundStatus from './components/BackgroundStatus.vue'
 import { api } from './api.js'
 const route = useRoute()
 const navItems = [
@@ -58,7 +59,7 @@ onBeforeUnmount(() => { bootController?.abort(); contentEl.value?.removeEventLis
           <span v-if="item.to === '/tasks' && activeTasks" class="badge">{{ activeTasks > 99 ? '99+' : activeTasks }}</span>
         </router-link>
       </nav>
-      <div class="sidebar-footer"><router-link to="/settings" class="nav-item settings-nav" :class="{active:route.name==='settings'}" :aria-current="route.name==='settings'?'page':undefined"><AppIcon name="settings"/><span>设置</span></router-link><div class="connection-status"><span class="dot" :style="{ color: store.wsConnected ? 'var(--green)' : 'var(--orange)' }"></span> {{ store.wsConnected ? '本地服务已连接' : '正在重新连接…' }}</div></div>
+      <div class="sidebar-footer"><router-link to="/settings" class="nav-item settings-nav" :class="{active:route.name==='settings'}" :aria-current="route.name==='settings'?'page':undefined"><AppIcon name="settings"/><span>设置</span></router-link><BackgroundStatus/></div>
     </aside>
     <main ref="contentEl" class="content"><div class="mobile-header"><router-link to="/" aria-label="Media Squirrel 首页"><AppIcon name="brand" :size="28"/><span>Media Squirrel</span></router-link><router-link to="/settings" aria-label="设置" :aria-current="route.name==='settings'?'page':undefined"><AppIcon name="settings"/></router-link></div><div class="content-inner" :class="{'library-content':route.name === 'library'}"><router-view/></div></main>
     <div v-show="route.name === 'library'" class="library-sidebar-host" :class="{'is-collapsed':store.libraryAuthorsCollapsed}">
@@ -75,8 +76,7 @@ onBeforeUnmount(() => { bootController?.abort(); contentEl.value?.removeEventLis
   <button v-if="showTop" class="back-top" :class="{'beside-library':route.name === 'library','beside-collapsed-library':route.name === 'library' && store.libraryAuthorsCollapsed}" aria-label="回到顶部" @click="contentEl?.scrollTo({ top: 0, behavior: 'instant' })"><AppIcon name="up"/></button>
 </template>
 <style scoped>
-.sidebar-footer .dot { display:inline-block; }
-.brand { text-decoration:none; color:inherit; }.sidebar-footer { padding:0; }.connection-status { margin:16px 14px 4px; padding-top:14px; border-top:1px solid var(--border); font-size:11px; }
+.brand { text-decoration:none; color:inherit; }.sidebar-footer { padding:0; }
 .mobile-header { display:none; }
 .content-inner.library-content { max-width:none; }
 .library-sidebar-host { display:flex; flex-direction:column; flex:0 0 240px; min-width:0; height:100%; padding:36px 18px 24px; overflow:hidden; background:var(--sidebar-bg); border-left:1px solid var(--border); }

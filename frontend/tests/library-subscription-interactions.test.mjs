@@ -5,7 +5,7 @@ import { liveLabels, liveDuration, liveSize } from '../src/live-status.js'
 import { taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary } from '../src/task-presentation.js'
 import { homeTime, homeThumbnail, nextScanLabel } from '../src/home-presentation.js'
 import { livePresentation } from '../src/live-status.js'
-import { mediaProfile } from '../src/viewer-presentation.js'
+import { mediaProfile, mediaUrl, itemLocation, segmentTime } from '../src/viewer-presentation.js'
 import { createRecordingPlayback } from '../src/recording-playback.js'
 import { api as accountApi } from '../src/api.js'
 import { store as accountStore, loginAccount, readAccountStatus, dismissToast } from '../src/store.js'
@@ -62,7 +62,8 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
   let taskListener
   const scope = vue.effectScope()
   const env = {
-    mediaProfile, createRecordingPlayback, MediaDetails: {}, MailSettings: {}, loginAccount, readAccountStatus,
+    mediaProfile, mediaUrl, itemLocation, segmentTime, createRecordingPlayback, MediaDetails: {}, MailSettings: {}, loginAccount, readAccountStatus,
+    RecordingPlayer: {}, RecordingClock: {}, BackgroundStatus: {},
     ...vue, api, store, scanBadge, liveLabels, liveDuration, liveSize, taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary, removeTaskSummary: () => {}, liveState: monitor => monitor?.runtime_status || monitor?.status, LiveStatus: {},
     setInterval: () => 0, clearInterval: () => {}, homeTime, homeThumbnail, nextScanLabel, livePresentation,
     toast: () => {}, upsertTaskSummary: () => {}, MaintenancePanel: {}, StartupScreen: {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},

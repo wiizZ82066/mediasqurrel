@@ -1,7 +1,7 @@
 """Small Windows tray-menu extension; other hosts retain pystray's backend.
 
 Windows draws the menu, including keyboard focus, scaling and system effects.
-Only menu-item bitmaps and refresh-on-open are added to pystray's Win32 backend.
+Menu updates are applied on the thread that owns the native popup.
 Imports do not initialize pystray, a display connection or Windows libraries.
 """
 import ctypes
@@ -15,6 +15,14 @@ import threading
 _ASSETS = Path(__file__).resolve().parent / 'assets'
 _ICON_KEYS = frozenset(('download', 'library', 'tasks', 'subs', 'settings', 'folder', 'close'))
 _LOG = logging.getLogger(__name__)
+_WM_ACTIVITY = 0x8000 + 7  # Private message to the tray window.
+
+
+def _set_menu_status(menu, command, text):
+    import win32gui
+    from win32gui_struct import PackMENUITEMINFO
+    info, buffers = PackMENUITEMINFO(text=text)
+    win32gui.SetMenuItemInfo(menu, command, False, info)
 
 
 class _BitmapInfoHeader(ctypes.Structure):
@@ -138,19 +146,33 @@ def _make_windows_icon_class(base, win32):
     class WindowsIcon(base):
         def __init__(self, *args, **kwargs):
             self._menu_bitmaps = _MenuBitmaps()
+            self._status_item = None
             try:
                 super().__init__(*args, **kwargs)
+                self._message_handlers[_WM_ACTIVITY] = self._refresh_status
             except BaseException:
                 self._menu_bitmaps.close()
                 raise
 
         def _create_menu_item(self, descriptor, callbacks):
             item = super()._create_menu_item(descriptor, callbacks)
+            if getattr(descriptor, 'icon_key', None) == 'activity':
+                self._status_item = (item.wID, descriptor)
             bitmap = self._menu_bitmaps.get(getattr(descriptor, 'icon_key', None))
             if bitmap:
                 item.fMask |= win32.MIIM_BITMAP
                 item.hbmpItem = bitmap
             return item
+
+        def post_status(self):
+            if self._hwnd:
+                win32.PostMessage(self._hwnd, _WM_ACTIVITY, 0, 0)
+
+        def _refresh_status(self, wparam, lparam):
+            if self._menu_handle and self._status_item:
+                command, descriptor = self._status_item
+                _set_menu_status(self._menu_handle[0], command, descriptor.text)
+            return 0
 
         def _on_notify(self, wparam, lparam):
             if lparam == win32.WM_RBUTTONUP:

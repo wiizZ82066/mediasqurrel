@@ -92,6 +92,15 @@ async def broadcast(message):
             _ws_jobs[ws].cancel()
 
 
+async def detach_socket(ws):
+    WS_CLIENTS.discard(ws)
+    job = _ws_jobs.pop(ws, None)
+    _ws_queues.pop(ws, None)
+    if job:
+        job.cancel()
+        await asyncio.gather(job, return_exceptions=True)
+
+
 def public_task(task):
     keys = ('id', 'script_id', 'script_name', 'script_icon', 'params', 'status',
             'progress', 'created_at', 'started_at', 'finished_at', 'exit_code',

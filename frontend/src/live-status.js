@@ -13,6 +13,14 @@ export function liveSize(value) {
   const n=Math.max(0,Number(value)||0)
   return n>=1024**3 ? `${(n/1024**3).toFixed(2)} GB` : `${(n/1024**2).toFixed(1)} MB`
 }
+// Interpolate across the three-second polling interval, with a fixed limit when the writer falls silent.
+export function recordingSeconds(record, sampledAt, now, fallback = 0) {
+  if (!record) return Math.floor(fallback || 0)
+  const saved = Math.max(0, Number(record.duration_seconds) || 0)
+  if (record.status !== 'recording' || !Number.isFinite(sampledAt)) return Math.floor(saved)
+  const age = Math.max(0, record.progress_age || 0) + Math.max(0, now - sampledAt) / 1000
+  return Math.floor(saved + Math.min(4, age))
+}
 export function livePresentation(monitor) {
   const state=liveState(monitor), record=monitor?.record
   const active=['recording','connecting','stalled','finalizing'].includes(state)

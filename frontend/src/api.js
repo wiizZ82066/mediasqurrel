@@ -113,6 +113,7 @@ export const api = {
   cancelLibraryScan: (id) => req(`/api/library/scans/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
   health: (signal) => req('/api/health', { signal }),
   home: (signal) => req('/api/home', { signal }),
+  activity: (signal) => req('/api/activity', { signal }),
   settings: (signal) => req('/api/settings', { signal }),
   accountStatus: () => req('/api/settings/accounts'),
   pickDatabase: () => req('/api/settings/database/pick', {method:'POST'}),

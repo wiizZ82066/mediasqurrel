@@ -3,6 +3,22 @@ const sourceHosts = {
   douyin: new Set(['www.douyin.com', 'douyin.com', 'v.douyin.com', 'www.iesdouyin.com', 'iesdouyin.com']),
 }
 
+export function itemLocation(entry, item) {
+  return item?.source_entry_id ? { id:item.source_entry_id, root_id:item.root_id, rel_dir:item.rel_dir } : entry
+}
+
+export function mediaUrl(entry, rel) {
+  const path = [entry.rel_dir, rel].filter(Boolean).join('/').split('/').map(encodeURIComponent).join('/')
+  return '/media/roots/' + encodeURIComponent(entry.root_id) + '/' + path
+}
+
+export function segmentTime(value) {
+  const date = new Date(value)
+  if (!value || !Number.isFinite(date.getTime())) return '未知'
+  return new Intl.DateTimeFormat('zh-CN', { timeZone:'Asia/Shanghai', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false }).format(date)
+}
+
 // Metadata can come from imported folders. Never turn an arbitrary stored URL
 // into a clickable action or infer an identity from an author's display name.
 export function mediaProfile(entry) {

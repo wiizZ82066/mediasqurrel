@@ -36,7 +36,7 @@ def build_menu(status_text, open_page, open_folder, quit_app, *, enabled):
 
     return Menu(
         item('Media Squirrel', None, 'brand', enabled=False),
-        item(status_text, None, enabled=False),
+        item(status_text, None, 'activity', enabled=False),
         Menu.SEPARATOR,
         item('打开主界面', page('/'), 'download', default=True, enabled=enabled),
         item('媒体库', page('/library'), 'library', enabled=enabled),

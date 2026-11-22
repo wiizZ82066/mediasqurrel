@@ -1,9 +1,37 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createRecordingPlayback } from '../src/recording-playback.js'
+import { createGrowingPlayback, createRecordingPlayback } from '../src/recording-playback.js'
+import { recordingSeconds } from '../src/live-status.js'
 
 const sources = { infoUrl:'/api/library/entries/fixture/playback?rel=recording.mp4', nativeUrl:'/media/recording.mp4' }
 const playlist = '/api/library/entries/fixture/playback/playlist.m3u8?rel=recording.mp4&rev=fixture'
+
+test('home clock ticks between fresh recorder samples and stops on a stall or lost connection', () => {
+  const snapshot = {status:'recording',duration_seconds:40.2,progress_age:.1}
+  assert.deepEqual([1000,2000,3000,4000].map(now => recordingSeconds(snapshot,1000,now)), [40,41,42,43])
+  assert.equal(recordingSeconds(snapshot,1000,80000),44)
+  assert.equal(recordingSeconds({...snapshot,status:'stalled'},1000,6000),40)
+  assert.equal(recordingSeconds(null,1000,6000,40),40)
+})
+
+test('growing player can rewind or follow the edge and closing only disposes local reads', async () => {
+  const video = new Video(), Hls = engineDouble(), requests = []
+  video.seekable = {length:1, start:() => 0, end:() => 30}
+  const id = 'a'.repeat(32)
+  const player = createGrowingPlayback(video, id, {fromStart:true,onState:() => {}}, {
+    fetch:async (url, options) => { requests.push([url,options]); return {ok:true,status:200} },
+    loadEngine:async () => Hls,
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(Hls.instances[0].config.startPosition, 0)
+  player.seek(false); assert.equal(video.currentTime,29)
+  player.seek(true); assert.equal(video.currentTime,0)
+  player.dispose()
+  assert.equal(requests.length,1)
+  assert.equal(requests[0][0], '/api/live/recordings/' + id + '/watch/playlist.m3u8')
+  assert.equal(requests[0][1].signal.aborted,true)
+  assert.equal(Hls.instances[0].destroyed,1)
+})
 const response = value => ({ ok:true, status:200, json:async () => value })
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes }); return {promise, resolve} }
 
