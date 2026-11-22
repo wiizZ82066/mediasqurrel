@@ -4,6 +4,7 @@ import { api } from '../api.js'
 import { toast, store, loginAccount, readAccountStatus, onTaskEvent } from '../store.js'
 import AppIcon from '../components/AppIcon.vue'
 import PlatformLogo from '../components/PlatformLogo.vue'
+import MailSettings from '../components/MailSettings.vue'
 
 const accounts = [{ platform: 'douyin', name: '抖音' }, { platform: 'weibo', name: '微博' }]
 const accountLabels = { signed_in:'已登录', signed_out:'未登录', expired:'登录已失效', pending:'正在核验', unknown:'暂时无法验证' }
@@ -234,6 +235,7 @@ onBeforeUnmount(() => {
           </details>
         </div>
       </section>
+      <MailSettings />
       <section class="group" aria-labelledby="more-heading">
         <h2 id="more-heading">存储与检查</h2>
         <div class="sheet">

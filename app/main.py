@@ -18,6 +18,7 @@ from .media_response import MediaFileResponse
 from .redaction import redact_text
 from .runtime import InstanceLock, runtime_identity
 from . import settings
+from . import mail_api, mail_delivery
 from . import settings_api, maintenance, db
 from . import windows_api, subscription_batch, live_service, subscription_standby
 from .live_api import router as live_router
@@ -137,6 +138,8 @@ async def lifespan(_app: FastAPI):
         library_service.start()
         task_manager.ON_TASK_FINISHED.append(_record_task_result)
         task_manager.ON_TASK_DONE.append(_invalidate_library)
+        await mail_delivery.start()
+        task_manager.ON_TASK_DONE.append(mail_delivery.completed)
         await task_manager.initialize()
         watcher.reconcile_tasks(task_manager.iter_subscription_tasks())
         await subscription_standby.start()
@@ -151,7 +154,7 @@ async def lifespan(_app: FastAPI):
             from .sub_search import stop_searches
             # Each owner receives shutdown even if a different cleanup fails.
             from . import account_status
-            for stop in (subscription_standby.stop, account_status.stop, settings_api.stop, stop_searches, subscription_batch.stop, live_service.stop, watcher.stop_scheduler, task_manager.shutdown, library_service.stop):
+            for stop in (subscription_standby.stop, account_status.stop, settings_api.stop, stop_searches, subscription_batch.stop, live_service.stop, watcher.stop_scheduler, task_manager.shutdown, mail_delivery.stop, library_service.stop):
                 try:
                     await stop()
                 except Exception as error:
@@ -161,6 +164,8 @@ async def lifespan(_app: FastAPI):
                 task_manager.ON_TASK_FINISHED.remove(_record_task_result)
             if _invalidate_library in task_manager.ON_TASK_DONE:
                 task_manager.ON_TASK_DONE.remove(_invalidate_library)
+            if mail_delivery.completed in task_manager.ON_TASK_DONE:
+                task_manager.ON_TASK_DONE.remove(mail_delivery.completed)
             try:
                 if database_lock:
                     database_lock.release()
@@ -172,6 +177,7 @@ async def lifespan(_app: FastAPI):
 app.router.lifespan_context = lifespan
 app.include_router(library_router)
 app.include_router(settings_api.router)
+app.include_router(mail_api.router)
 app.include_router(windows_api.router)
 app.include_router(live_router)
 app.include_router(home_router)

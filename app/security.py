@@ -66,10 +66,10 @@ class LocalOnlyMiddleware:
                 and scope.get('method') in {'POST', 'PUT', 'PATCH', 'DELETE'}):
             path = scope.get('path', '')
             allowed = scope['method'] == 'POST' and (
-                path in {'/api/tasks','/api/subs/refresh-all','/api/subs/login-weibo','/api/subs/login-douyin',
+                path in {'/api/tasks','/api/settings/mail','/api/settings/mail/sample','/api/subs/refresh-all','/api/subs/login-weibo','/api/subs/login-douyin',
                          '/api/subs/verify-douyin','/api/settings/check-sites','/api/settings/check-browser',
                          '/api/settings/open-folder','/api/desktop/update-lock'}
-                or re.fullmatch(r'/api/(?:subs/\d+/scan|tasks/[a-f0-9]+/(?:retry|cancel|reveal)|library/entries/[^/]+/(?:open|reveal))', path))
+                or re.fullmatch(r'/api/(?:settings/mail/deliveries/[a-z0-9-]+/retry|subs/\d+/scan|tasks/[a-f0-9]+/(?:retry|cancel|reveal)|library/entries/[^/]+/(?:open|reveal))', path))
             if not allowed:
                 await JSONResponse({'detail': '当前使用本机暂存，可正常扫描和下载。请接回原媒体盘后再修改此项。'}, 409)(scope, receive, send)
                 return

@@ -62,7 +62,7 @@ function setupComponent(name, t, savedState = {}, sharedStore = null) {
   let taskListener
   const scope = vue.effectScope()
   const env = {
-    mediaProfile, createRecordingPlayback, MediaDetails: {}, loginAccount, readAccountStatus,
+    mediaProfile, createRecordingPlayback, MediaDetails: {}, MailSettings: {}, loginAccount, readAccountStatus,
     ...vue, api, store, scanBadge, liveLabels, liveDuration, liveSize, taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary, removeTaskSummary: () => {}, liveState: monitor => monitor?.runtime_status || monitor?.status, LiveStatus: {},
     setInterval: () => 0, clearInterval: () => {}, homeTime, homeThumbnail, nextScanLabel, livePresentation,
     toast: () => {}, upsertTaskSummary: () => {}, MaintenancePanel: {}, StartupScreen: {}, refreshSubs: async () => {}, connectWS: () => {}, refreshTasks: async () => {}, dismissToast: () => {},

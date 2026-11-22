@@ -71,6 +71,12 @@ async function locateLibrary(params, signal, { onIndexing, timeoutMs = 30000 } =
 }
 
 export const api = {
+  mailSettings: () => req('/api/settings/mail', { cache: 'no-store' }),
+  saveMail: value => req('/api/settings/mail', { method: 'POST', body: JSON.stringify(value) }),
+  mailSample: () => req('/api/settings/mail/sample', { cache: 'no-store' }),
+  sendMailSample: task_id => req('/api/settings/mail/sample', { method: 'POST', body: JSON.stringify({ task_id }) }),
+  retryMail: (id, confirmed) => req('/api/settings/mail/deliveries/' + encodeURIComponent(id) + '/retry',
+    { method: 'POST', body: JSON.stringify({ confirmed }) }),
   scripts: () => req('/api/scripts'),
   createTask: (scriptId, params) =>
     req('/api/tasks', {
