@@ -20,7 +20,7 @@ class MailDeliveryTests(unittest.TestCase):
     def setUp(self):
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
-        root = Path(scratch.name)
+        root = Path(scratch.name).resolve()
         self.library = root / 'library'
         self.library.mkdir()
         paths = patch.multiple(config, DATA_DIR=str(root), CACHE_DIR=str(root), DB_PATH=str(root/'app.db'),
