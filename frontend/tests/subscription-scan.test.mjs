@@ -58,6 +58,16 @@ async function flush() {
   await vue.nextTick()
 }
 
+test('Weibo refusal exposes HTTP status without suggesting a new login or claiming a first page', () => {
+  const coverage = { complete: false, reason: 'platform_limited', pages: 0, items: 0, http_status: 403 }
+  const first = scanCoverageText(coverage, 'weibo')
+  assert.match(first, /博主资料或作品列表.*HTTP 403.*0 页/)
+  assert.doesNotMatch(first, /登录|后续分页/)
+  assert.match(scanCoverageText({ ...coverage, pages: 1 }, 'weibo'), /后续作品分页.*HTTP 403/)
+  assert.match(scanCoverageText({ ...coverage, reason: 'rate_limited', http_status: 429 }, 'weibo'), /限流.*HTTP 429/)
+  assert.match(scanCoverageText({ ...coverage, reason: 'login_required', http_status: 401 }, 'weibo'), /登录.*HTTP 401/)
+})
+
 test('legacy successful records with incomplete coverage are explicitly partial and platform login guidance is correct', () => {
   const coverage = { complete: false, reason: 'login_required', pages: 1, items: 11 }
   for (const status of ['ok', 'success', 'partial']) assert.equal(scanStatusText(status, coverage), '覆盖不足')

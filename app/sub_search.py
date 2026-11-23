@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlsplit
 from playwright.sync_api import sync_playwright
 
 from . import config, db
-from .weibo_client import BrowserSession, checked_payload, clean_text, fetch_profile, parse_profile
+from .weibo_client import BrowserSession, check_api_access, checked_payload, clean_text, fetch_profile, parse_profile
 
 MOBILE_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
@@ -173,7 +173,8 @@ def _weibo_search_sync(kw: str) -> list[dict]:
 
 
 def _parse_weibo_users(result):
-    if not isinstance(result, dict) or result.get("ok") != 1:
+    if not isinstance(result, dict) or result.get("ok") not in (1, '1'):
+        check_api_access(result, '用户搜索')
         raise RuntimeError('微博未返回有效搜索结果，请检查网络或平台登录/验证状态')
     data = checked_payload(result, '用户搜索')
     cards = data.get('cards')

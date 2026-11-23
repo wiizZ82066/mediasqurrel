@@ -44,6 +44,7 @@ from app import config
 from app.archive import atomic_output, atomic_write_text, begin_entry
 from app.content_text import html_to_text, weibo_post_text
 from app.platform_errors import PlatformAccessError
+from app.weibo_client import check_access_status, check_api_access
 from app.weibo_policy import NO_PHOTOS, NOT_AUTHOR, PLATFORM_ACTIVITY, WeiboSkipped, skip_reason
 from app.weibo_images import EXTENSIONS, PatchSkipped, eligibility, image_info, patch_image, reference_url
 
@@ -362,12 +363,12 @@ def fetch_status_api(page, url: str) -> dict:
             response = None
         if isinstance(response, dict):
             status, data = response.get('status'), response.get('data')
-            if status in (401, 403, 429):
-                reason = {401: 'login_required', 403: 'risk_control', 429: 'rate_limited'}[status]
-                raise PlatformAccessError('微博详情请求被拒绝，请检查登录、平台验证或限流状态', reason, platform='weibo')
+            if isinstance(status, int) and 500 <= status < 600 and not attempt:
+                page.wait_for_timeout(750)
+                continue
+            check_access_status(status, '作品详情')
             if isinstance(data, dict):
-                if data.get('ok') in (-100, '-100') or data.get('errno') in (100001, '100001', 100005, '100005'):
-                    raise PlatformAccessError('微博详情需要登录或平台验证，请登录后重试', 'login_required', platform='weibo')
+                check_api_access(data, '作品详情')
                 if data.get('ok') in (1, '1'):
                     identities = {str(data.get(key) or '') for key in ('mblogid', 'idstr', 'id')}
                     if mblogid not in identities:

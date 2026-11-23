@@ -58,8 +58,12 @@ class SearchParsingTests(unittest.TestCase):
         self.assertNotIn('Missing', [item['name'] for item in values])
 
     def test_failed_search_response_is_not_a_successful_empty_result(self):
+        from app.weibo_client import WeiboAccessError
         with self.assertRaisesRegex(RuntimeError, '未返回有效'):
             search._parse_weibo_users({'ok': 0})
+        with self.assertRaisesRegex(WeiboAccessError, '平台错误码 403') as denied:
+            search._parse_weibo_users({'ok': 0, 'errno': '403', 'data': {'cards': []}})
+        self.assertEqual(denied.exception.reason, 'platform_limited')
         self.assertEqual(search._parse_weibo_users({'ok': 1, 'data': {'cards': []}}), [])
         values = search._parse_weibo_users({'ok': 1, 'data': {'cards': [{'user': {
             'id': 123, 'screen_name': 'Example', 'followers_count': '1.2万'}}]}})

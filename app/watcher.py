@@ -456,6 +456,8 @@ async def _perform_scan(sub: dict, trigger: str = 'manual') -> dict:
                     if update_source(sub['id'], avatar_source):
                         SCAN_STATES[sub['id']]['avatar_url'] = f"/api/subs/{sub['id']}/avatar"
                 if response.get('error'):
+                    if response.get('retryable') is False:
+                        result['retryable'] = False
                     raise ValueError(str(response['error']))
                 if not isinstance(items, list):
                     raise ValueError('扫描器未返回有效内容列表')

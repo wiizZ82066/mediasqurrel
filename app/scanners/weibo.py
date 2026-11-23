@@ -11,6 +11,8 @@ from ..weibo_client import (BrowserSession, MOBILE_UA, WeiboAccessError, checked
                             checked_uid, clean_text)
 from .common import Collector, ScanCancelled, published_at, run_sync_scan
 
+_ACCESS_RESTRICTIONS = {'login_required', 'platform_limited', 'rate_limited'}
+
 
 def _cards(values):
     for card in values:
@@ -68,7 +70,7 @@ def parse_page(payload, uid):
 def complete_filter_text(client, result, sub, collector):
     """At most 10 serial detail requests, sharing the existing scan time budget."""
     wanted = set(normalize_rule(sub.get('download_filter'))['tags'])
-    if not wanted or collector.options.get('baseline'):
+    if not wanted or collector.options.get('baseline') or result.get('coverage', {}).get('reason') in _ACCESS_RESTRICTIONS:
         return
     if sub.get('id'):
         from ..subscription_store import pending_filter_items
@@ -132,6 +134,8 @@ def _scan_sync(sub):
                     collector.reason = 'time_limit' if isinstance(error, TimeoutError) else error.reason
                     result = collector.result()
                     result['coverage']['detail'] = redact_text(str(error))
+                    if isinstance(error, WeiboAccessError) and error.http_status is not None:
+                        result['coverage']['http_status'] = error.http_status
                     break
                 previous = collector.pages
                 collector.accept(payload)
@@ -151,10 +155,14 @@ def _scan_sync(sub):
     except Exception as error:
         # A readable profile is independent of list access. The watcher may
         # refresh it, but must never create a baseline from an error response.
-        return {'items': [], 'profile': profile, 'error': redact_text(str(error)),
-                'coverage': {'complete': False, 'reason': 'time_limit' if isinstance(error, TimeoutError)
-                             else getattr(error, 'reason', 'platform_error'),
-                             'pages': collector.pages, 'items': len(collector.items)}}
+        reason = 'time_limit' if isinstance(error, TimeoutError) else getattr(error, 'reason', 'platform_error')
+        coverage = {'complete': False, 'reason': reason, 'pages': collector.pages, 'items': len(collector.items)}
+        if isinstance(error, WeiboAccessError) and error.http_status is not None:
+            coverage['http_status'] = error.http_status
+        result = {'items': [], 'profile': profile, 'error': redact_text(str(error)), 'coverage': coverage}
+        if reason in _ACCESS_RESTRICTIONS:
+            result['retryable'] = False
+        return result
     result['profile'] = profile
     result['avatar_source'] = profile.get('avatar_source') if profile else None
     return result

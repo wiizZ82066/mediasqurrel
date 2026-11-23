@@ -127,6 +127,50 @@ class SchedulingTests(unittest.IsolatedAsyncioTestCase):
             else:
                 self.assertIsNone(row['retry_due'])
 
+    async def test_weibo_denial_is_recorded_once_and_preserves_both_schedule_clocks(self):
+        from app.scanners import weibo
+        from app.weibo_client import WeiboAccessError
+        self.set_interval_due(NOW)
+        self.fixed()
+        current = NOW + dt.timedelta(hours=1)
+        group = sch.claim_group(self.sub['id'], current)
+        self.assertEqual(len(group['schedules']), 2)
+
+        def clocks():
+            return {r['id']: r['next_due'] for r in sch.list_schedules(self.sub['id'])}
+
+        following = clocks()
+        with (patch.dict(watcher.SCANNERS, weibo=weibo.scan), patch.object(weibo, 'BrowserSession') as session):
+            client = session.return_value.__enter__.return_value
+            client.profile.side_effect = WeiboAccessError('微博拒绝访问博主资料（HTTP 403）', 'platform_limited', http_status=403)
+            result = await watcher.scan_sub(self.sub, group['trigger'])
+            client.posts.assert_not_called()
+        sch.finish_group(group['id'], result, now=current)
+        self.assertFalse(result['retryable'])
+        self.assertEqual(result['new_items'], [])
+        self.assertTrue(sch.scan_options(self.sub['id'])['baseline'])
+        self.assertEqual(clocks(), following)
+        self.assertTrue(all(r['retry_due'] is None for r in sch.list_schedules(self.sub['id'])))
+        self.assertEqual(sch.due_groups(current + dt.timedelta(minutes=2)), [])
+        self.assertEqual(sch.due_groups(current + dt.timedelta(minutes=30)), [self.sub['id']])
+        for history in (sch.list_runs(self.sub['id']), subscription_store.list_scans(self.sub['id'])):
+            self.assertEqual(history[0]['status'], 'failed')
+            self.assertEqual(history[0]['coverage'], {'complete': False, 'reason': 'platform_limited',
+                                                    'http_status': 403, 'pages': 0, 'items': 0})
+
+        baseline = {'item_id': 'before', 'script_id': 'weibo', 'params': {}, 'title': 'Example'}
+        new = {**baseline, 'item_id': 'after'}
+        dispatch = AsyncMock()
+        with patch.dict(watcher.SCANNERS, weibo=AsyncMock(side_effect=[[baseline], [new, baseline]])):
+            for minutes in (30, 60):
+                group = sch.claim_group(self.sub['id'], current + dt.timedelta(minutes=minutes))
+                await watcher._scheduled_scan(self.sub, group, dispatch)
+        dispatch.assert_awaited_once()
+        discovered = dispatch.await_args.args[0]
+        self.assertEqual([item['item_id'] for item in discovered], ['after'])
+        token = watcher.claim_item('weibo', '123', 'after')
+        self.assertTrue(watcher.mark_enqueued('weibo', '123', 'after', 'fixture-task', token))
+
     async def test_restart_recovers_claimed_run_and_edit_revision_wins(self):
         self.set_interval_due(NOW)
         group = sch.claim_group(self.sub['id'], NOW)

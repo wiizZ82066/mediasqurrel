@@ -18,6 +18,14 @@ const coverageReasons = {
 }
 
 export function coverageReason(coverage, platform) {
+  if (platform === 'weibo' && (['platform_limited', 'rate_limited'].includes(coverage?.reason)
+      || (coverage?.reason === 'login_required' && coverage.http_status === 401))) {
+    const status = Number.isInteger(coverage.http_status) ? `（HTTP ${coverage.http_status}）` : ''
+    const source = coverage.pages > 0 ? '后续作品分页' : '博主资料或作品列表'
+    if (coverage.reason === 'platform_limited') return `微博拒绝了${source}请求${status}，请稍后再试`
+    if (coverage.reason === 'rate_limited') return `微博请求被限流${status}，请稍后再试`
+    return `微博要求登录后才能访问${source}${status}，请在设置中完成微博登录`
+  }
   if (coverage?.reason === 'login_required') {
     const name = { weibo: '微博', douyin: '抖音' }[platform] || '对应平台'
     return `${name}限制继续翻页，本次仅覆盖可见作品`

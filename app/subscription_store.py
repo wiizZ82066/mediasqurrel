@@ -406,6 +406,9 @@ def public_coverage(snapshot_json):
     result = {}
     if isinstance(coverage.get('complete'), bool):
         result['complete'] = coverage['complete']
+    status = coverage.get('http_status')
+    if type(status) is int and 400 <= status <= 599:
+        result['http_status'] = status
     for key in ('reason', 'scope', 'oldest_at', 'cutoff_at'):
         if isinstance(coverage.get(key), str):
             result[key] = redact_text(coverage[key][:200])

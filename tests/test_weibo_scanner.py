@@ -140,6 +140,85 @@ class WeiboScanTests(unittest.TestCase):
 
 
 class WeiboBrowserAndAuthTests(unittest.TestCase):
+    def test_profile_visit_reuses_native_reply_and_never_retries_a_denial_or_bad_payload(self):
+        for status, body, reason in ((200, profile(), None), (403, None, 'platform_limited'),
+                                   (429, None, 'rate_limited'), (200, {'ok': -100}, 'login_required'),
+                                   (200, {'ok': 0, 'errno': '403'}, 'platform_limited'),
+                                   (200, profile('456'), 'platform_error')):
+            with self.subTest(status=status, reason=reason):
+                client = weibo_client.BrowserSession()
+                client.page = MagicMock()
+                client.page.url = 'https://m.weibo.cn/u/123'
+                hooks = {}
+                client.page.on.side_effect = hooks.__setitem__
+                request = MagicMock(method='GET', url='https://m.weibo.cn/api/container/getIndex?type=uid&value=123')
+                reply = request.response.return_value
+                reply.status = status
+                reply.header_value.return_value = None
+                reply.body.return_value = json.dumps(body).encode()
+                def navigate(*args, **kwargs):
+                    hooks['request'](request)
+                    return MagicMock(status=200)
+                client.page.goto.side_effect = navigate
+                client.page.wait_for_timeout.side_effect = lambda _: hooks['requestfinished'](request)
+                client.open('123')
+                if reason is None:
+                    self.assertEqual(client.profile('123')['blogger_id'], '123')
+                else:
+                    with self.assertRaises(weibo_client.WeiboAccessError) as error:
+                        client.profile('123')
+                    self.assertEqual(error.exception.reason, reason)
+                    self.assertEqual(error.exception.http_status, status if status >= 400 else None)
+                    if status == 403:
+                        self.assertNotIn('登录', str(error.exception))
+                if status >= 400:
+                    reply.body.assert_not_called()
+                client.page.evaluate.assert_not_called()
+                self.assertEqual(client.page.remove_listener.call_count, 3)
+
+    def test_unrelated_requests_do_not_mask_or_replace_the_expected_profile(self):
+        client = weibo_client.BrowserSession()
+        client.page = MagicMock()
+        client.page.url = 'https://m.weibo.cn/u/123'
+        hooks = {}
+        client.page.on.side_effect = hooks.__setitem__
+        client.page.evaluate.return_value = {'status': 200, 'payload': profile()}
+        client.open('123')
+        for url in ('https://m.weibo.cn/api/container/getIndex?type=uid&value=456',
+                    'https://m.weibo.cn/api/container/getIndex?type=uid&value=123&containerid=107603123',
+                    'https://example.invalid/api/container/getIndex?type=uid&value=123'):
+            other = MagicMock(method='GET', url=url)
+            hooks['request'](other)
+            hooks['requestfinished'](other)
+        self.assertEqual(client.profile('123')['blogger_id'], '123')
+        client.page.evaluate.assert_called_once()
+
+    def test_profile_navigation_denial_stops_before_api_and_native_wait_respects_cancel(self):
+        client = weibo_client.BrowserSession()
+        client.page = MagicMock()
+        client.page.url = 'https://m.weibo.cn/u/123'
+        client.page.goto.return_value.status = 403
+        with self.assertRaisesRegex(weibo_client.WeiboAccessError, 'HTTP 403') as caught:
+            client.open('123')
+        self.assertEqual(caught.exception.reason, 'platform_limited')
+        client.page.evaluate.assert_not_called()
+        client.page.goto.return_value.status = 200
+        hooks = {}
+        client.page.on.side_effect = hooks.__setitem__
+        client.open('123')
+        hooks['request'](MagicMock(method='GET', url='https://m.weibo.cn/api/container/getIndex?type=uid&value=123'))
+        client.page.wait_for_timeout.side_effect = lambda _: client.cancel.set()
+        with self.assertRaises(ScanCancelled):
+            client.profile('123')
+        client.page.evaluate.assert_not_called()
+        client.cancel.clear()
+        client.open('123')
+        client.page.wait_for_timeout.side_effect = RuntimeError('transport log with private-fixture')
+        with self.assertRaises(weibo_client.WeiboAccessError) as dropped:
+            client.profile('123')
+        self.assertEqual(dropped.exception.reason, 'network_error')
+        self.assertNotIn('private-fixture', str(dropped.exception))
+
     def test_navigation_timeout_can_still_use_valid_same_origin_api(self):
         from playwright.sync_api import TimeoutError as NavigationTimeout
         client = weibo_client.BrowserSession()
@@ -196,10 +275,13 @@ class WeiboBrowserAndAuthTests(unittest.TestCase):
     def test_request_rejects_http_limits_and_non_json_without_echoing_body(self):
         client = weibo_client.BrowserSession()
         client.page = MagicMock()
-        for status in (403, 432, 429):
+        for status, reason in ((401, 'login_required'), (403, 'platform_limited'), (432, 'platform_limited'),
+                               (429, 'rate_limited'), (503, 'platform_error')):
             client.page.evaluate.return_value = {'status': status}
-            with self.assertRaises(weibo_client.WeiboAccessError):
+            with self.assertRaises(weibo_client.WeiboAccessError) as denied:
                 client.request('/api/container/getIndex')
+            self.assertEqual((denied.exception.reason, denied.exception.http_status), (reason, status))
+            self.assertIn('HTTP ' + str(status), str(denied.exception))
         client.page.evaluate.return_value = {'status': 200, 'invalid': True}
         with self.assertRaisesRegex(ValueError, 'JSON'):
             client.request('/api/container/getIndex')

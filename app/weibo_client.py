@@ -4,10 +4,11 @@ No browser or user data is opened on import. Raw response text and signed avatar
 URLs never become error messages; the caller decides when profile data persists.
 """
 import html
+import json
 import re
 import threading
 import time
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from .browser import sync_playwright
 from .platform_errors import PlatformAccessError
@@ -19,8 +20,23 @@ DESKTOP_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
 
 
 class WeiboAccessError(PlatformAccessError):
-    def __init__(self, message, reason='platform_error'):
+    def __init__(self, message, reason='platform_error', *, http_status=None):
         super().__init__(message, reason, platform='weibo')
+        self.http_status = http_status
+
+
+def check_access_status(code, label, *, source='HTTP'):
+    """Only an explicit authentication failure calls for another login."""
+    status = code if source == 'HTTP' else None
+    if code == 401:
+        raise WeiboAccessError(f'微博{label}需要登录（{source} {code}），请在设置中完成微博登录。',
+                               'login_required', http_status=status)
+    if code in (403, 432):
+        raise WeiboAccessError(f'微博拒绝访问{label}（{source} {code}），请稍后再试。', 'platform_limited', http_status=status)
+    if code == 429:
+        raise WeiboAccessError(f'微博{label}请求被限流（{source} {code}），请稍后再试。', 'rate_limited', http_status=status)
+    if source == 'HTTP' and isinstance(code, int) and code >= 400:
+        raise WeiboAccessError(f'微博{label}请求失败（HTTP {code}），请稍后再试。', http_status=code)
 
 
 def clean_text(value, limit=200):
@@ -35,11 +51,21 @@ def checked_uid(value):
     return uid
 
 
+def check_api_access(payload, label):
+    if not isinstance(payload, dict):
+        return
+    if payload.get('ok') in (-100, '-100') or payload.get('errno') in (100001, '100001', 100005, '100005'):
+        raise WeiboAccessError(f'微博{label}要求登录，请在设置中完成微博登录。', 'login_required')
+    if payload.get('ok') not in (1, '1'):
+        code = str(payload.get('errno'))
+        if code in ('401', '403', '432', '429'):
+            check_access_status(int(code), label, source='平台错误码')
+
+
 def checked_payload(payload, label='内容列表'):
     if not isinstance(payload, dict):
         raise WeiboAccessError(f'微博{label}响应格式无效；请检查平台验证')
-    if payload.get('ok') in (-100, '-100') or payload.get('errno') in (100001, '100001', 100005, '100005'):
-        raise WeiboAccessError(f'微博{label}需要登录或平台验证，请使用“微博登录”后重试', 'login_required')
+    check_api_access(payload, label)
     if payload.get('ok') not in (1, '1'):
         raise WeiboAccessError(f'微博{label}未成功返回；请检查登录、平台验证或限流状态')
     data = payload.get('data')
@@ -75,6 +101,72 @@ def parse_profile(payload, uid):
             'desc': clean_text(user.get('description'), 80)}
 
 
+class _ProfileRequest:
+    """Observe the mobile page's own profile request, scoped to one visit and account."""
+    def __init__(self, page, uid):
+        self.page, self.uid = page, uid
+        self.request = None
+        self.finished = False
+        self.events = (('request', self._started), ('requestfinished', self._ended), ('requestfailed', self._ended))
+        for name, callback in self.events:
+            page.on(name, callback)
+
+    def _started(self, request):
+        if self.request is not None or request.method != 'GET':
+            return
+        url = urlsplit(request.url)
+        if (url.scheme != 'https' or url.netloc not in ('m.weibo.cn', 'm.weibo.cn:443')
+                or url.path != '/api/container/getIndex'):
+            return
+        query = parse_qs(url.query)
+        if (query.get('value') == [self.uid] and query.get('type') == ['uid']
+                and 'page' not in query and 'since_id' not in query
+                and query.get('containerid', ['']) in ([''], ['100505' + self.uid])):
+            self.request = request
+
+    def _ended(self, request):
+        if request == self.request:
+            self.finished = True
+
+    def close(self):
+        for name, callback in self.events:
+            self.page.remove_listener(name, callback)
+
+    def read(self, client):
+        # Older pages may never start a profile request. Allow their normal
+        # explicit request once. An observed request owns its result, even on denial.
+        for _ in range(8):
+            if self.request is not None:
+                break
+            self.page.wait_for_timeout(client.timeout_ms(125))
+        if self.request is None:
+            return None
+        deadline = time.monotonic() + client.timeout_ms() / 1000
+        while not self.finished:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise WeiboAccessError('微博博主资料请求超时，请稍后重试。', 'network_error')
+            self.page.wait_for_timeout(client.timeout_ms(max(1, min(125, int(remaining * 1000)))))
+        client.check()
+        response = self.request.response()
+        if response is None:
+            raise WeiboAccessError('微博博主资料网络请求中断，请稍后重试。', 'network_error')
+        check_access_status(response.status, '博主资料')
+        if response.status != 200:
+            raise WeiboAccessError(f'微博博主资料请求失败（HTTP {response.status}），请稍后再试。')
+        length = response.header_value('content-length') or ''
+        if length.isdecimal() and int(length) > 4_000_000:
+            raise WeiboAccessError('微博博主资料响应过大。')
+        body = response.body()
+        if len(body) > 4_000_000:
+            raise WeiboAccessError('微博博主资料响应过大。')
+        try:
+            payload = json.loads(body)
+        except (ValueError, RecursionError):
+            raise WeiboAccessError('微博博主资料未返回有效 JSON，请稍后再试。') from None
+        return parse_profile(payload, self.uid)
+
+
 class BrowserSession:
     def __init__(self, *, cancel=None, timeout=45, headless=True, mobile=True, check=None, use_saved_cookies=True):
         self.cancel = cancel or threading.Event()
@@ -82,6 +174,7 @@ class BrowserSession:
         self.headless, self.mobile, self.external_check = headless, mobile, check
         self.use_saved_cookies = use_saved_cookies
         self.manager = self.playwright = self.browser = self.context = self.page = None
+        self._profile_request = None
 
     def check(self):
         if self.external_check:
@@ -121,14 +214,19 @@ class BrowserSession:
             if self.browser:
                 self.browser.close()
         finally:
+            self._profile_request = None
             if self.manager and self.playwright:
                 self.manager.__exit__(None, None, None)
 
     def open(self, uid=None):
         host = 'm.weibo.cn' if self.mobile else 'weibo.com'
-        suffix = f'/u/{checked_uid(uid)}' if uid else '/'
+        uid = checked_uid(uid) if uid else None
+        suffix = f'/u/{uid}' if uid else '/'
+        if self._profile_request:
+            self._profile_request.close()
+        self._profile_request = _ProfileRequest(self.page, uid) if uid and self.mobile else None
         try:
-            self.page.goto(f'https://{host}{suffix}', wait_until='domcontentloaded', timeout=self.timeout_ms(10000))
+            response = self.page.goto(f'https://{host}{suffix}', wait_until='domcontentloaded', timeout=self.timeout_ms(10000))
         except Exception as error:
             self.check()
             from playwright.sync_api import TimeoutError as NavigationTimeout
@@ -137,6 +235,9 @@ class BrowserSession:
             # A slow DOMContentLoaded does not prove the API is unavailable.
             # Continue within the original budget; request() still validates
             # every response, and the origin gate below forbids off-site fetches.
+        else:
+            if response is not None:
+                check_access_status(response.status, '博主主页' if uid else '首页')
         # Visitor cookies are issued during an automatic cross-domain redirect.
         # Issuing API requests before returning to Weibo can yield HTTP 432/403.
         while (urlsplit(self.page.url).scheme, urlsplit(self.page.url).hostname) != ('https', host):
@@ -175,16 +276,27 @@ class BrowserSession:
             message = '请求超时' if transport_error == 'timeout' else '网络请求失败'
             raise WeiboAccessError(f'微博{label}{message}，请稍后重试', 'network_error')
         status = result.get('status') if isinstance(result, dict) else None
-        if status in (401, 403, 432):
-            raise WeiboAccessError(f'微博{label}受限（HTTP {status}），请使用“微博登录”完成登录或验证后重试', 'login_required')
-        if status == 429:
-            raise WeiboAccessError('微博请求被限流，请降低扫描频率并稍后重试', 'rate_limited')
+        check_access_status(status, label)
         if status != 200 or result.get('invalid') or not isinstance(result.get('payload'), dict):
             raise WeiboAccessError(f'微博{label}未返回有效JSON（HTTP {status or "未知"}），请检查网络或平台验证')
         return result['payload']
 
     def profile(self, uid):
-        query = urlencode({'type': 'uid', 'value': checked_uid(uid)})
+        uid = checked_uid(uid)
+        if self._profile_request and self._profile_request.uid == uid:
+            try:
+                observed = self._profile_request.read(self)
+            except (WeiboAccessError, TimeoutError):
+                raise
+            except Exception:
+                self.check()
+                raise WeiboAccessError('微博博主资料响应读取中断，请稍后重试。', 'network_error') from None
+            finally:
+                self._profile_request.close()
+                self._profile_request = None
+            if observed is not None:
+                return observed
+        query = urlencode({'type': 'uid', 'value': uid})
         return parse_profile(self.request('/api/container/getIndex?' + query, '博主资料'), uid)
 
     def posts(self, container, page):

@@ -66,6 +66,10 @@ class TagMatchingTests(unittest.TestCase):
         client.reset_mock()
         weibo.complete_filter_text(client, result, sub, Collector({**sub, 'scan_options': {'baseline': True}}, None))
         client.request.assert_not_called()
+        for reason in ('platform_limited', 'rate_limited', 'login_required'):
+            result['coverage'] = {'complete': False, 'reason': reason}
+            weibo.complete_filter_text(client, result, sub, Collector(sub, None))
+            client.request.assert_not_called()
 
 
 class SubscriptionFilterStateTests(unittest.TestCase):

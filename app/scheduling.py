@@ -330,10 +330,11 @@ def finish_group(run_id, result, *, interrupted=False, now=None):
             return
         conn.execute('UPDATE schedule_runs SET status=?,finished_at=?,error=?,scan_id=? WHERE id=?',
                      (status, stamp(now), error, result.get('scan_id'), run_id))
+        quick_retry = status == 'failed' and result.get('retryable') is not False
         for context in json.loads(run['schedule_ids_json']):
-            attempt = context['retry_count'] + (1 if status == 'failed' else 0)
+            attempt = context['retry_count'] + int(quick_retry)
             retry = (now if interrupted else now + dt.timedelta(seconds=30 * 2 ** (attempt - 1))
-                     if status == 'failed' and attempt <= 3 else None)
+                     if quick_retry and attempt <= 3 else None)
             conn.execute('UPDATE subscription_schedules SET last_status=?,last_error=?,retry_count=?,retry_due=? WHERE id=? AND revision=?',
                          (status, error, attempt, stamp(retry) if retry else None, context['id'], context['revision']))
 

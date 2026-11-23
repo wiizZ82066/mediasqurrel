@@ -126,13 +126,16 @@ class DownloaderTextTests(unittest.TestCase):
         self.page.evaluate.side_effect = [None, {'status': 200, 'data': payload}]
         self.assertEqual(weibo.fetch_status_api(self.page, 'https://weibo.com/123/Abc123'), payload)
         self.assertEqual(self.page.evaluate.call_count, 2)
-        for response in [{'status': 429, 'data': None},
-                         {'status': 200, 'data': {'ok': -100}},
-                         {'status': 200, 'data': dict(payload, mblogid='OtherPost')}]:
+        for response, reason in [({'status': 429, 'data': None}, 'rate_limited'),
+                                 ({'status': 403, 'data': payload}, 'platform_limited'),
+                                 ({'status': 200, 'data': {'ok': 0, 'errno': '403'}}, 'platform_limited'),
+                                 ({'status': 200, 'data': {'ok': -100}}, 'login_required'),
+                                 ({'status': 200, 'data': dict(payload, mblogid='OtherPost')}, 'invalid_response')]:
             self.page.evaluate.reset_mock(side_effect=True)
             self.page.evaluate.return_value = response
-            with self.assertRaises(PlatformAccessError):
+            with self.assertRaises(PlatformAccessError) as denied:
                 weibo.fetch_status_api(self.page, 'https://weibo.com/123/Abc123')
+            self.assertEqual(denied.exception.reason, reason)
             self.page.evaluate.assert_called_once()
 
 
