@@ -305,9 +305,11 @@ class LiveTests(unittest.IsolatedAsyncioTestCase):
         root = catalog.register_root(str(self.library))
         catalog.scan_root(root['id'])
         self.assertIsNone(catalog.locate_entry(str(live_recorder.folder_for(record))))
-        with patch.object(library_service,'_stopping',False):
+        with (patch.object(library_service, '_stopping', False),
+              patch.object(live_service.mail_delivery, 'recording_saved') as receipt):
             success = await live_service._publish(record,'stopped','manual')
         self.assertTrue(success)
+        receipt.assert_called_once_with(record['id'])
         saved = live_store.get_record(record['id'])
         self.assertEqual(saved['status'],'stopped')
         self.assertIsNotNone(saved['entry_id'])
@@ -450,8 +452,10 @@ class LiveTests(unittest.IsolatedAsyncioTestCase):
         shutil.copyfile(self.sample(), folder/'recording.mp4.part')
         live_store.update_record(record['id'], error=live_worker.ERRORS['network'], duration_seconds=3)
         catalog.register_root(str(self.library))
-        with patch.object(library_service, '_stopping', False):
+        with (patch.object(library_service, '_stopping', False),
+              patch.object(live_service.mail_delivery, 'recording_saved') as receipt):
             self.assertTrue(await live_service._publish(live_store.get_record(record['id']), 'interrupted', 'worker_error'))
+        receipt.assert_not_called()
         saved = live_store.get_record(record['id'])
         self.assertIn('连接超时', saved['error'])
         task = TaskStore().get('live-' + record['id'])

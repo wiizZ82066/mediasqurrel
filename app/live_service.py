@@ -6,7 +6,7 @@ import sqlite3
 import threading
 import time
 
-from . import catalog, config, db, library_service, live_douyin, live_recorder, live_store, live_scheduling, live_tasks, task_manager, watcher, live_merge, live_collections
+from . import catalog, config, db, library_service, live_douyin, live_recorder, live_store, live_scheduling, live_tasks, task_manager, watcher, live_merge, live_collections, mail_delivery
 from .live_worker import ERRORS
 
 MAX_RECORDINGS = 2
@@ -103,6 +103,8 @@ async def _publish(record, status, reason):
             raise ValueError('index pending')
         live_store.update_record(record['id'], status=status, reason=reason, finished_at=db.utc_now(),
                                 entry_id=entry['id'], error=record.get('error', '') if status == 'interrupted' else '')
+        if status in ('completed', 'stopped'):
+            mail_delivery.recording_saved(record['id'])
         await task_manager.broadcast({'type': 'library_updated'})
         return True
     except Exception:

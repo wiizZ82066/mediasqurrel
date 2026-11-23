@@ -8,7 +8,7 @@ import re
 import sqlite3
 import time
 
-from . import config, db, mail_media
+from . import config, db, mail_media, mail_recording
 
 LIMIT = 32 * 1024**2  # Encoded message ceiling; honour a smaller advertised SMTP SIZE.
 _ADDRESS = re.compile(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,63}@(?:qq|foxmail)\.com', re.I)
@@ -42,6 +42,13 @@ def connect():
 def initialize():
     with connect() as c:
         c.executescript(_SCHEMA)
+        c.execute('BEGIN IMMEDIATE')
+        if c.execute('PRAGMA user_version').fetchone()[0] == 0:
+            c.execute("ALTER TABLE preferences ADD COLUMN recording_since TEXT NOT NULL DEFAULT ''")
+            c.execute("ALTER TABLE delivery ADD COLUMN recording_body TEXT")
+            # An existing download subscription can predate this feature by months.
+            c.execute('UPDATE preferences SET recording_since=? WHERE id=1', (utc_now(),))
+            c.execute('PRAGMA user_version=1')
         # A disconnect after DATA has no safe automatic retry.
         c.execute("UPDATE delivery SET state='uncertain', reason='发送时程序退出，请先核对收件箱。' WHERE state='sending'")
         c.execute("UPDATE delivery SET state='queued' WHERE state='preparing'")
@@ -70,7 +77,8 @@ def preferences(c):
 def public():
     with connect() as c:
         p = preferences(c)
-        recent = [dict(r) for r in c.execute('''SELECT id,sample,state,done,total,reason,updated,caption FROM delivery
+        recent = [dict(r) for r in c.execute('''SELECT id,sample,state,done,total,reason,updated,caption,
+            recording_body IS NOT NULL AS recording FROM delivery
             ORDER BY updated DESC LIMIT 8''')]
         active = c.execute("SELECT count(*) FROM delivery WHERE state IN ('queued','preparing','sending')").fetchone()[0]
     return dict(sender=p['sender'], recipient=p['recipient'], has_code=bool(p['sealed']), enabled=bool(p['enabled']),
@@ -139,6 +147,36 @@ def recover():
                     return
                 for row in batch:
                     add(c, row['id'], row['id'], False)
+    capture_recordings()
+
+
+def capture_recordings(identity=None):
+    """Queue one newly published source, or recover eligible completions missed in a crash."""
+    with connect() as c:
+        p = preferences(c)
+        if not p['enabled']:
+            return
+        since = max(p['since'], p['recording_since'])
+    sql, args = mail_recording.ARCHIVED, (since,)
+    if identity is not None:
+        sql += ' AND r.id=?'
+        args += (identity,)
+    with db.connect(existing=True) as source:
+        rows = source.execute(sql, args)
+        while batch := rows.fetchmany(100):
+            with connect() as c:
+                c.execute('BEGIN IMMEDIATE')
+                current = preferences(c)
+                if (not current['enabled'] or current['since'] != p['since'] or
+                        current['sender'] != p['sender'] or current['recipient'] != p['recipient']):
+                    return
+                now = time.time()
+                for row in batch:
+                    key = 'live-' + row['id']
+                    caption, body = mail_recording.receipt(row)
+                    c.execute("""INSERT OR IGNORE INTO delivery
+                        (id,task_id,sample,state,due,updated,total,caption,recording_body)
+                        VALUES (?,?,0,'queued',?,?,1,?,?)""", (key, key, now, now, caption, body))
 
 
 def queue_test(task_id):

@@ -5,7 +5,7 @@ import { api } from '../api.js'
 const settings = ref(null), example = ref(null), busy = ref(''), error = ref(''), notice = ref('')
 const fields = reactive({ sender: '', recipient: '', code: '', enabled: false })
 const confirming = ref(''), expanded = ref(false)
-const labels = { queued: '等待发送', preparing: '正在准备附件', sending: '正在发送', sent: 'QQ 邮箱已接收',
+const labels = { queued: '等待发送', preparing: '正在准备邮件', sending: '正在发送', sent: 'QQ 邮箱已接收',
   failed: '发送失败', uncertain: '需要核对收件箱', cancelled: '已取消' }
 let timer, alive = true
 const changed = computed(() => settings.value && (fields.sender.trim() !== settings.value.sender ||
@@ -70,10 +70,10 @@ onBeforeUnmount(() => { alive = false; clearTimeout(timer); fields.code = ''; do
 
 <template>
   <section class="mail-section" aria-labelledby="mail-heading">
-    <h2 id="mail-heading">下载邮件</h2>
+    <h2 id="mail-heading">邮件通知</h2>
     <div class="mail-sheet">
       <button class="mail-toggle" type="button" :aria-expanded="expanded" aria-controls="mail-preferences" @click="expanded = !expanded">
-        <span><strong>QQ 邮箱附件</strong><small>{{ settings?.enabled ? '新下载的作品将发到 ' + settings.recipient : '图片、Live 图和普通视频可直接发到手机' }}</small></span>
+        <span><strong>QQ 邮箱</strong><small>{{ settings?.enabled ? '作品附件和录播完成提醒将发到 ' + settings.recipient : '接收作品附件和录播完成提醒' }}</small></span>
         <span class="toggle-label">{{ expanded ? '收起' : '设置' }}</span>
       </button>
       <div v-if="expanded && settings" id="mail-preferences" class="mail-body">
@@ -86,8 +86,8 @@ onBeforeUnmount(() => { alive = false; clearTimeout(timer); fields.code = ''; do
           <label>发件邮箱授权码<input v-model="fields.code" type="password" :required="needsCode" maxlength="64" autocomplete="new-password"
             :placeholder="needsCode ? '在 QQ 邮箱的账号与安全设置中生成' : '已安全保存，留空可继续使用'"></label>
           <p class="hint">在发件邮箱开启 SMTP 后生成授权码。<a href="https://mail.qq.com/" target="_blank" rel="noopener noreferrer">打开 QQ 邮箱</a></p>
-          <label class="check-line"><input v-model="fields.enabled" type="checkbox">下载完成后自动发送</label>
-          <p class="hint">适用于开启后完成的手动和订阅下载，自动跳过录播。大作品按容量分封发送。</p>
+          <label class="check-line"><input v-model="fields.enabled" type="checkbox">下载或录播完成后自动发邮件</label>
+          <p class="hint">下载作品随邮件附上，大作品分封发送。录播正常下播或手动停止并入库后，只发送文字摘要。</p>
           <button class="btn btn-primary btn-sm" type="submit" :disabled="!!busy || !settings.supported || !changed">{{ busy === 'save' ? '正在保存…' : '保存邮箱设置' }}</button>
         </form>
         <div class="test-area">
@@ -102,7 +102,7 @@ onBeforeUnmount(() => { alive = false; clearTimeout(timer); fields.code = ''; do
         <div v-if="settings.recent.length" class="history">
           <h3>最近投递</h3>
           <div v-for="row in settings.recent" :key="row.id" class="receipt">
-            <div><strong>{{ row.sample ? '测试作品' : '下载作品' }} · {{ labels[row.state] }}</strong>
+            <div><strong>{{ row.recording ? '录播完成' : row.sample ? '测试作品' : '下载作品' }} · {{ labels[row.state] }}</strong>
               <p v-if="row.caption">{{ row.caption }}</p>
               <small>{{ date(row.updated) }}<template v-if="row.total"> · {{ row.done }}/{{ row.total }} 封</template></small>
               <p v-if="row.reason">{{ row.reason }}</p></div>
