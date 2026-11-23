@@ -1,10 +1,16 @@
 // API 封装：REST + WebSocket
 const base = ''
 
+export function pageWebVersion() {
+  return globalThis.document?.querySelector?.('meta[name="media-squirrel-web"]')?.content || ''
+}
+
 async function request(path, options = {}) {
+  const version = pageWebVersion()
+  const pinned = version && /^\/api\/(home(?:$|\?)|scripts(?:$|\?)|activity(?:$|\?)|web\/)/.test(path)
   const res = await fetch(base + path, {
-    headers: { 'Content-Type': 'application/json' },
     ...options,
+    headers: { 'Content-Type': 'application/json', ...(pinned ? { 'X-MS-Web': version } : {}), ...options.headers },
   })
   if (!res.ok) {
     let detail = res.statusText
@@ -115,6 +121,7 @@ export const api = {
   home: (signal) => req('/api/home', { signal }),
   activity: (signal) => req('/api/activity', { signal }),
   settings: (signal) => req('/api/settings', { signal }),
+  releaseStatus: () => req('/api/runtime/release'),
   accountStatus: () => req('/api/settings/accounts'),
   pickDatabase: () => req('/api/settings/database/pick', {method:'POST'}),
   previewDatabase: (directory) => req('/api/settings/database/preview', {method:'POST', body:JSON.stringify({directory})}),

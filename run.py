@@ -342,12 +342,17 @@ def main():
     ap.add_argument("--no-watchdog", action="store_true", help="禁用 stdin 看门狗（桌面模式父进程存活检测）")
     ap.add_argument("--port", type=int, default=config.PORT, help=f"端口（默认 {config.PORT}）")
     ap.add_argument("--reload", action="store_true", help="开发模式热重载")
+    action = ap.add_mutually_exclusive_group()
+    action.add_argument('--publish', action='store_true', help='将当前源码发布到已运行的本机实例')
+    action.add_argument('--rollback-web', action='store_true', help='切回上一个兼容的网页和接口版本')
     ap.add_argument('--background', action='store_true', help='Windows 隐藏控制台并保留托盘')
     ap.add_argument('--console', action='store_true', help='保留控制台（可用于 start.bat 排错）')
     ap.add_argument('--background-child', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--autostart', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--paths-file', help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.publish or args.rollback_web:
+        args.no_browser = True
     if _BACKGROUND:
         from app.windows_host import relaunch_if_needed
         if relaunch_if_needed(sys.argv[1:]):
@@ -358,7 +363,7 @@ def main():
         print(f'[startup] 进程 PID={os.getpid()}，父进程 PID={os.getppid()}；'
               f'入口标记={"autostart" if args.autostart else "background"}；端口={args.port}')
 
-    if args.background and not (args.console or args.no_tray or args.reload or _BACKGROUND):
+    if args.background and not (args.console or args.no_tray or args.reload or args.publish or args.rollback_web or _BACKGROUND):
         from app.windows_runtime import launch_background
         try:
             launch_background(sys.argv[1:])
@@ -390,10 +395,24 @@ def _serve_or_reopen(args, expected, existing):
     url = f"http://{config.HOST}:{args.port}"
     if existing:
         problem = existing_instance_problem(existing, expected)
+        supported = (existing.get('publish_protocol') == 1 and existing.get('instance_id') == expected['instance_id']
+                     and existing.get('source_id') == expected['source_id'])
+        if supported and (problem or args.publish or args.rollback_web):
+            from app.publish_client import publish
+            try:
+                state = publish(args.port, expected, rollback=args.rollback_web)
+            except (OSError, ValueError, RuntimeError) as error:
+                raise SystemExit(str(error))
+            print('[发布] ' + (state['message'] or '网页和接口已是当前版本。'))
+            if not args.no_browser:
+                webbrowser.open(url)
+            return
+        if args.publish or args.rollback_web:
+            raise SystemExit(problem or '当前后台未启用源码平滑发布。')
         if problem:
             raise SystemExit(problem)
         try:
-            build_state = ensure_frontend(build=False)
+            build_state = 'current' if supported else ensure_frontend(build=False)
         except (RuntimeError, OSError) as error:
             raise SystemExit(str(error))
         if build_state not in ('current', 'external'):
@@ -403,12 +422,19 @@ def _serve_or_reopen(args, expected, existing):
         if not args.no_browser:
             webbrowser.open(url)
         return
+    if args.publish or args.rollback_web:
+        raise SystemExit('未找到正在运行的服务，请先正常启动 Media Squirrel。')
     if port_in_use(args.port):
         raise SystemExit(f'端口 {args.port} 被其他程序占用。可使用 python run.py --port 9000；未终止其他程序。')
+    from app import runtime
+    source_mode = not (args.reload or getattr(sys, 'frozen', False) or os.environ.get('MS_DESKTOP_TOKEN') or os.environ.get('MS_DEV') == '1')
     try:
         ensure_frontend()
     except (RuntimeError, OSError, subprocess.SubprocessError) as error:
-        raise SystemExit(str(error))
+        pointer = Path(config.DATA_DIR) / 'web-releases' / expected['source_id'] / 'current.json'
+        if not source_mode or not pointer.is_file():
+            raise SystemExit(str(error))
+        print('[发布] 前端构建暂不可用，将核验已发布的网页版本。')
     print(f'[*] Media Squirrel 启动中：{url}')
     print('[*] 关闭网页会继续后台运行；从托盘选择退出或按 Ctrl+C 才会停止扫描。')
     if not args.no_browser:
@@ -417,7 +443,6 @@ def _serve_or_reopen(args, expected, existing):
         uvicorn.run('app.main:app', host=config.HOST, port=args.port, reload=True, log_level='info', timeout_graceful_shutdown=10)
         return
     service = uvicorn.Server(uvicorn.Config('app.main:app', host=config.HOST, port=args.port, log_level='info', timeout_graceful_shutdown=10))
-    from app import runtime
     restart_requested = threading.Event()
 
     def request_restart():
@@ -426,6 +451,7 @@ def _serve_or_reopen(args, expected, existing):
 
     if not getattr(sys, 'frozen', False) and not os.environ.get('MS_DESKTOP_TOKEN'):
         runtime.restart_handler = request_restart
+        runtime.web_publishing = source_mode
     if os.environ.get('MS_DESKTOP_TOKEN') or getattr(sys, 'frozen', False):
         _stdin_watchdog(lambda: setattr(service, 'should_exit', True))
     if args.no_tray:
@@ -433,6 +459,7 @@ def _serve_or_reopen(args, expected, existing):
             service.run()
         finally:
             runtime.restart_handler = None
+            runtime.web_publishing = False
         if not service.started:
             raise SystemExit('本地服务启动失败，请检查上方错误。')
         return restart_requested.is_set()
@@ -464,6 +491,7 @@ def _serve_or_reopen(args, expected, existing):
         service.should_exit = True
         worker.join()
         runtime.restart_handler = None
+        runtime.web_publishing = False
     return restart_requested.is_set()
 
 

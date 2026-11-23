@@ -2,7 +2,7 @@
 import asyncio
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from . import catalog, db, library_service, live_api, live_service, task_authors, task_manager, watcher
 
@@ -57,19 +57,21 @@ def snapshot(active_ids=(), scanning_ids=()):
     }, dict(selected) if selected else None, dict(record) if record else None
 
 
-@router.get('/api/home')
-async def home():
+async def web_data():
     active_ids = tuple(live_service._active)
     scans = [(identity, state) for identity, state in watcher.SCAN_STATES.items() if state.get('status') == 'running']
     result, monitor, record = await asyncio.to_thread(snapshot, active_ids, tuple(identity for identity, _ in scans))
     # Runtime state is resolved on the event loop, using the same rules as subscriptions.
-    result['live']['active'] = live_service.active_count()
     current = live_api.monitor_status(monitor, record) if monitor else None
-    result['live']['current'] = ({key: current.get(key) for key in (
+    current = ({key: current.get(key) for key in (
         'sub_id', 'nickname', 'enabled', 'runtime_status', 'next_check_at', 'record')}
         if current else None)
-    result['scans']['active'] = len(scans)
-    result['scans']['progress'] = scans[0][1].get('progress') if scans else None
-    result['updated_at'] = db.utc_now()
     library_service.enrich_page(result['recent'])
-    return result
+    return {'summary': result, 'monitor': current, 'active': live_service.active_count(), 'scanning': len(scans),
+            'progress': scans[0][1].get('progress') if scans else None, 'updated_at': db.utc_now()}
+
+
+@router.get('/api/home')
+async def home(request: Request = None):
+    from .web_release import render
+    return await render('/api/home', request.headers.get('x-ms-web', '') if request else '')

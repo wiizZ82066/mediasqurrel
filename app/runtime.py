@@ -18,6 +18,7 @@ from . import config
 
 # Installed by the source launcher only while it owns the serving process.
 restart_handler = None
+web_publishing = False
 
 
 def instance_id():
@@ -30,6 +31,19 @@ def runtime_identity(source=None):
     The server captures this once while importing its application. Calling it
     from a health request would wrongly identify old loaded code as new code.
     """
+    parts = release_identity(source)
+    return {key: parts[key] for key in ('instance_id', 'source_id', 'code_signature')}
+
+
+def web_signature(frontend, api):
+    return hashlib.sha256(f'{frontend}:{api}'.encode('ascii')).hexdigest()
+
+
+def combined_signature(core, web):
+    return hashlib.sha256(f'{core}:{web}'.encode('ascii')).hexdigest()
+
+
+def release_identity(source=None):
     root = Path(source or config.SOURCE_DIR).resolve()
     files = {root / name for name in (
         'run.py', 'weibo_downloader.py', 'douyin_downloader.py',
@@ -43,15 +57,24 @@ def runtime_identity(source=None):
                      if not any(part.startswith('.') or part in ('tests', '__pycache__')
                                 for part in path.relative_to(root / directory).parts))
     digest = hashlib.sha256()
+    api_path = root / 'app' / 'web_api.py'
+    api_hash = ''
     for path in sorted(files):
         if path.is_file():
             if path.is_symlink() or not path.resolve().is_relative_to(root):
                 raise RuntimeError('运行源码不能引用源码目录外的文件')
-            digest.update(path.relative_to(root).as_posix().encode('utf-8') + b'\0')
-            digest.update(hashlib.sha256(path.read_bytes()).digest())
-    digest.update(b'frontend\0' + frontend_signature(root / 'frontend').encode('ascii'))
+            content = hashlib.sha256(path.read_bytes())
+            if path == api_path:
+                api_hash = content.hexdigest()
+            else:
+                digest.update(path.relative_to(root).as_posix().encode('utf-8') + b'\0')
+                digest.update(content.digest())
+    core = digest.hexdigest()
+    frontend = frontend_signature(root / 'frontend')
+    web = web_signature(frontend, api_hash)
     source_id = hashlib.sha256(os.path.normcase(str(root)).encode('utf-8')).hexdigest()[:20]
-    return {'instance_id': instance_id(), 'source_id': source_id, 'code_signature': digest.hexdigest()}
+    return {'instance_id': instance_id(), 'source_id': source_id, 'code_signature': combined_signature(core, web),
+            'core': core, 'web': web, 'frontend': frontend, 'api': api_hash}
 
 
 def existing_instance_problem(existing, expected):
@@ -62,7 +85,8 @@ def existing_instance_problem(existing, expected):
         reason = '正在运行的旧实例未提供启动代码标识，无法确认它是否包含本次修改。'
     elif existing['source_id'] != expected['source_id']:
         reason = '正在运行的 Media Squirrel 来自另一份源码目录。'
-    elif existing['code_signature'] != expected['code_signature']:
+    elif (existing['code_signature'] != expected['code_signature'] and not
+          (existing.get('publish_protocol') == 1 and existing.get('requested_signature') == expected['code_signature'])):
         reason = '当前源码已更新，但后台仍在运行启动时的旧代码。'
     else:
         return None

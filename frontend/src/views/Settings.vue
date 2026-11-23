@@ -13,6 +13,8 @@ const startup = ref(null), startupLoading = ref(false), startupSaving = ref(fals
 const editing = ref(false), directory = ref(''), preview = ref(null), directoryError = ref(''), directoryBusy = ref('')
 const pathField = ref(null), changeButton = ref(null), restarting = ref(false)
 const busy = ref(''), checks = ref([]), folderOpening = ref('')
+const release = ref(null)
+let releaseTimer, releaseRead = 0
 let timer, restartTimer, disposed = false
 let accountRead = 0, unsubscribeAccounts
 const startupChecked = computed(() => !!(startup.value?.enabled && startup.value?.matches_current))
@@ -155,6 +157,17 @@ async function refreshAccounts() {
   const pending = accounts.some(({ platform }) => store.accountLogin[platform].status === 'pending')
   timer = setTimeout(refreshAccounts, pending ? 1000 : 30000)
 }
+async function refreshRelease() {
+  const read = ++releaseRead
+  clearTimeout(releaseTimer)
+  if (disposed || document.hidden) return
+  try {
+    const value = await api.releaseStatus()
+    if (!disposed && read === releaseRead) release.value = value
+  } catch { /* The socket reconnect also refreshes after a core switch. */ }
+  if (!disposed && read === releaseRead && ['publishing','waiting'].includes(release.value?.state))
+    releaseTimer = setTimeout(refreshRelease, 3000)
+}
 onMounted(() => {
   const content = document.querySelector('.content')
   if (content) content.scrollTop = 0
@@ -163,8 +176,11 @@ onMounted(() => {
   window.addEventListener('focus', loadStartup)
   unsubscribeAccounts = onTaskEvent(event => {
     if (event.type === 'account_status' || event.type === 'reconnect') refreshAccounts()
+    if (event.type === 'web_release' || event.type === 'reconnect') refreshRelease()
   })
   document.addEventListener('visibilitychange', refreshAccounts)
+  document.addEventListener('visibilitychange', refreshRelease)
+  refreshRelease()
   refreshAccounts()
 })
 onBeforeUnmount(() => {
@@ -172,6 +188,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('focus', loadStartup)
   unsubscribeAccounts?.()
   document.removeEventListener('visibilitychange', refreshAccounts)
+  document.removeEventListener('visibilitychange', refreshRelease)
+  clearTimeout(releaseTimer)
   clearTimeout(timer)
   clearTimeout(restartTimer)
 })
@@ -231,7 +249,13 @@ onBeforeUnmount(() => {
           <p v-if="directoryError && !editing" class="inline-issue issue" role="alert">{{ directoryError }}</p>
           <details class="fold">
             <summary><h3>版本信息</h3><span class="version">Media Squirrel {{ settings.version }}</span><AppIcon name="chevron-right" :size="16" class="chevron"/></summary>
-            <div class="fold-body"><dl><template v-for="(value,key) in settings.versions" :key="key"><dt>{{ key }}</dt><dd>{{ value ?? '未安装' }}</dd></template></dl><a href="/licenses/README.md" target="_blank" rel="noopener">图标来源与许可</a></div>
+            <div class="fold-body">
+              <dl><template v-for="(value,key) in settings.versions" :key="key"><dt>{{ key }}</dt><dd>{{ value ?? '未安装' }}</dd></template>
+                <template v-if="release?.web"><dt>网页版本</dt><dd><code>{{ release.web.slice(0, 12) }}</code></dd></template>
+              </dl>
+              <p v-if="release?.message" role="status">{{ release.state === 'waiting' ? '等待后台更新 · ' : '' }}{{ release.message }}</p>
+              <a href="/licenses/README.md" target="_blank" rel="noopener">图标来源与许可</a>
+            </div>
           </details>
         </div>
       </section>

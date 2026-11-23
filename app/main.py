@@ -4,20 +4,21 @@ import contextlib
 import datetime as _dt
 import os
 import secrets
+import subprocess
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import config, media_library, script_registry, task_manager, watcher, library_service
+from . import config, media_library, task_manager, watcher, library_service
 from .library_api import router as library_router
 from .security import LocalOnlyMiddleware, media_path
 from .media_response import MediaFileResponse
 from .redaction import redact_text
 from .runtime import InstanceLock, runtime_identity
 from . import settings
+from . import web_release, web_bundle, runtime
 from . import mail_api, mail_delivery
 from . import settings_api, maintenance, db
 from . import windows_api, subscription_batch, live_service, subscription_standby
@@ -124,6 +125,7 @@ async def lifespan(_app: FastAPI):
     database_lock = None
     try:
         config.ensure_runtime_dirs()
+        await web_release.start(_STARTUP_HEALTH)
         if config._database_override:
             from .database_location import inspect_database
             inspect_database(Path(config.DB_PATH))
@@ -155,7 +157,7 @@ async def lifespan(_app: FastAPI):
             from .sub_search import stop_searches
             # Each owner receives shutdown even if a different cleanup fails.
             from . import account_status
-            for stop in (subscription_standby.stop, account_status.stop, settings_api.stop, stop_searches, subscription_batch.stop, live_service.stop, watcher.stop_scheduler, task_manager.shutdown, mail_delivery.stop, library_service.stop):
+            for stop in (web_release.stop, subscription_standby.stop, account_status.stop, settings_api.stop, stop_searches, subscription_batch.stop, live_service.stop, watcher.stop_scheduler, task_manager.shutdown, mail_delivery.stop, library_service.stop):
                 try:
                     await stop()
                 except Exception as error:
@@ -190,13 +192,42 @@ app.include_router(home_router)
 @app.get("/api/health")
 def api_health():
     """Local launcher identity and readiness check."""
-    return dict(_STARTUP_HEALTH)
+    return {**_STARTUP_HEALTH, **(web_release.manager.health() if web_release.manager else {})}
+
+
+@app.get('/api/runtime/release')
+async def release_status():
+    return web_release.manager.status() if web_release.manager else {'state': 'external', 'message': '', 'web': '', 'previous': ''}
+
+
+@app.post('/api/runtime/release')
+async def publish_release(request: Request, body: dict):
+    service = web_release.manager
+    if not service or not service.authorize(request.headers.get('x-ms-launcher', '')):
+        raise HTTPException(403, '请通过本机源码启动器发布')
+    try:
+        if body == {'action': 'rollback'}:
+            await service.rollback()
+        elif set(body) == {'code_signature'}:
+            await service.publish(web_bundle.key(body['code_signature']))
+        else:
+            raise ValueError('无效的发布操作')
+    except (ValueError, OSError, RuntimeError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        await task_manager.broadcast({'type': 'web_release', 'release': service.status()})
+        detail = service.message if service.state == 'failed' else str(error) if isinstance(error, ValueError) else ''
+        raise HTTPException(409, detail or '发布未能完成，请核对构建和接口兼容性') from None
+    await task_manager.broadcast({'type': 'web_release', 'release': service.status()})
+    return service.status()
+
+
+@app.get('/api/web/{name}')
+async def web_endpoint(name: str, request: Request):
+    return await web_release.render('/api/web/' + name, request.headers.get('x-ms-web', ''))
 
 
 @app.get('/api/activity')
-async def api_activity():
-    from . import activity
-    return {**activity.counts(), 'recordings': live_service.active_recordings()}
+async def api_activity(request: Request):
+    return await web_release.render('/api/activity', request.headers.get('x-ms-web', ''))
 
 
 # ---------------------------------------------------------------- 脚本清单
@@ -231,13 +262,8 @@ async def api_update_lock(request: Request, body: dict):
     return task_manager.update_state(acquire=action == 'acquire')
 
 @app.get("/api/scripts")
-def api_scripts():
-    return [
-        {
-            k: v for k, v in m.items() if not k.startswith("_")
-        } | {"available": m["_available"]}
-        for m in script_registry.all_scripts()
-    ]
+async def api_scripts(request: Request):
+    return await web_release.render('/api/scripts', request.headers.get('x-ms-web', ''))
 
 
 # ---------------------------------------------------------------- 任务
@@ -335,7 +361,14 @@ def api_restore_task(task_id: str):
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
+    service, pinned = web_release.manager, None
     try:
+        if service and ws.query_params.get('web'):
+            try:
+                pinned = await service.pin(ws.query_params['web'])
+            except HTTPException:
+                # Task and recording events keep flowing to a previously opened page.
+                pass
         storage = subscription_standby.status()
         if storage['message'] and storage['mode'] != 'primary':
             await ws.send_json({'type': 'notification', 'level': 'info', 'title': '订阅存储', 'text': storage['message']})
@@ -346,6 +379,8 @@ async def ws_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        if pinned:
+            service.unpin(pinned)
         await task_manager.detach_socket(ws)
 
 
@@ -627,29 +662,46 @@ def api_media_file(path: str):
 
 # 前端构建产物（存在才挂载）
 _DIST = config.FRONTEND_DIST
-if os.path.isfile(os.path.join(_DIST, 'index.html')) and os.path.isdir(os.path.join(_DIST, 'assets')):
-    app.mount("/assets", StaticFiles(directory=os.path.join(_DIST, "assets")), name="assets")
-    if os.path.isdir(os.path.join(_DIST, 'licenses')):
-        app.mount('/licenses', StaticFiles(directory=os.path.join(_DIST, 'licenses')), name='licenses')
+if runtime.web_publishing or (os.path.isfile(os.path.join(_DIST, 'index.html')) and os.path.isdir(os.path.join(_DIST, 'assets'))):
+    def public_file(name, **options):
+        try:
+            service = web_release.manager
+            path = service.active.bundle.public(name) if service else web_bundle.child(Path(_DIST), name)
+            if not path or not path.is_file():
+                raise ValueError
+        except (ValueError, OSError):
+            raise HTTPException(404, '网页资源不存在') from None
+        return FileResponse(path, **options)
+
+    @app.api_route('/assets/{asset:path}', methods=['GET', 'HEAD'])
+    async def serve_asset(asset: str):
+        return public_file('assets/' + asset)
+
+    @app.api_route('/licenses/{name:path}', methods=['GET', 'HEAD'])
+    async def serve_license(name: str):
+        return public_file('licenses/' + name)
 
     @app.get('/squirrel.svg')
     def serve_logo():
-        return FileResponse(os.path.join(_DIST, 'squirrel.svg'), media_type='image/svg+xml')
+        return public_file('squirrel.svg', media_type='image/svg+xml')
 
     @app.get("/")
     async def serve_index():
-        return FileResponse(os.path.join(_DIST, "index.html"), headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"})
+        headers = {'Cache-Control': 'no-cache, max-age=0, must-revalidate'}
+        if web_release.manager:
+            return HTMLResponse(web_release.manager.active.bundle.html, headers=headers)
+        return public_file('index.html', headers=headers)
 
     # SPA fallback：未知路径（非 API/媒体）返回 index.html，交给前端路由
     @app.exception_handler(404)
     async def spa_fallback(request, exc):
         path = request.url.path
         if (
-            not path.startswith(("/api", "/media", "/assets", "/ws"))
+            not path.startswith(("/api", "/media", "/assets", "/licenses", "/ws", "/squirrel.svg"))
             and not path.startswith("/docs")
             and "text/html" in request.headers.get("accept", "")
         ):
-            return FileResponse(os.path.join(_DIST, "index.html"), headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"})
+            return await serve_index()
         return JSONResponse({"detail": "Not Found"}, status_code=404)
 else:
     @app.get("/")

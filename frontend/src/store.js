@@ -1,6 +1,6 @@
 // 全局实时状态：任务列表 + WebSocket 订阅 + 通知中心 + toast
 import { reactive } from 'vue'
-import { api } from './api.js'
+import { api, pageWebVersion } from './api.js'
 import { newerBatch } from './subscription-homepage.js'
 
 export const store = reactive({
@@ -121,7 +121,8 @@ function backgroundToast(key, text, kind, to) {
 export function connectWS() {
   if (ws) return
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  ws = new WebSocket(`${proto}://${location.host}/ws`)
+  const version = pageWebVersion()
+  ws = new WebSocket(`${proto}://${location.host}/ws${version ? '?web=' + encodeURIComponent(version) : ''}`)
 
   ws.onopen = () => {
     store.wsConnected = true

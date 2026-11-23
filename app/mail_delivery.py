@@ -13,13 +13,18 @@ import time
 
 from fastapi import HTTPException
 
-from . import mail_media, mail_store
+from . import config, mail_media, mail_store
 
 _wake = None
 _worker = None
 _enabled = False
 _closing = threading.Event()
 _pending_recordings = set()
+_working = False
+
+
+def busy():
+    return _working or bool(_pending_recordings)
 
 
 def _envelope(subject, job, sender, recipient, ordinal):
@@ -170,8 +175,13 @@ def recording_saved(identity):
 
 
 async def loop():
+    global _working
     recover = True
     while not _closing.is_set():
+        if config.MAINTENANCE_ACTIVE:
+            await asyncio.sleep(.5)
+            continue
+        _working = True
         _wake.clear()
         try:
             if recover and _enabled:
@@ -189,6 +199,8 @@ async def loop():
             timeout = value
         except (OSError, sqlite3.Error):
             timeout = 60
+        finally:
+            _working = False
         if recover and _enabled:
             timeout = 60 if timeout is None else min(timeout, 60)
         if not _closing.is_set():
