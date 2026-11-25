@@ -8,6 +8,7 @@ import time
 
 from . import catalog, config, db, library_service, live_douyin, live_recorder, live_store, live_scheduling, live_tasks, task_manager, watcher, live_merge, live_collections, mail_delivery
 from .live_worker import ERRORS
+from . import live_playback
 
 MAX_RECORDINGS = 2
 MAX_CHECKS = 2
@@ -119,6 +120,8 @@ async def _record(record, info, owner):
     sub_id = record['sub_id']
     status, reason = 'interrupted', 'worker_error'
     result = {}
+    finished = asyncio.Event()
+    preview_index = asyncio.create_task(live_playback.warm_recording(record['id'], owner, finished))
     def progress(value):
         seconds = max(0, float(value.get('seconds', 0)))
         if seconds > owner.get('seconds', 0):
@@ -161,6 +164,7 @@ async def _record(record, info, owner):
         live_store.update_record(record['id'], error=REASONS['worker_error'])
     finally:
         owner['finalizing'] = True
+        finished.set()
         try:
             record = live_store.get_record(record['id'])
             published = await _publish(record, status, reason) if record['output_rel'] else False
@@ -181,6 +185,7 @@ async def _record(record, info, owner):
                         error='', failures=0, **live_scheduling.cursors(monitor))
             await _notify(record, status if published else 'interrupted', reason)
         finally:
+            await asyncio.gather(preview_index, return_exceptions=True)
             _active.pop(sub_id, None)
             await task_manager.broadcast({'type': 'activity_changed'})
 

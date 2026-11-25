@@ -1,6 +1,7 @@
 """An independent reader can rewind a growing recording while its writer appends and publishes it."""
 
 from contextlib import ExitStack
+import asyncio
 import json
 from pathlib import Path
 import tempfile
@@ -50,7 +51,8 @@ class LiveWatchTests(unittest.TestCase):
     def test_partial_fragment_waits_then_becomes_readable_without_changing_prior_urls(self):
         one, two = fragment(0), fragment(4000)
         self.path.write_bytes(movie() + one[:-2])
-        self.assertEqual(self.client.get(self.url).status_code, 503)
+        pending = self.client.get(self.url)
+        self.assertEqual((pending.status_code, pending.headers['Retry-After']), (503, '1'))
         with self.path.open('ab') as writer:
             writer.write(one[-2:] + two[:-10])
             writer.flush()
@@ -79,6 +81,52 @@ class LiveWatchTests(unittest.TestCase):
         self.assertEqual(self.client.get(url).content, one)
         self.assertIn('#EXT-X-ENDLIST', self.client.get(self.url).text)
         self.assertEqual(self.client.get(urljoin(self.url, new.splitlines()[-1])).content, two)
+
+    def test_first_view_reuses_warmed_headers_then_indexes_only_appended_fragments(self):
+        self.path.write_bytes(movie() + fragment(0))
+        with patch.object(live_playback.mp4, '_fragment', wraps=live_playback.mp4._fragment) as parse:
+            live_playback.playlist(self.identity, warm_only=True)
+            first = self.client.get(self.url)
+            self.assertEqual((first.status_code, parse.call_count), (200, 1))
+            with self.path.open('ab') as writer:
+                writer.write(fragment(4000))
+            live_playback.playlist(self.identity, warm_only=True)
+            second = self.client.get(self.url)
+            self.assertTrue(second.text.startswith(first.text))
+            self.assertEqual((second.text.count('#EXTINF:'), parse.call_count), (2, 2))
+
+    def test_index_backlog_continues_at_its_cursor_without_waiting_for_the_writer(self):
+        self.path.write_bytes(movie() + fragment(0) + fragment(4000))
+        with patch.object(live_playback, '_REQUEST_BUDGET', 0):
+            for attempt in range(12):
+                response = self.client.get(self.url)
+                if response.status_code == 200:
+                    break
+                self.assertEqual((response.status_code, response.headers['Retry-After']), (503, '0'))
+            self.assertGreater(attempt, 0)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.text.count('#EXTINF:'), 2)
+
+    def test_warming_does_not_poll_a_stalled_or_stopped_writer(self):
+        async def run():
+            owner = {'seconds': 1, 'stop': threading.Event()}
+            finished, indexed = asyncio.Event(), asyncio.Event()
+            loop = asyncio.get_running_loop()
+            with patch.object(live_playback, '_WARM_INTERVAL', .005), \
+                    patch.object(live_playback, 'playlist', side_effect=lambda *a, **kw: loop.call_soon_threadsafe(indexed.set)) as warm:
+                task = asyncio.create_task(live_playback.warm_recording(self.identity, owner, finished))
+                try:
+                    await asyncio.wait_for(indexed.wait(), 3)
+                    await asyncio.sleep(.025)
+                    warm.assert_called_once_with(self.identity, warm_only=True)
+                    owner['stop'].set()
+                    owner['seconds'] = 2
+                    await asyncio.sleep(.025)
+                    self.assertEqual(warm.call_count, 1)
+                finally:
+                    finished.set()
+                    await asyncio.wait_for(task, 3)
+        asyncio.run(run())
 
     def test_recording_replaced_or_removed_cannot_serve_cached_segments(self):
         self.path.write_bytes(movie() + fragment(0) + fragment(4000))

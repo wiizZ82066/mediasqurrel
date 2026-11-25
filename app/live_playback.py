@@ -2,8 +2,10 @@
 
 from collections import OrderedDict
 from contextlib import contextmanager
+import asyncio
 import os
 import re
+import sqlite3
 import struct
 import threading
 import time
@@ -19,6 +21,9 @@ router = APIRouter(prefix='/api/live/recordings')
 _guard = threading.RLock()
 _indexes = OrderedDict()
 _TARGET_DURATION = 6  # FFmpeg flushes at a keyframe or after five seconds plus a sample boundary.
+_WARM_INTERVAL = 12
+_WARM_BUDGET = 0.08
+_REQUEST_BUDGET = 0.75
 
 
 def open_reader(path):
@@ -113,10 +118,10 @@ class GrowingIndex:
             ).encode('ascii')
         )
 
-    def extend(self, stream, size):
-        """Resume at the last complete box. Never read the compressed video payload."""
+    def extend(self, stream, size, budget):
+        """Return whether we reached the writer's current boundary, reading only MP4 metadata."""
         self.observed_size = size
-        deadline = time.monotonic() + 0.35
+        deadline = time.monotonic() + budget
         while self.offset + 8 <= size:
             start = self.offset
             stream.seek(start)
@@ -171,7 +176,8 @@ class GrowingIndex:
                 self.pending = None
             self.offset += length
             if time.monotonic() > deadline and self.offset + 8 <= size:
-                raise waiting()  # Next request continues here, including on a cold removable drive.
+                return False  # There are more existing box headers to index.
+        return True
 
 
 def file_id(stat):
@@ -196,12 +202,18 @@ def locked_index(path, stream, identity):
         yield index, size
 
 
-def playlist(identity):
+def playlist(identity, *, warm_only=False):
     path, ended = target(identity)
+    if warm_only and ended:
+        return
     try:
         with open_reader(path) as stream:
             with locked_index(path, stream, identity) as (index, size):
-                index.extend(stream, size)
+                caught_up = index.extend(stream, size, _WARM_BUDGET if warm_only else _REQUEST_BUDGET)
+                if warm_only:
+                    return
+                if not caught_up:
+                    raise HTTPException(503, '正在建立录播播放索引', headers={'Retry-After': '0', 'Cache-Control': 'no-store'})
                 if not index.segments:
                     raise waiting() if not ended else HTTPException(422, '这段录播没有完整的视频片段')
                 manifest = bytes(index.manifest)
@@ -216,6 +228,28 @@ def playlist(identity):
         media_type='application/vnd.apple.mpegurl',
         headers={'Cache-Control': 'no-store'},
     )
+
+
+async def warm_recording(identity, owner, finished):
+    """Index newly written headers while they are still in the disk cache. Never enumerate the library."""
+    previous = 0
+    while not finished.is_set():
+        try:
+            await asyncio.wait_for(finished.wait(), _WARM_INTERVAL)
+            return
+        except asyncio.TimeoutError:
+            pass
+        seconds = owner.get('seconds', 0)
+        if seconds <= previous or owner['stop'].is_set():
+            continue
+        previous = seconds
+        try:
+            await asyncio.to_thread(playlist, identity, warm_only=True)
+        except HTTPException as error:
+            if error.status_code in (403, 404, 422):
+                return
+        except (sqlite3.Error, OSError):
+            pass  # A temporarily unavailable recording can be checked on its next progress update.
 
 
 @router.get('/{identity}/watch/playlist.m3u8')
