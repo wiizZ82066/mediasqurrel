@@ -17,6 +17,7 @@ test('home clock ticks between fresh recorder samples and stops on a stall or lo
 test('growing player can rewind or follow the edge and closing only disposes local reads', async () => {
   const video = new Video(), Hls = engineDouble()
   video.seekable = {length:1, start:() => 0, end:() => 30}
+  video.buffered = video.seekable
   const id = 'a'.repeat(32)
   const player = createGrowingPlayback(video, id, {fromStart:true,onState:() => {}}, {
     fetch:() => assert.fail('HLS already requests the initial playlist'),
@@ -36,6 +37,7 @@ const deferred = () => { let resolve; const promise = new Promise(yes => { resol
 
 class Video extends EventTarget {
   src = ''; currentTime = 0; duration = 100; paused = true; volume = .09; muted = false; playbackRate = 1.5
+  buffered = {length:0}
   loads = 0; pauses = 0; plays = 0; readyState = 0
   canPlayType() { return '' }
   load() { this.loads++ }
@@ -46,7 +48,7 @@ class Video extends EventTarget {
 
 function engineDouble({ automatic = true, supported = true, buffered = true } = {}) {
   return class Engine {
-    static Events = { ERROR:'error', MEDIA_ATTACHED:'attached', MANIFEST_PARSED:'parsed' }
+    static Events = { ERROR:'error', MEDIA_ATTACHED:'attached', MANIFEST_PARSED:'parsed', FRAG_LOADED:'loaded', FRAG_BUFFERED:'buffered' }
     static ErrorDetails = { MANIFEST_LOAD_ERROR:'manifestLoadError' }
     static DefaultConfig = { manifestLoadPolicy:{ default:{maxLoadTimeMs:20000} } }
     static isSupported() { return supported }
@@ -63,6 +65,51 @@ function engineDouble({ automatic = true, supported = true, buffered = true } = 
     destroy() { this.destroyed++ }
   }
 }
+
+test('rewinding far outside the live buffer starts a reader at the beginning and keeps playback preferences', async () => {
+  const video = new Video(), Hls = engineDouble({automatic:false})
+  video.seekable = {length:1, start:() => 0, end:() => 8000}
+  video.buffered = {length:1, start:() => 7995, end:() => 8000}
+  const player = createGrowingPlayback(video, 'c'.repeat(32), {fromStart:false,onState:() => {}}, {loadEngine:async () => Hls})
+  await new Promise(resolve => setImmediate(resolve))
+  const [live] = Hls.instances
+  const manifest = {levels:[{details:{edge:8000}}]}
+  live.emit('parsed', manifest)
+  live.canPlay()
+  player.seek(true)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(live.destroyed, 1)
+  const rewind = Hls.instances[1]
+  rewind.emit('parsed', manifest)
+  assert.equal(rewind.position, 0)
+  video.volume = .8
+  rewind.canPlay()
+  assert.equal(video.volume, .09)
+  player.dispose()
+  assert.equal(rewind.destroyed, 1)
+})
+
+test('a loaded live fragment without a decodable frame retries earlier then follows the buffered edge', async t => {
+  t.mock.timers.enable({apis:['setTimeout']})
+  const video = new Video(), Hls = engineDouble({automatic:false})
+  const player = createGrowingPlayback(video, 'd'.repeat(32), {fromStart:false,onState:() => {}}, {loadEngine:async () => Hls})
+  await new Promise(resolve => setImmediate(resolve))
+  const manifest = {levels:[{details:{edge:100}}]}
+  const [tail] = Hls.instances
+  tail.emit('parsed', manifest)
+  tail.emit('loaded', {frag:{sn:19}})
+  t.mock.timers.tick(1200)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(tail.destroyed, 1)
+  const earlier = Hls.instances[1]
+  earlier.emit('parsed', manifest)
+  assert.equal(earlier.position, 94)
+  video.buffered = {length:1, start:() => 90, end:() => 100}
+  earlier.emit('buffered')
+  assert.equal(video.currentTime, 99)
+  earlier.canPlay()
+  player.dispose()
+})
 
 test('live manifest waiting respects the server delay and stops retrying when the viewer closes', async t => {
   t.mock.timers.enable({apis:['setTimeout']})

@@ -6,30 +6,66 @@ export function prepareRecordingPlayer() {
   loadEngine().catch(() => {})
 }
 
+function containsTime(ranges, time) {
+  for (let i = 0; i < ranges.length; i++) {
+    if (ranges.start(i) <= time && time < ranges.end(i)) return true
+  }
+  return false
+}
+
 // The recorder owns the writer. This player only requests completed fragments from its local playlist.
 export function createGrowingPlayback(video, id, { fromStart, onState }, deps = {}) {
   if (!/^[a-f0-9]{32}$/.test(id)) throw new Error('录播标识无效')
   const url = '/api/live/recordings/' + id + '/watch/playlist.m3u8'
   const controller = new AbortController()
   const { signal } = controller
-  let engine, retryTimer, firstPlay = true
+  let engine, retryTimer, decodeTimer, firstPlay = true, startAtBeginning = fromStart
+  let loadFrom, followTarget, preferences
+  function reopen() {
+    clearTimeout(retryTimer)
+    clearTimeout(decodeTimer)
+    decodeTimer = null
+    firstPlay = true
+    preferences ??= {volume:video.volume, muted:video.muted, playbackRate:video.playbackRate}
+    const previous = engine
+    engine = null
+    previous.destroy()
+    onState('loading')
+    attach()
+  }
   function seek(toStart) {
     if (!video.seekable.length) return
     const start = video.seekable.start(0)
     const end = video.seekable.end(video.seekable.length - 1)
-    video.currentTime = toStart ? start : Math.max(start, end - 1)
+    const position = toStart ? start : Math.max(start, end - 1)
+    followTarget = loadFrom = undefined
+    if (engine && !containsTime(video.buffered, position)) {
+      // Start a fresh buffer at the destination; live-edge buffering can otherwise override a distant seek.
+      startAtBeginning = toStart
+      reopen()
+    } else video.currentTime = position
+  }
+  function followWhenBuffered() {
+    if (followTarget !== undefined && containsTime(video.buffered, followTarget)) {
+      video.currentTime = followTarget
+      followTarget = undefined
+    }
   }
   function canPlay() {
     if (!firstPlay) return
     firstPlay = false
+    clearTimeout(decodeTimer)
     onState('')
     // HLS.js has already selected the start or the live edge before decoding its first frame.
-    if (!engine) seek(fromStart)
+    if (!engine) seek(startAtBeginning)
+    if (preferences) { Object.assign(video, preferences); preferences = null }
+    followWhenBuffered()
     video.play().catch(() => {})
   }
   function fail(message) {
     if (signal.aborted) return
     clearTimeout(retryTimer)
+    clearTimeout(decodeTimer)
     engine?.destroy()
     engine = null
     onState(message)
@@ -60,24 +96,39 @@ export function createGrowingPlayback(video, id, { fromStart, onState }, deps = 
       const Hls = await (deps.loadEngine || loadEngine)()
       if (signal.aborted) return
       if (Hls.isSupported()) {
-        engine = new Hls({ autoStartLoad:false, liveSyncDuration: 3,
+        const current = new Hls({ autoStartLoad:false, liveSyncDuration: 3,
           manifestLoadPolicy: { default: { ...Hls.DefaultConfig.manifestLoadPolicy.default, errorRetry: null } },
           backBufferLength: 15, maxBufferLength: 15, maxMaxBufferLength: 30, maxBufferSize: 24 * 1024 * 1024 })
-        engine.on(Hls.Events.MANIFEST_PARSED, (_, {levels}) => {
+        engine = current
+        let initialPosition, edge
+        current.on(Hls.Events.MANIFEST_PARSED, (_, {levels}) => {
+          if (engine !== current) return
           // Our single media playlist already has the full timeline. Load the requested position directly.
-          const end = levels[0]?.details?.edge
-          const position = Number.isFinite(end) ? Math.max(0, end - 1) : -1
-          engine.startLoad(fromStart ? 0 : position)
+          edge = levels[0]?.details?.edge
+          initialPosition = startAtBeginning ? 0 : loadFrom ?? (Number.isFinite(edge) ? Math.max(0, edge - 1) : -1)
+          current.startLoad(initialPosition)
         })
-        engine.on(Hls.Events.ERROR, (_, data) => {
-          if (!data.fatal || signal.aborted) return
+        current.on(Hls.Events.FRAG_LOADED, (_, {frag}) => {
+          if (engine !== current || !firstPlay || !(initialPosition > 0) || decodeTimer || typeof frag.sn !== 'number') return
+          // FFmpeg may split a long group of pictures before its next keyframe. Retry with decoder pre-roll.
+          decodeTimer = setTimeout(() => {
+            if (engine !== current || !firstPlay || video.readyState >= 2) return
+            const distance = Math.max(6, 2 * (edge - initialPosition))
+            loadFrom = Math.max(0, edge - distance)
+            followTarget = Math.max(0, edge - 1)
+            reopen()
+          }, 1200)
+        })
+        current.on(Hls.Events.FRAG_BUFFERED, followWhenBuffered)
+        current.on(Hls.Events.ERROR, (_, data) => {
+          if (!data.fatal || signal.aborted || engine !== current) return
           if (data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR && data.response?.code === 503) {
             const retryAfter = data.networkDetails?.getResponseHeader?.('Retry-After') ?? data.networkDetails?.headers?.get('Retry-After')
             waitForPlaylist(retryAfter, () => engine?.loadSource(url))
           } else fail(data.response?.code === 422 ? 'unsupported' : 'error')
         })
-        engine.loadSource(url)
-        engine.attachMedia(video)
+        current.loadSource(url)
+        current.attachMedia(video)
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) await startNative()
       else fail('unsupported')
     } catch { fail('error') }
@@ -87,6 +138,7 @@ export function createGrowingPlayback(video, id, { fromStart, onState }, deps = 
   return { seek, dispose() {
     controller.abort()
     clearTimeout(retryTimer)
+    clearTimeout(decodeTimer)
     video.removeEventListener('canplay', canPlay)
     video.pause()
     engine?.destroy()
