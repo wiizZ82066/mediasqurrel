@@ -1,6 +1,7 @@
 """An independent reader can rewind a growing recording while its writer appends and publishes it."""
 
 from contextlib import ExitStack
+from itertools import count
 import asyncio
 import json
 from pathlib import Path
@@ -97,7 +98,9 @@ class LiveWatchTests(unittest.TestCase):
 
     def test_index_backlog_continues_at_its_cursor_without_waiting_for_the_writer(self):
         self.path.write_bytes(movie() + fragment(0) + fragment(4000))
-        with patch.object(live_playback, '_REQUEST_BUDGET', 0):
+        with patch.object(live_playback, 'time') as clock:
+            # One second per clock read exceeds the request budget even on a coarse Windows clock.
+            clock.monotonic.side_effect = count()
             for attempt in range(12):
                 response = self.client.get(self.url)
                 if response.status_code == 200:
