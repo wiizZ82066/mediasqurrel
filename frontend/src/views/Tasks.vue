@@ -10,6 +10,7 @@ import Avatar from '../components/Avatar.vue'
 import ContentText from '../components/ContentText.vue'
 import RecordingClock from '../components/RecordingClock.vue'
 import RecordingPlayer from '../components/RecordingPlayer.vue'
+import { prepareRecordingPlayer } from '../recording-playback.js'
 import { liveLabels, liveDuration, liveSize } from '../live-status.js'
 import { taskAuthor, taskTitle, taskPlatform, taskContentTime, mergeTaskSummary } from '../task-presentation.js'
 
@@ -437,8 +438,8 @@ onBeforeUnmount(() => {
         <div class="recording-summary"><span class="recording-symbol"><AppIcon name="video" :size="25"/></span>
           <div><h2>{{ record.author }} <span>{{ liveLabels[record.status] }}</span></h2><p>{{ record.title }}</p></div></div>
         <div class="recording-controls"><RecordingClock :record="record" :sampled-at="store.activity?.sampledAt"/>
-          <button class="btn btn-primary btn-sm" @click="watchLive(record, false)">追看录播</button>
-          <button class="btn btn-ghost btn-sm" @click="watchLive(record, true)">从头回看</button></div>
+          <button class="btn btn-primary btn-sm" @pointerenter="prepareRecordingPlayer" @focus="prepareRecordingPlayer" @click="watchLive(record, false)">追看录播</button>
+          <button class="btn btn-ghost btn-sm" @pointerenter="prepareRecordingPlayer" @focus="prepareRecordingPlayer" @click="watchLive(record, true)">从头回看</button></div>
       </article>
     </section>
     <div v-if="!loading && !error && !tasks.length && !activeRecordings.length" class="card empty">

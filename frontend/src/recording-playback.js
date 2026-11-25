@@ -1,6 +1,11 @@
 // Load only the selected recording's byte ranges. The player controls remain native.
 const loadEngine = () => import('hls.js/light').then(module => module.default)
 
+export function prepareRecordingPlayer() {
+  // Pointer or keyboard intent only warms the player code. Video stays on disk until clicked.
+  loadEngine().catch(() => {})
+}
+
 // The recorder owns the writer. This player only requests completed fragments from its local playlist.
 export function createGrowingPlayback(video, id, { fromStart, onState }, deps = {}) {
   if (!/^[a-f0-9]{32}$/.test(id)) throw new Error('录播标识无效')
@@ -18,38 +23,63 @@ export function createGrowingPlayback(video, id, { fromStart, onState }, deps = 
     if (!firstPlay) return
     firstPlay = false
     onState('')
-    if (!engine || !fromStart) seek(fromStart)
+    // HLS.js has already selected the start or the live edge before decoding its first frame.
+    if (!engine) seek(fromStart)
     video.play().catch(() => {})
   }
   function fail(message) {
     if (signal.aborted) return
+    clearTimeout(retryTimer)
     engine?.destroy()
     engine = null
     onState(message)
   }
-  async function attach() {
+  function waitForPlaylist(retryAfter, retry) {
+    const seconds = retryAfter != null && retryAfter !== '' ? Number(retryAfter) : 1
+    const delay = Number.isFinite(seconds) ? Math.max(100, Math.min(5000, seconds * 1000)) : 1000
+    onState(delay < 1000 ? 'preparing' : 'waiting')
+    clearTimeout(retryTimer)
+    retryTimer = setTimeout(() => { if (!signal.aborted) retry() }, delay)
+  }
+  async function startNative() {
     try {
       const response = await (deps.fetch || fetch)(url, {signal, cache:'no-store'})
       await response.body?.cancel()
       if (signal.aborted) return
       if (response.status === 503) {
-        onState('waiting')
-        retryTimer = setTimeout(attach, 2000)
+        waitForPlaylist(response.headers?.get('Retry-After'), startNative)
         return
       }
       if (!response.ok) return fail(response.status === 422 ? 'unsupported' : 'error')
+      video.src = url
+      video.load()
+    } catch { fail('error') }
+  }
+  async function attach() {
+    try {
       const Hls = await (deps.loadEngine || loadEngine)()
       if (signal.aborted) return
       if (Hls.isSupported()) {
-        engine = new Hls({ startPosition: fromStart ? 0 : -1, liveSyncDuration: 3,
+        engine = new Hls({ autoStartLoad:false, liveSyncDuration: 3,
+          manifestLoadPolicy: { default: { ...Hls.DefaultConfig.manifestLoadPolicy.default, errorRetry: null } },
           backBufferLength: 15, maxBufferLength: 15, maxMaxBufferLength: 30, maxBufferSize: 24 * 1024 * 1024 })
-        engine.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) fail('error') })
+        engine.on(Hls.Events.MANIFEST_PARSED, (_, {levels}) => {
+          // Our single media playlist already has the full timeline. Load the requested position directly.
+          const end = levels[0]?.details?.edge
+          const position = Number.isFinite(end) ? Math.max(0, end - 1) : -1
+          engine.startLoad(fromStart ? 0 : position)
+        })
+        engine.on(Hls.Events.ERROR, (_, data) => {
+          if (!data.fatal || signal.aborted) return
+          if (data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR && data.response?.code === 503) {
+            const retryAfter = data.networkDetails?.getResponseHeader?.('Retry-After') ?? data.networkDetails?.headers?.get('Retry-After')
+            waitForPlaylist(retryAfter, () => engine?.loadSource(url))
+          } else fail(data.response?.code === 422 ? 'unsupported' : 'error')
+        })
         engine.loadSource(url)
         engine.attachMedia(video)
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = url
-        video.load()
-      } else fail('unsupported')
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) await startNative()
+      else fail('unsupported')
     } catch { fail('error') }
   }
   video.addEventListener('canplay', canPlay)

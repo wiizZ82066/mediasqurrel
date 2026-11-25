@@ -15,21 +15,20 @@ test('home clock ticks between fresh recorder samples and stops on a stall or lo
 })
 
 test('growing player can rewind or follow the edge and closing only disposes local reads', async () => {
-  const video = new Video(), Hls = engineDouble(), requests = []
+  const video = new Video(), Hls = engineDouble()
   video.seekable = {length:1, start:() => 0, end:() => 30}
   const id = 'a'.repeat(32)
   const player = createGrowingPlayback(video, id, {fromStart:true,onState:() => {}}, {
-    fetch:async (url, options) => { requests.push([url,options]); return {ok:true,status:200} },
+    fetch:() => assert.fail('HLS already requests the initial playlist'),
     loadEngine:async () => Hls,
   })
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(Hls.instances[0].config.startPosition, 0)
+  Hls.instances[0].emit('parsed', {levels:[{details:{edge:30}}]})
+  assert.equal(Hls.instances[0].position, 0)
   player.seek(false); assert.equal(video.currentTime,29)
   player.seek(true); assert.equal(video.currentTime,0)
   player.dispose()
-  assert.equal(requests.length,1)
-  assert.equal(requests[0][0], '/api/live/recordings/' + id + '/watch/playlist.m3u8')
-  assert.equal(requests[0][1].signal.aborted,true)
+  assert.deepEqual(Hls.instances[0].sources, ['/api/live/recordings/' + id + '/watch/playlist.m3u8'])
   assert.equal(Hls.instances[0].destroyed,1)
 })
 const response = value => ({ ok:true, status:200, json:async () => value })
@@ -47,19 +46,49 @@ class Video extends EventTarget {
 
 function engineDouble({ automatic = true, supported = true, buffered = true } = {}) {
   return class Engine {
-    static Events = { ERROR:'error', MEDIA_ATTACHED:'attached' }
+    static Events = { ERROR:'error', MEDIA_ATTACHED:'attached', MANIFEST_PARSED:'parsed' }
+    static ErrorDetails = { MANIFEST_LOAD_ERROR:'manifestLoadError' }
+    static DefaultConfig = { manifestLoadPolicy:{ default:{maxLoadTimeMs:20000} } }
     static isSupported() { return supported }
     static instances = []
     constructor(config) { this.config=config; this.listeners={}; this.destroyed=0; this.constructor.instances.push(this) }
     on(name, listener) { this.listeners[name]=listener }
     emit(name, data={}) { this.listeners[name]?.(name,data) }
-    loadSource(source) { this.source=source }
+    sources = []
+    loadSource(source) { this.source=source; this.sources.push(source) }
+    startLoad(position) { this.position=position }
     attachMedia(video) { this.video=video; if (automatic) queueMicrotask(() => this.attach()) }
     attach() { this.video.src='blob:fixture'; this.emit('attached'); if (buffered) this.canPlay() }
     canPlay() { this.video.readyState=3; this.video.dispatchEvent(new Event('canplay')) }
     destroy() { this.destroyed++ }
   }
 }
+
+test('live manifest waiting respects the server delay and stops retrying when the viewer closes', async t => {
+  t.mock.timers.enable({apis:['setTimeout']})
+  const Hls = engineDouble({automatic:false}), states = [], video = new Video()
+  const player = createGrowingPlayback(video, 'b'.repeat(32), {fromStart:false, onState:s => states.push(s)}, {loadEngine:async () => Hls})
+  await new Promise(resolve => setImmediate(resolve))
+  const engine = Hls.instances[0]
+  const unavailable = {fatal:true, details:Hls.ErrorDetails.MANIFEST_LOAD_ERROR, response:{code:503},
+    networkDetails:{getResponseHeader:() => '1'}}
+  engine.emit('error', unavailable)
+  assert.equal(states.at(-1),'waiting')
+  t.mock.timers.tick(900)
+  assert.equal(engine.sources.length, 1)
+  t.mock.timers.tick(100)
+  assert.equal(engine.sources.length, 2)
+  video.seekable = {length:1,start:()=>0,end:()=>40}
+  engine.emit('parsed', {levels:[{details:{edge:40}}]})
+  assert.equal(engine.position, 39)
+  video.currentTime = 39
+  engine.canPlay()
+  assert.equal(video.currentTime, 39) // Already following the live edge. Keep the first decoded frame.
+  engine.emit('error', unavailable)
+  player.dispose()
+  t.mock.timers.tick(2000)
+  assert.equal(engine.sources.length, 2)
+})
 
 test('recordings attach MSE before ready with bounded buffers and preserve native controls/preferences', async () => {
   const video=new Video(), Hls=engineDouble()
